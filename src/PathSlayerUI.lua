@@ -1822,7 +1822,9 @@ local function clickGui(btn)
 	end
 end
 
-Runner = { active = false, cancel = false, lastStart = 0 }
+Runner = { active = false, cancel = false, lastStart = 0, hasAlternative = false }
+-- ค่าที่ Runner.hunt คืนเมื่อยกเลิกเควสบอสเพราะบอสตาย ไม่ใช่ความผิดพลาด ไม่ต้องตัดเควสออก
+Runner.BOSS_GONE = "boss-gone"
 
 local function report(text, color)
 	questUI.setStatus(text, color or Theme.Muted)
@@ -1991,8 +1993,30 @@ function Runner.start(list)
 
 	-- เควสที่รับไม่ได้ (เลเวลไม่ถึง / เกมไม่ให้ตัวเลือก) หรือเป็นแบบทำได้ครั้งเดียวที่จบแล้ว
 	-- ตัดออกจากรอบถัดไป เควสที่เหลือยังวนต่อได้ ไม่ต้องหยุดทั้งชุด
-	local function runQuest(q, round)
+	-- เควสบอส = มีขั้นฆ่าที่ต้องฆ่าแค่ตัวเดียว (Zuko, Mother Bear, Kaiden ...)
+	-- บอสเกิดใหม่ช้า Zuko ใช้ ~130 วิ รอเฉย ๆ เสียเวลา ถ้ามีเควสอื่นติ๊กไว้ให้ไปทำอันนั้นก่อน
+	local function bossStep(q)
+		for _, s in ipairs(q.steps) do
+			if s.hunt and s.max == 1 then
+				return s
+			end
+		end
+		return nil
+	end
+
+	-- คืน true ถ้ารอบนี้ได้ลงมือทำ false ถ้าข้ามเพราะบอสยังไม่เกิด
+	local function runQuest(q, round, canSkip)
 		local d = q.data
+		local boss = bossStep(q)
+		Runner.hasAlternative = canSkip
+
+		-- เช็กก่อนรับ จะได้ไม่ต้องรับแล้วยกเลิก (รับเควสทีกินคูลดาวน์ 30 วิ)
+		if boss and canSkip and firstStep == 1 and Runner.bossAlive and not Runner.bossAlive(boss) then
+			report(string.format("รอบ %d · %s ยังไม่เกิด ข้ามไปทำเควสอื่นก่อน", round, boss.hunt), Theme.Warn)
+			task.wait(1)
+			return false
+		end
+
 		while questCooldown() > 0 and not Runner.cancel and firstStep == 1 do
 			report(string.format("รอบ %d · %s · คูลดาวน์รับเควส %s", round, d.title, clockText(questCooldown())), Theme.Warn)
 			task.wait(1)
@@ -2000,14 +2024,18 @@ function Runner.start(list)
 
 		for i = firstStep, #q.steps do
 			if Runner.cancel then
-				return
+				return true
 			end
 			local ok, err = runStep(q.steps[i], i, #q.steps)
 			if not ok then
-				if not Runner.cancel then
+				if err == Runner.BOSS_GONE then
+					-- ยกเลิกเควสไปแล้วใน Runner.hunt ไม่ตัดออกจากรอบ รอบหน้ามาลองใหม่
+					report(string.format("รอบ %d · %s ตาย/หายไป ยกเลิกเควสแล้ว ไปทำเควสอื่นก่อน", round, boss and boss.hunt or "บอส"), Theme.Warn)
+					task.wait(1)
+				elseif not Runner.cancel then
 					q.dropped = d.title .. ": " .. tostring(err)
 				end
-				return
+				return true
 			end
 			task.wait(1.5)
 		end
@@ -2015,21 +2043,33 @@ function Runner.start(list)
 		if questProgress(d.key) == "completed" then
 			q.dropped = d.title .. " ทำได้ครั้งเดียว จบแล้ว"
 		end
+		return true
 	end
 
 	task.spawn(function()
 		-- เควสฆ่าม็อบเกมไม่บันทึกลง Completed เลยรับใหม่ได้เรื่อย ๆ
 		local round = 0
 		local lastDrop
+		-- ทุกเควสที่เหลือเป็นบอสที่ยังไม่เกิดหมด ข้ามกันไปมาจะวนเปล่า ๆ รอบถัดไปห้ามข้าม รอบอสเลย
+		local mustWait = false
 		while not Runner.cancel do
 			round += 1
+			local ranAny = false
 			for qi = resumeAt, #queue do
 				local q = queue[qi]
 				if Runner.cancel then
 					break
 				end
 				if not q.dropped then
-					runQuest(q, round)
+					local others = 0
+					for _, o in ipairs(queue) do
+						if o ~= q and not o.dropped then
+							others += 1
+						end
+					end
+					if runQuest(q, round, others > 0 and not mustWait) then
+						ranAny = true
+					end
 					firstStep = 1
 					if q.dropped then
 						lastDrop = q.dropped
@@ -2039,6 +2079,7 @@ function Runner.start(list)
 				end
 			end
 			resumeAt = 1
+			mustWait = not ranAny
 
 			if Runner.cancel then
 				break
@@ -3304,6 +3345,45 @@ local function collectLoot(opts)
 	return got
 end
 
+-- เก็บเป็นฟิลด์ของ Runner ไม่ใช่ local: ไฟล์นี้ชนเพดาน local ระดับบนสุดของ Luau (200 ตัว) แล้ว
+Runner.Hunt = {
+	-- ไม่เห็นบอสเกินนี้ถือว่าตายแล้ว: 3 วิแรกยังไม่วาร์ป + วาร์ปไปจุดเกิดแล้วรอ stream อีกราว 5 วิ
+	BossGoneAfter = 8,
+	-- รอ stream ตอนเช็กว่าบอสเกิดหรือยังก่อนรับเควส
+	StreamWait = 3,
+}
+
+-- ยกเลิกเควสที่ถืออยู่แบบเดียวกับปุ่มกากบาทในแถบเควสของเกม
+-- (IndividualQuest: SignalEvent.ToServer("RemoveQuest", ชื่อลูกใน Holder)) ชื่อลูกคือชื่อ QuestInstance
+function Runner.abandonQuest(taskName)
+	local quests = questFolder()
+	local holder = quests and quests:FindFirstChild("Holder")
+	for _, held in ipairs(holder and holder:GetChildren() or {}) do
+		if held:FindFirstChild(taskName, true) then
+			pcall(SignalEvent.ToServer, "RemoveQuest", held.Name)
+			local untilT = os.clock() + 3
+			while held.Parent and os.clock() < untilT do
+				task.wait(0.1)
+			end
+			return not held.Parent
+		end
+	end
+	return false
+end
+
+-- วาร์ปไปจุดเกิดแล้วดูว่าบอสอยู่ไหม ใช้ก่อนรับเควสบอส
+function Runner.bossAlive(step)
+	goToSpawn(step.center)
+	local untilT = os.clock() + Runner.Hunt.StreamWait
+	repeat
+		if liveMobCount(step.hunt) > 0 then
+			return true
+		end
+		task.wait(0.25)
+	until os.clock() >= untilT or Runner.cancel
+	return false
+end
+
 function Runner.hunt(step, index, total)
 	-- ปิดสวิตช์ของผู้ใช้ก่อน แล้วรอลูปเดิมออกให้จริง ไม่งั้นสองลูปแย่งกันเขียน CFrame
 	attackRow.set(false)
@@ -3338,6 +3418,14 @@ function Runner.hunt(step, index, total)
 			emptySince = emptySince or os.clock()
 			if os.clock() - emptySince > 3 then
 				goToSpawn(step.center)
+			end
+			-- บอสตาย (คนอื่นฆ่า หรือยังไม่เกิด) และมีเควสอื่นติ๊กไว้: ยกเลิกเควสนี้ไปทำอันอื่นก่อน
+			-- ใช้กับเควสฆ่าตัวเดียวเท่านั้น โจรหมดค่ายชั่วคราวเป็นเรื่องปกติ เกิดใหม่ทุก 30 วิ
+			if step.max == 1 and Runner.hasAlternative and os.clock() - emptySince > Runner.Hunt.BossGoneAfter then
+				autoAttack.on = false
+				autoAttack.target = nil
+				Runner.abandonQuest(step.task)
+				return false, Runner.BOSS_GONE
 			end
 		else
 			emptySince = nil
@@ -3380,6 +3468,10 @@ end
 --   81068731814520  -> 0.37 วิ (หมัดปิดคอมโบ -6)
 -- ม็อบชนิดอื่นใช้ท่าคนละชุด เลยต้องเรียนรู้เองตอนเล่น: ทุกครั้งที่เราเสียเลือด
 -- ย้อนดูท่าที่ม็อบใกล้ ๆ เพิ่งเริ่มเล่น แล้วนับว่าท่าไหนตามด้วยดาเมจบ่อย
+-- ส่วน Auto-Dodge อยู่ใน do ... end เพราะไฟล์ชนเพดาน local ระดับบนสุดของ Luau (200 ตัว)
+-- ข้างนอกใช้แค่ stopDodge (ตอน unload) เลยประกาศไว้ข้างนอกตัวเดียว
+local stopDodge
+do
 local Dodge = {
 	-- ท่าที่ม็อบห่างเกินนี้เล่น ไม่ต้องหลบ โจรตีโดนที่ระยะราว 5 stud ทุกครั้งที่วัด
 	ThreatRadius = 12,
@@ -3554,7 +3646,7 @@ local function onDamaged(lost)
 	))
 end
 
-local function stopDodge()
+function stopDodge()
 	for _, c in ipairs(dodgeConns) do
 		c:Disconnect()
 	end
@@ -3640,6 +3732,8 @@ dodgeRow = switchRow("Auto-Dodge", "ปิดอยู่", 4, function(on)
 		dodgeRow.setDesc("ปิดอยู่")
 	end
 end)
+
+end
 
 -- Kill Aura: ยิงคำสั่งตีตรงไปที่เซิร์ฟเวอร์ ไม่ผ่านการคลิก ----------------------
 
@@ -3744,7 +3838,7 @@ local function nextAuraSlot()
 	return list[killAura.slotIndex], #list
 end
 
-local Heartbeat = game:GetService("RunService").Heartbeat
+
 
 -- ยิงหมัดหนึ่งครั้งด้วยช่องอาวุธที่ถึงคิว คืนช่องที่ใช้ (nil = ไม่มีช่องให้ใช้)
 -- หลายช่อง: สลับอาวุธทุกครบคอมโบ ตั้งค่า Items_Config ตรง ๆ ไม่มีดีเลย์กดปุ่ม
@@ -3783,7 +3877,7 @@ local function holdAbove(hrp, root, seconds)
 		local spot = root.Position + Vector3.new(0, Combat.HoverHeight, 0)
 		placeAt(hrp, facing(spot, root.Position, hrp.CFrame.LookVector), "blink")
 		hrp.AssemblyLinearVelocity = Vector3.zero
-		Heartbeat:Wait()
+		game:GetService("RunService").Heartbeat:Wait()
 	until os.clock() >= untilT
 	return true
 end
