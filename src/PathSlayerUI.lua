@@ -350,11 +350,46 @@ local signalModule = ReplicatedStorage:FindFirstChild("Communication")
 	and ReplicatedStorage.Communication.ServerAndClient.Signals:FindFirstChild("SignalEvent")
 local SignalEvent = signalModule and require(signalModule)
 
+-- แผงขายคือ ProximityPrompt "Purchase" ที่ ObjectText = ชื่อของ เช่น Raze's Shop.Regular Katana
+-- โผล่ใน workspace เฉพาะตอน stream ถึง อยู่คนละโซนกับร้านจะหาไม่เจอ
+function Game.findStand(itemName)
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("ProximityPrompt") and d.ObjectText == itemName and d.ActionText == "Purchase" then
+			return d
+		end
+	end
+	return nil
+end
+
+-- ร้านไหนขายอะไรดูได้จากข้อมูลเกมโดยไม่ต้องรอ stream:
+-- Ouwland.Content.<โซน>.Npcs.<NPC>.Shop มีโมเดลชื่อตามของที่ขาย (Raze: Fancy Katana, Regular Katana)
+-- คืนตำแหน่งยืนของ NPC ร้านนั้น จาก Spawns[1] ของโมดูล NPC
+function Game.shopSpot(itemName)
+	for _, region in ipairs(ReplicatedStorage.Ouwland.Content:GetChildren()) do
+		local npcs = region:FindFirstChild("Npcs")
+		for _, m in ipairs(npcs and npcs:GetDescendants() or {}) do
+			local shop = m:IsA("ModuleScript") and m:FindFirstChild("Shop")
+			if shop and shop:FindFirstChild(itemName) then
+				local ok, def = pcall(require, m)
+				local spawn = ok and def.Spawns and def.Spawns[1]
+				if typeof(spawn) == "CFrame" then
+					return spawn.Position, def.Name or m.Name
+				elseif typeof(spawn) == "Vector3" then
+					return spawn, def.Name or m.Name
+				end
+			end
+		end
+	end
+	return nil
+end
+
 -- Shop.Buy ใช้ไม่ได้จากฝั่งเรา บรรทัดแรกของมันคือ if not RunService:IsServer() then return end
 -- เดิมเรียกตัวนั้นแล้วขึ้น "ส่งคำสั่งซื้อแล้ว" ทั้งที่ไม่มีอะไรไปถึงเซิร์ฟเวอร์เลย
 -- ทางที่หน้าคุยร้านของเกมใช้จริง (Dialogue.ProceedWithPurchase):
---   Shop.CanBuy(player, ชื่อ, nil, จำนวน) แล้ว SignalEvent.ToServer("PurchaseFromShop", ชื่อ, จำนวน)
+--   SignalEvent.ToServer("PurchaseFromShop", ชื่อ, จำนวน)
+-- ยิงจากที่ไหนก็ได้เซิร์ฟเวอร์เงียบ (ลองแล้ว Wen ค้าง 1880) ต้องยืนที่แผงขายของชิ้นนั้น
 -- เซิร์ฟเวอร์ไม่ตอบกลับ เลยยืนยันผลจากเงินที่ลดลงจริงแทน
+-- Shop.CanBuy ไม่ได้ใช้: เรียกจาก executor แล้วพังทุกครั้ง ("Cannot require a non-RobloxScript module")
 function Game.buy(row)
 	if not (Shop and SignalEvent) then
 		return false, "ไม่พบโมดูลร้าน"
@@ -362,38 +397,47 @@ function Game.buy(row)
 	if row.source ~= "shop" then
 		return false, "ซื้อผ่านร้านไม่ได้"
 	end
-
-	local amount = Shop.SanitizeAmount and Shop.SanitizeAmount(1) or 1
-	local canOk, can, why = pcall(Shop.CanBuy, LocalPlayer, row.name, nil, amount)
-	if canOk and not can then
-		return false, "เกมไม่ให้ซื้อ: " .. tostring(why or "?")
-	end
-
-	-- ยิงจากที่ไหนก็ได้เซิร์ฟเวอร์เงียบ (ลองแล้ว Wen ค้าง 1880) ต้องยืนที่แผงขายของชิ้นนั้น
-	-- แผงคือ ProximityPrompt "Purchase" ที่ ObjectText = ชื่อของ เช่น Raze's Shop.Regular Katana
-	-- แผงโผล่ใน workspace เฉพาะตอน stream ถึง ร้านโซนอื่นที่ยังไม่เคยไปจะหาไม่เจอ
-	local stand
-	for _, d in ipairs(workspace:GetDescendants()) do
-		if d:IsA("ProximityPrompt") and d.ObjectText == row.name and d.ActionText == "Purchase" then
-			stand = d
-			break
-		end
-	end
-	if not stand then
-		return false, "หาแผงขาย " .. row.name .. " ไม่เจอ ลองเดินไปโซนร้านนั้นก่อน"
-	end
 	local char = LocalPlayer.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	if not hrp then
 		return false, "ไม่พบตัวละคร"
 	end
-	local standPos = stand.Parent:IsA("BasePart") and stand.Parent.Position or stand.Parent:GetPivot().Position
+
 	local home = hrp.CFrame
+	local function goHome()
+		if hrp.Parent then
+			hrp.CFrame = home
+			hrp.AssemblyLinearVelocity = Vector3.zero
+		end
+	end
+
+	-- อยู่คนละโซนกับร้าน: วาร์ปไปที่ NPC ร้านก่อน แล้วรอแผง stream เข้ามา
+	local stand = Game.findStand(row.name)
+	if not stand then
+		local spot, shopName = Game.shopSpot(row.name)
+		if not spot then
+			return false, "ไม่รู้ว่าร้านไหนขาย " .. row.name
+		end
+		hrp.CFrame = CFrame.new(spot + Vector3.new(0, 3, 6), spot)
+		local untilT = os.clock() + 6
+		repeat
+			task.wait(0.25)
+			stand = Game.findStand(row.name)
+		until stand or os.clock() > untilT
+		if not stand then
+			goHome()
+			return false, "วาร์ปไปร้าน " .. tostring(shopName) .. " แล้วแต่แผงขายไม่โหลด"
+		end
+	end
+
+	local standPos = stand.Parent:IsA("BasePart") and stand.Parent.Position
+		or (stand.Parent:IsA("Attachment") and stand.Parent.WorldPosition)
+		or stand.Parent:GetPivot().Position
 	hrp.CFrame = CFrame.lookAt(standPos + Vector3.new(0, 1, 4), standPos)
 	task.wait(0.6)
 
 	local before = Game.wallet()
-	local sent, err = pcall(SignalEvent.ToServer, "PurchaseFromShop", row.name, amount)
+	local sent, err = pcall(SignalEvent.ToServer, "PurchaseFromShop", row.name, 1)
 	local bought = false
 	if sent then
 		local deadline = os.clock() + 4
@@ -407,7 +451,7 @@ function Game.buy(row)
 			end
 		end
 	end
-	hrp.CFrame = home
+	goHome()
 
 	if not sent then
 		return false, tostring(err)
@@ -1181,7 +1225,12 @@ track(buyBtn.MouseButton1Click:Connect(function()
 	-- (getconnections():Fire() ของ executor) จะพังด้วย "thread is not yieldable"
 	local target = shopSelected
 	task.spawn(function()
-		local ok, msg = Game.buy(target)
+		-- ครอบ pcall เสมอ ถ้า Game.buy พังกลางทาง buying จะค้างเป็น true ตลอด
+		-- แล้วปุ่ม BUY เงียบไปจนกว่าจะรีโหลด (เจอจริง: สถานะค้าง "กำลังซื้อ Fancy Katana…")
+		local done, ok, msg = pcall(Game.buy, target)
+		if not done then
+			ok, msg = false, "ซื้อไม่สำเร็จ: " .. tostring(ok)
+		end
 		buying = false
 		shopUI.setStatus(msg, ok and Theme.Accent or Theme.Danger)
 		if ok then
@@ -1252,10 +1301,19 @@ function Game.quests()
 						local taskFolder = typeof(instance) == "Instance" and instance:FindFirstChild("Tasks")
 						for _, t in ipairs(taskFolder and taskFolder:GetChildren() or {}) do
 							local code, max = t:FindFirstChild("Code"), t:FindFirstChild("Max")
+							-- TaskSpecs บอกชนิดงาน: Pickup = เก็บของที่เกมวางไว้ (Liv, Kona, Betty)
+							-- Deliver / Deposit / Dungeon ยังไม่รองรับ
+							local spec = q.TaskSpecs and q.TaskSpecs[t.Name]
+							local anchor = spec and (spec.Anchor
+								or (type(spec.Positions) == "table" and spec.Positions[1]))
 							tasks[#tasks + 1] = {
 								name = t.Name,
 								code = code and code.Value,
 								max = max and max.Value or 1,
+								kind = spec and spec.Type,
+								anchor = typeof(anchor) == "Vector3" and anchor or nil,
+								-- มีเฉพาะงานที่ของเกิดเป็นวงรอบจุดเดียว (เหรียญ Liv: Anchor + Radius 15)
+								sweepAt = spec and typeof(spec.Anchor) == "Vector3" and spec.Anchor or nil,
 							}
 						end
 
@@ -1632,8 +1690,8 @@ local QuestScripts = {
 }
 
 -- เควสฆ่าม็อบไม่ต้องเขียนมือ: รับจาก OfferNpc ด้วยคำตอบที่เป็นชื่อเควส แล้วไล่ฆ่าตาม Tasks
--- ใช้ได้เฉพาะเมื่อ Code ทุกตัวตรงกับ NpcCode ของม็อบจริง ถ้ามีงานอื่นปน (วิดพื้น ตกปลา
--- เก็บของ) ถือว่ายังไม่รองรับ ตอนเขียนเข้าเงื่อนไข 14 เควส เช่น Krue, Kazu, Tom, Chaka
+-- ใช้ได้เฉพาะเมื่อทุก task เป็นงานฆ่า (Code ตรง NpcCode ของม็อบจริง) หรืองานเก็บของ (Pickup)
+-- ถ้ามีงานอื่นปน (วิดพื้น ตกปลา ส่งของ) ถือว่ายังไม่รองรับ
 -- ไม่มีขั้นกลับไปส่ง: เควสที่ต้องกลับไปหา NPC เกมใส่เป็น task แยก ("Return to Ginzo")
 -- ปุ่ม START เรียกทุกวินาที Game.mobs() กวาด workspace ทุกครั้ง เลยทำแผนที่ไว้ครั้งเดียว
 local mobByCode
@@ -1659,10 +1717,14 @@ local function questPlan(data)
 	local steps = { { npc = data.offerNpc, answer = data.quest } }
 	for _, t in ipairs(data.tasks) do
 		local mob = t.code and byCode[t.code]
-		if not mob then
+		if t.kind == "Pickup" then
+			-- งานเก็บของ: เกมวางของไว้เองตอนรับเควส (PickupState) ไปกดเก็บจนตัวนับครบ
+			steps[#steps + 1] = { pickup = t.name, anchor = t.anchor, sweepAt = t.sweepAt, max = t.max }
+		elseif mob then
+			steps[#steps + 1] = { hunt = mob.name, center = mob.center, task = t.name, max = t.max }
+		else
 			return nil
 		end
-		steps[#steps + 1] = { hunt = mob.name, center = mob.center, task = t.name, max = t.max }
 	end
 	return steps
 end
@@ -1686,10 +1748,15 @@ local function npcSpawnPoint(name)
 	if not spawnCache then
 		spawnCache = {}
 		for _, region in ipairs(ReplicatedStorage.Ouwland.Content:GetChildren()) do
+			-- ต้องค้นทุกชั้น NPC บางตัวอยู่ในโฟลเดอร์ย่อยของสถานที่
+			-- เช่น Bamboo Grove.Npcs.Bamboo Grove Sanctuary.Liv เคยค้นแค่ชั้นแรกแล้วเควส Liv ขึ้น "ไม่รู้ตำแหน่ง Liv"
 			local npcs = region:FindFirstChild("Npcs")
-			for _, m in ipairs(npcs and npcs:GetChildren() or {}) do
+			for _, m in ipairs(npcs and npcs:GetDescendants() or {}) do
+				local ok, def = false, nil
 				if m:IsA("ModuleScript") then
-					local def = require(m)
+					ok, def = pcall(require, m)
+				end
+				if ok and type(def) == "table" then
 					local pos = def.Spawns and parseSpawn(def.Spawns[1])
 					if pos then
 						spawnCache[def.Name or m.Name] = { pos = pos, region = region.Name }
@@ -1816,9 +1883,13 @@ local function dialogueText(actual)
 	return table.concat(words, "")
 end
 
+-- c:Fire() รัน handler ของเกมใน thread เรา ถ้า handler รออะไรสักอย่าง เราค้างไปด้วย
+-- เจอจริงกับ Liv: กด Close แล้วทั้ง Auto-Quest ค้างที่ "คุยกับ Liv" 150 วิ แยก thread ให้ทุกครั้ง
 local function clickGui(btn)
 	for _, c in ipairs(getconnections(btn.MouseButton1Click)) do
-		c:Fire()
+		task.spawn(function()
+			c:Fire()
+		end)
 	end
 end
 
@@ -1860,7 +1931,7 @@ local function walkDialogue(answer, deadline)
 			for _, o in ipairs(opts) do
 				names[#names + 1] = o.text
 			end
-			return false, 'ไม่มีตัวเลือก "' .. answer .. '" (มี: ' .. table.concat(names, " / ") .. ")"
+			return false, 'ไม่มีตัวเลือก "' .. answer .. '" (มี: ' .. table.concat(names, " / ") .. ")", "not-offered"
 		end
 
 		lastLine = dialogueText(actual)
@@ -1880,6 +1951,9 @@ local function runStep(step, index, total)
 			return false, "ระบบสู้ยังไม่พร้อม"
 		end
 		return Runner.hunt(step, index, total)
+	end
+	if step.pickup then
+		return Runner.pickup(step, index, total)
 	end
 
 	local char = LocalPlayer.Character
@@ -2009,10 +2083,12 @@ function Runner.start(list)
 		local d = q.data
 		local boss = bossStep(q)
 		Runner.hasAlternative = canSkip
+		q.notOffered, q.bossSkipped = nil, nil
 
 		-- เช็กก่อนรับ จะได้ไม่ต้องรับแล้วยกเลิก (รับเควสทีกินคูลดาวน์ 30 วิ)
 		if boss and canSkip and firstStep == 1 and Runner.bossAlive and not Runner.bossAlive(boss) then
 			report(string.format("รอบ %d · %s ยังไม่เกิด ข้ามไปทำเควสอื่นก่อน", round, boss.hunt), Theme.Warn)
+			q.bossSkipped = true
 			task.wait(1)
 			return false
 		end
@@ -2026,9 +2102,16 @@ function Runner.start(list)
 			if Runner.cancel then
 				return true
 			end
-			local ok, err = runStep(q.steps[i], i, #q.steps)
+			local ok, err, why = runStep(q.steps[i], i, #q.steps)
 			if not ok then
-				if err == Runner.BOSS_GONE then
+				if why == "not-offered" and not Runner.cancel then
+					-- NPC ยังไม่เสนอเควสนี้ เช่น Liv ให้เควส 500 เหรียญหลังจบเควสเพนนีแล้วเท่านั้น
+					-- ไม่ตัดทิ้งถาวร ทำเควสอื่นในชุดก่อน รอบหน้ามาถามใหม่
+					q.notOffered = d.title .. ": " .. tostring(err)
+					report(string.format("รอบ %d · %s ยังรับไม่ได้ ข้ามไปก่อน", round, d.title), Theme.Warn)
+					task.wait(1.5)
+					return false
+				elseif err == Runner.BOSS_GONE then
 					-- ยกเลิกเควสไปแล้วใน Runner.hunt ไม่ตัดออกจากรอบ รอบหน้ามาลองใหม่
 					report(string.format("รอบ %d · %s ตาย/หายไป ยกเลิกเควสแล้ว ไปทำเควสอื่นก่อน", round, boss and boss.hunt or "บอส"), Theme.Warn)
 					task.wait(1)
@@ -2080,6 +2163,21 @@ function Runner.start(list)
 			end
 			resumeAt = 1
 			mustWait = not ranAny
+
+			-- ทั้งรอบไม่ได้ทำอะไรเลยและไม่ใช่เพราะรอบอส = ทุกเควสที่เหลือ NPC ยังไม่เสนอ วนต่อก็เปล่า
+			if not ranAny and not Runner.cancel then
+				local waitingBoss, reason = false, nil
+				for _, q in ipairs(queue) do
+					if not q.dropped then
+						waitingBoss = waitingBoss or q.bossSkipped == true
+						reason = reason or q.notOffered
+					end
+				end
+				if not waitingBoss and reason then
+					finish("หยุด: ยังรับเควสไม่ได้ (" .. reason .. ")", Theme.Danger)
+					return
+				end
+			end
 
 			if Runner.cancel then
 				break
@@ -3455,6 +3553,97 @@ function Runner.hunt(step, index, total)
 		end
 	end
 	return result, reason
+end
+
+-- ของเควสเก็บของ: PickupState ของเกมสร้าง Part ไว้ตรง ๆ ใต้ workspace
+-- ใส่ ProximityPrompt ActionText = "Pick Up" (ObjectText = "Coin" / "Lost Page" / "Lucky Penny")
+-- กดแล้วเกมส่ง SignalEvent "QuestProgress" ให้เอง บาง TaskSpec มี MaxDistance = 25 เลยต้องวาร์ปไปข้างของ
+local function questPickups()
+	local list = {}
+	for _, part in ipairs(workspace:GetChildren()) do
+		if part:IsA("BasePart") then
+			local prompt = part:FindFirstChildWhichIsA("ProximityPrompt")
+			if prompt and prompt.ActionText == "Pick Up" and prompt.Enabled then
+				list[#list + 1] = { part = part, prompt = prompt }
+			end
+		end
+	end
+	return list
+end
+
+Runner.Pickup = {
+	-- ยืนที่จุดกลาง (Anchor) เหรียญ Liv ห่างไม่เกิน 15 stud
+	-- ไม่ตั้งไกลกว่านี้ เควสบางอันเซิร์ฟเวอร์ให้เก็บได้ในระยะ MaxDistance = 25 เท่านั้น
+	SweepRadius = 20,
+	SweepGap = 0.03,
+}
+
+function Runner.pickup(step, index, total)
+	-- ลูปสู้ต้องไม่ทำงาน ไม่งั้นมันดึงตัวกลับไปหาม็อบกลางทางเก็บของ
+	attackRow.set(false)
+	mobOnlyRow.set(false)
+	autoAttack.on = false
+
+	local lastCount, lastMove = nil, os.clock()
+	while not Runner.cancel do
+		local count = taskProgress(step.pickup)
+		if count == nil or count >= step.max then
+			return true
+		end
+		if count ~= lastCount then
+			lastCount, lastMove = count, os.clock()
+		end
+		-- ตัวนับไม่ขยับนานเกินนี้ แปลว่าไม่มีของให้เก็บ หรือเซิร์ฟเวอร์ไม่รับ หยุดดีกว่าวนเปล่า
+		if os.clock() - lastMove > 25 then
+			return false, "ตัวนับ " .. step.pickup .. " ไม่ขยับ 25 วิ (ไม่เจอของ หรือเก็บไม่เข้า)"
+		end
+
+		local _, hrp = selfParts()
+		local items = hrp and questPickups() or {}
+		if #items == 0 then
+			-- ของอาจยังไม่ถูกสร้าง (เกมรอ QuestInstance ก่อน) ไปรอตรงจุดวางของ
+			if hrp and step.anchor and (hrp.Position - step.anchor).Magnitude > 20 then
+				placeAt(hrp, CFrame.new(step.anchor + Vector3.new(0, 4, 0)), "pickup-anchor")
+			end
+			report(string.format("[%d/%d] รอของ %s  %d/%d", index, total, step.pickup, count, step.max), Theme.Warn)
+			task.wait(0.5)
+		else
+			-- ของที่อยู่ในระยะ SweepRadius กดพร้อมกันทีเดียวโดยไม่ต้องขยับ ไกลกว่านั้นค่อยวาร์ปไปทีละชิ้น
+			-- เหรียญ Liv เกิดวนรอบต้นไม้ในรัศมี 15 stud ครั้งละ 12 อัน เก็บแล้วเกิดใหม่ทันที วัดจริง:
+			--   วาร์ปไปทีละเหรียญ รอ 0.4 วิ             2.2 เหรียญ/วิ
+			--   ยืนกลางวง กดทุกเหรียญทุก 0.1 วิ         6.8 เหรียญ/วิ
+			--   ยืนกลางวง กดทุกเหรียญทุก 0.03 วิ        8.4 เหรียญ/วิ  (500 เหรียญ ~1 นาที)
+			-- ของเกิดเป็นวง (Anchor) ยืนกลางวง ของทุกชิ้นจะอยู่ในระยะกวาดพร้อมกัน
+			if step.sweepAt and (hrp.Position - step.sweepAt).Magnitude > 5 then
+				placeAt(hrp, CFrame.new(step.sweepAt + Vector3.new(0, 3, 0)), "pickup-anchor")
+				task.wait(0.3)
+			end
+			local near, best, bestD = 0, nil, nil
+			for _, it in ipairs(items) do
+				local d = (it.part.Position - hrp.Position).Magnitude
+				if d <= Runner.Pickup.SweepRadius then
+					near += 1
+					task.spawn(fireproximityprompt, it.prompt)
+				end
+				if not bestD or d < bestD then
+					best, bestD = it, d
+				end
+			end
+			report(string.format("[%d/%d] เก็บ %s  %d/%d", index, total, best.prompt.ObjectText, count, step.max), Theme.Accent)
+			if near > 0 then
+				-- ยืนนิ่งไว้ แรงโน้มถ่วงดึงตัวออกจากวงถ้าไม่ล้าง velocity
+				hrp.AssemblyLinearVelocity = Vector3.zero
+				task.wait(Runner.Pickup.SweepGap)
+			else
+				firePromptAt(best.prompt)
+				local untilT = os.clock() + 1
+				while best.part.Parent and os.clock() < untilT do
+					task.wait(0.05)
+				end
+			end
+		end
+	end
+	return false, "ยกเลิกแล้ว"
 end
 
 -- Auto-Dodge: อ่านท่าโจมตีของม็อบแล้วหลบก่อนดาเมจเข้า ------------------------
