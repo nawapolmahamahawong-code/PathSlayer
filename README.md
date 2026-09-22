@@ -7,7 +7,7 @@
 วางบรรทัดนี้ใน executor แล้วรัน
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/<GITHUB_USER>/PathSlayer/main/src/PathSlayerUI.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/nawapolmahamahawong-code/PathSlayer/main/src/PathSlayerUI.lua"))()
 ```
 
 executor ต้องรองรับ `getconnections`, `fireproximityprompt`, `gethui`, `readfile` / `writefile` / `isfile` / `makefolder`
