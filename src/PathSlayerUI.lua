@@ -2497,24 +2497,34 @@ end
 local questUI = makePanel("Auto-Quest", true)
 questUI.search.PlaceholderText = "ค้นหา NPC หรือเควส…"
 
-local questFilter = "ทั้งหมด"
--- ติ๊กได้ทีละเควส หลายเควส ข้าม NPC ได้ Runner.start รับรายการผสมอยู่แล้ว (ต่อคิวขั้นก่อนหน้าข้าม NPC เอง)
--- เดิมเลือกได้ทีละ NPC (ติ๊กแบบ radio) แล้วเลือกเควสของ NPC นั้นจากชิปตัวเล็ก คนใช้บอกว่าดูยาก ติ๊กยาก
+-- ของแผง Auto-Quest รวมไว้ในตารางเดียว chunk หลักใช้ local ใกล้เพดาน 200 ของ Luau แล้ว
+local QL = {}
+-- แท็บในแผง: แนะนำ / ทำซ้ำได้ / ครั้งเดียว / บอส / ปราณ-สไตล์ / ที่เลือก (ดู QL.tabs)
+QL.tab = "แนะนำ"
+-- ติ๊กได้หลายเควส ข้าม NPC ได้ Runner.start รับรายการผสมอยู่แล้ว (ต่อคิวขั้นก่อนหน้าข้าม NPC เอง)
+-- ที่ติ๊กเก็บตามคีย์เควส สลับแท็บแล้วสร้างแถวใหม่ ติ๊กเดิมยังอยู่
 local questSelected
+QL.picks = {}
 local questRows = {}
 
--- เควสที่ติ๊กไว้ทั้งหมด เรียงตามลำดับในรายการ (เลเวลต่ำไปสูง) แต่เควสของ NPC เดียวกันเอาเลเวลสูงก่อน
+-- เควสที่ติ๊กไว้ทั้งหมด เรียงตามลำดับในรายการเกม (เลเวลต่ำไปสูง) แต่เควสของ NPC เดียวกันเอาเลเวลสูงก่อน
 -- ผู้ใช้อยากให้เคลียร์บอสก่อนเสมอ ใช้ sortLevel อย่างเดียวไม่ได้ เควสโจร 3 ตัวไม่มีเลเวล
 -- เลยได้ค่าต่ำสุดของโซน (7) เท่ากับบอส Lv 7 พอดี ผลคือโจรมาก่อนบอส ใช้เลเวลจริงก่อน แล้วค่อย Exp ตัดสิน
 local function pickedQuests()
-	local list = {}
-	for _, row in ipairs(questRows) do
-		local mine = {}
-		for i, d in ipairs(row.group) do
-			if row.picked[i] then
-				mine[#mine + 1] = d
+	local byNpc, order = {}, {}
+	for _, d in ipairs(Game.quests()) do
+		if QL.picks[d.key] then
+			local k = d.region .. "/" .. d.npc
+			if not byNpc[k] then
+				byNpc[k] = {}
+				order[#order + 1] = k
 			end
+			table.insert(byNpc[k], d)
 		end
+	end
+	local list = {}
+	for _, k in ipairs(order) do
+		local mine = byNpc[k]
 		table.sort(mine, function(a, b)
 			local la, lb = a.level or 0, b.level or 0
 			if la ~= lb then
@@ -2552,20 +2562,80 @@ local function levelText(data)
 		or (data.estimated and ("~Lv " .. data.sortLevel) or "เริ่มต้น")
 end
 
--- สถานะที่รู้ได้ก่อนกด: จบแล้ว / ยังไม่รองรับ (ไม่มีแผนเดิน) ไม่มีอะไร = กดรันได้
--- questPlan / questProgress นิยามอยู่ล่างกว่านี้ อ่านผ่าน Runner.questStatus ตอนเปิดแผง (ทุกอย่างโหลดครบแล้ว)
-local QuestInfo = {}
-function QuestInfo.badge(d)
+-- ข้อมูลตัวเราที่ใช้ตัดสินว่าเควสไหนรับได้: เลเวล เผ่า ปราณ
+-- เผ่าเก็บเป็น Human / Slayer / Demon / Hybrid (Data.Race) เกมเช็กด้วย table.find(Requirements.Race, Race)
+-- ตรงตัว (BossHunts.Eligible) Human ไม่นับเป็น Slayer
+function QL.player()
+	local slot = equippedSlot()
+	local race = slot and slot:FindFirstChild("Race")
+	local powers = slot and slot:FindFirstChild("Powers")
+	local breathing = powers and powers:FindFirstChild("Breathing")
+	return {
+		level = Game.level(),
+		race = race and race.Value or "",
+		breathing = breathing and breathing.Value ~= "" and breathing.Value or nil,
+	}
+end
+
+-- หมวดของเควส อ่านจากนิยามเกมตรง ๆ ไม่เดาจากชื่อ:
+--   power = รางวัลเป็นปราณ / Evil Art / สไตล์หมัด (Rewards.Power)
+--   boss  = Boss Hunts (Category BossHunt) หรือเควสที่งานเดียวคือ Defeat <บอส> (Zuko, Mother Bear, Kaiden, Hoyuzo)
+--   once  = เกมจดว่าจบแล้ว (LogCompletion) รับซ้ำไม่ได้
+--   loop  = ที่เหลือ รับใหม่ได้เรื่อย ๆ (ฆ่าม็อบ ส่งของ ตกปลา)
+function QL.category(d)
+	local q = d.raw or {}
+	if q.Rewards and q.Rewards.Power then
+		return "power"
+	end
+	if q.Category == "BossHunt" or (#d.tasks == 1 and d.tasks[1].name:find("^Defeat ")) then
+		return "boss"
+	end
+	if q.LogCompletion then
+		return "once"
+	end
+	return "loop"
+end
+
+-- สถานะของเควสสำหรับตัวเราตอนนี้: "ok" / "locked" / "done" + เหตุผลที่อ่านรู้เรื่อง
+function QL.state(d, me)
+	local q = d.raw or {}
+	local req = q.Requirements or {}
 	local status = Runner.questStatus(d)
 	if status == "completed" then
-		return "จบแล้ว", Theme.Good
-	elseif status == "unsupported" and d.raw and d.raw.Rewards and d.raw.Rewards.Power then
-		return "ใช้ Auto-Breathing", Theme.Warn
-	elseif status == "unsupported" then
-		return "ยังไม่รองรับ", Theme.Dim
+		return "done", "ทำจบแล้ว"
 	end
-	return nil
+	if q.Rewards and q.Rewards.Power and me.breathing and tostring(q.Rewards.Power) == me.breathing then
+		return "done", "มีปราณนี้อยู่แล้ว"
+	end
+	if req.Race then
+		local okRace = false
+		for _, r in pairs(req.Race) do
+			okRace = okRace or r == me.race
+		end
+		if not okRace then
+			local list = {}
+			for _, r in pairs(req.Race) do
+				list[#list + 1] = r
+			end
+			return "locked", "เฉพาะเผ่า " .. table.concat(list, "/") .. " (คุณเป็น " .. (me.race ~= "" and me.race or "?") .. ")"
+		end
+	end
+	if req.Level and me.level and me.level < req.Level then
+		return "locked", string.format("ต้อง Lv %d (ตอนนี้ %d)", req.Level, me.level)
+	end
+	if req.MaxLevel and me.level and me.level > req.MaxLevel then
+		return "locked", string.format("เลเวลเกิน %d แล้ว", req.MaxLevel)
+	end
+	if status == "unsupported" then
+		if q.Rewards and q.Rewards.Power then
+			return "locked", "ทำผ่านหน้า Auto-Breathing"
+		end
+		return "locked", "สคริปต์ยังทำเควสนี้ให้ไม่ได้"
+	end
+	return "ok", nil
 end
+
+local QuestInfo = {}
 
 -- รายละเอียดเควส: ต้องทำอะไร ได้อะไร ต้องจ่ายอะไรตอนรับ เงื่อนไข และทำได้กี่รอบ
 -- สร้างตอนกด ข้อมูล ครั้งแรก (83 เควส สร้างล่วงหน้าหมดเปลือง instance เป็นพัน)
@@ -2663,285 +2733,438 @@ function QuestInfo.fill(box, d)
 	end
 end
 
--- กล่องหนึ่ง = NPC หนึ่งตัว หัวกล่องชื่อ NPC + โซน แถวข้างในคือเควสแต่ละอัน กดตรงไหนของแถวก็ติ๊ก
-local function buildQuestRow(group, order)
-	local block = new("Frame", {
-		Size = UDim2.new(1, -6, 0, 0),
+-- รายการเควส ----------------------------------------------------------------------
+-- ผู้ใช้บอกว่าแบบจัดกลุ่มตาม NPC ดูยากมาก อยากเห็นว่า "อันไหนทำได้ อันไหนคุ้ม อันไหนทำแล้ว"
+-- เลยแบ่งเป็นแท็บตามชนิดเควส แล้วในแท็บแบ่งหัวข้อตามสถานะของตัวเรา
+-- รางวัลโชว์บนแถวเลย ไม่ต้องกดดู ตัวเลขมาจาก Rewards ในโมดูลเควสของเกม (ไม่ใช่ค่าประมาณ)
+
+QL.tabs = { "แนะนำ", "ทำซ้ำได้", "ครั้งเดียว", "บอส", "ปราณ/สไตล์", "ที่เลือก" }
+
+function QL.reward(d)
+	local r = d.raw and d.raw.Rewards or {}
+	return r.Exp or 0, r.Wen or 0
+end
+
+-- ป้ายเล็กชิดขวาของแถว
+function QL.tag(parent, text, color, order, bg)
+	return new("TextLabel", {
+		Size = UDim2.fromOffset(0, 20),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundColor3 = bg or Theme.Raised,
+		BackgroundTransparency = bg == false and 1 or 0,
+		Text = text,
+		TextColor3 = color,
+		TextSize = 11,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		LayoutOrder = order,
+		Parent = parent,
+	}, { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 7), PaddingRight = UDim.new(0, 7) }) })
+end
+
+-- แถวเควสหนึ่งแถว: ช่องติ๊ก ชื่องาน · NPC · โซน · รางวัล · เลเวล · ปุ่มข้อมูล
+-- state ไม่ใช่ ok = ติ๊กไม่ได้ บรรทัดที่สามบอกเหตุผล (เลเวลไม่ถึง เผ่าไม่ตรง ทำแล้ว)
+function QL.item(parent, d, order, state, reason)
+	local ok = state == "ok"
+	local wrap = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundColor3 = Theme.Row,
 		BorderSizePixel = 0,
 		LayoutOrder = order,
-		Parent = questUI.list,
-	}, {
-		corner(9),
-		stroke(Theme.Stroke, 1),
-		new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
-		new("UIPadding", { PaddingBottom = UDim.new(0, 4) }),
-	})
+		Parent = parent,
+	}, { corner(8), stroke(Theme.Stroke, 1), new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }) })
 
-	local head = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 30),
+	local prereq = Runner.Prereqs[d.key]
+	local note = reason
+	if ok and prereq then
+		local names = {}
+		for _, c in ipairs(prereq) do
+			names[#names + 1] = c.quest or c.via or "?"
+		end
+		note = "จะทำให้ก่อน: " .. table.concat(names, ", ")
+	end
+
+	local item = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, note and 60 or 46),
+		BackgroundColor3 = Theme.Accent,
 		BackgroundTransparency = 1,
-		LayoutOrder = 0,
-		Parent = block,
-	})
+		AutoButtonColor = false,
+		Text = "",
+		LayoutOrder = 1,
+		Parent = wrap,
+	}, { corner(8) })
+	local tickFill, tickStroke = tickBox(item)
+	if not ok then
+		tickStroke.Color = Theme.Stroke
+		tickStroke.Transparency = 0.5
+	end
+
 	new("TextLabel", {
-		Position = UDim2.fromOffset(12, 8),
-		Size = UDim2.new(1, -24, 0, 16),
+		Position = UDim2.fromOffset(40, 6),
+		Size = UDim2.new(1, -330, 0, 17),
 		BackgroundTransparency = 1,
-		RichText = true,
-		Text = string.format('%s  <font color="#787b8c">· %s</font>', group[1].npc, group[1].region),
-		TextColor3 = Theme.Text,
+		Text = d.title,
+		TextColor3 = ok and Theme.Text or Theme.Muted,
 		TextSize = 13,
 		FontFace = font(Enum.FontWeight.SemiBold),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Parent = head,
+		Parent = item,
 	})
-
-	local row = { frame = block, group = group, picked = {}, items = {} }
-
-	for i, d in ipairs(group) do
-		local item = new("TextButton", {
-			Size = UDim2.new(1, 0, 0, 40),
-			BackgroundColor3 = Theme.Raised,
-			BackgroundTransparency = 1,
-			AutoButtonColor = false,
-			Text = "",
-			LayoutOrder = i * 2,
-			Parent = block,
-		})
-		-- พื้นหลังไฮไลต์เยื้องจากขอบกล่อง ไม่งั้นมุมเหลี่ยมทับมุมโค้งของกล่อง
-		local bg = new("Frame", {
-			Position = UDim2.fromOffset(6, 2),
-			Size = UDim2.new(1, -12, 1, -4),
-			BackgroundColor3 = Theme.Accent,
-			BackgroundTransparency = 1,
-			BorderSizePixel = 0,
-			Parent = item,
-		}, { corner(7) })
-		local tickFill, tickStroke = tickBox(item)
-
+	new("TextLabel", {
+		Position = UDim2.fromOffset(40, 24),
+		Size = UDim2.new(1, -330, 0, 14),
+		BackgroundTransparency = 1,
+		Text = d.npc .. "  ·  " .. d.region,
+		TextColor3 = Theme.Dim,
+		TextSize = 11,
+		FontFace = font(Enum.FontWeight.Regular),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = item,
+	})
+	if note then
 		new("TextLabel", {
-			Position = UDim2.fromOffset(38, 5),
-			Size = UDim2.new(1, -240, 0, 16),
+			Position = UDim2.fromOffset(40, 40),
+			Size = UDim2.new(1, -52, 0, 14),
 			BackgroundTransparency = 1,
-			Text = d.quest,
-			TextColor3 = Theme.Text,
-			TextSize = 13,
+			Text = (state == "done" and "✓ " or (ok and "› " or "🔒 ")) .. note,
+			TextColor3 = state == "done" and Theme.Good or (ok and Theme.Muted or Theme.Warn),
+			TextSize = 11,
 			FontFace = font(Enum.FontWeight.Medium),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Parent = item,
 		})
+	end
+
+	-- รางวัล + เลเวล + ปุ่มข้อมูล ชิดขวาแถวบน
+	local tags = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -10, 0, 12),
+		Size = UDim2.fromOffset(0, 20),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1,
+		Parent = item,
+	}, { new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		Padding = UDim.new(0, 4),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}) })
+	local exp, wen = QL.reward(d)
+	local power = d.raw and d.raw.Rewards and d.raw.Rewards.Power
+	if type(power) == "string" then
+		QL.tag(tags, power, Theme.Accent2, 1)
+	end
+	if exp > 0 then
+		QL.tag(tags, "+" .. comma(exp) .. " EXP", Theme.Accent, 2)
+	end
+	if wen > 0 then
+		QL.tag(tags, "+" .. comma(wen) .. " Wen", Theme.Warn, 3)
+	end
+	QL.tag(tags, levelText(d), Theme.Muted, 4, false)
+	local infoBtn = new("TextButton", {
+		Size = UDim2.fromOffset(0, 20),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundColor3 = Theme.Raised,
+		AutoButtonColor = false,
+		Text = "ข้อมูล +",
+		TextColor3 = Theme.Muted,
+		TextSize = 11,
+		FontFace = font(Enum.FontWeight.Medium),
+		LayoutOrder = 5,
+		ZIndex = 2,
+		Parent = tags,
+	}, {
+		corner(6),
+		stroke(Theme.Stroke, 1),
+		new("UIPadding", { PaddingLeft = UDim.new(0, 7), PaddingRight = UDim.new(0, 7) }),
+	})
+
+	local detail
+	local function toggleInfo()
+		if not detail then
+			detail = Detail.box(wrap, 2)
+		end
+		local open = not detail.frame.Visible
+		if open then
+			QuestInfo.fill(detail, d)
+		end
+		detail.frame.Visible = open
+		infoBtn.Text = open and "ข้อมูล –" or "ข้อมูล +"
+		infoBtn.TextColor3 = open and Theme.Accent or Theme.Muted
+	end
+	track(infoBtn.MouseButton1Click:Connect(toggleInfo))
+
+	local function paint()
+		local on = QL.picks[d.key] == true
+		tween(tickFill, { BackgroundTransparency = on and 0 or 1 }, FAST)
+		if ok then
+			tickStroke.Color = on and Theme.Accent or Theme.Muted
+		end
+		wrap:FindFirstChildOfClass("UIStroke").Color = on and Theme.Accent or Theme.Stroke
+		tween(item, { BackgroundTransparency = on and 0.9 or 1 }, FAST)
+	end
+	paint()
+
+	track(item.MouseButton1Click:Connect(function()
+		-- ทำไม่ได้ติ๊กไม่ได้ กดแล้วเปิดข้อมูลแทน จะได้เห็นว่าติดอะไร
+		if not ok then
+			toggleInfo()
+			return
+		end
+		-- เปลี่ยนตัวเลือกระหว่างที่กำลังรันไม่ได้ Runner ถือรายการของรอบนี้อยู่
+		if Runner.active then
+			return
+		end
+		QL.picks[d.key] = not QL.picks[d.key] or nil
+		paint()
+		questsChanged()
+	end))
+
+	local row = {
+		frame = wrap,
+		data = d,
+		haystack = table.concat({ d.title, d.quest, d.npc, d.region }, " "):lower(),
+	}
+	questRows[#questRows + 1] = row
+	return row
+end
+
+-- หัวข้อในแท็บ: ชื่อ + จำนวน กดพับ/กางได้ หัวข้อ "ทำแล้ว" พับไว้ตั้งแต่แรก
+function QL.section(title, hint, color, rows, order, collapsed)
+	local box = new("Frame", {
+		Size = UDim2.new(1, -6, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = order,
+		Parent = questUI.list,
+	}, { new("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder }) })
+	local head = new("TextButton", {
+		Size = UDim2.new(1, 0, 0, hint and 36 or 24),
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		Text = "",
+		LayoutOrder = 0,
+		Parent = box,
+	})
+	local titleLabel = new("TextLabel", {
+		Position = UDim2.fromOffset(2, 2),
+		Size = UDim2.new(1, -4, 0, 18),
+		BackgroundTransparency = 1,
+		TextColor3 = color,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.Bold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = head,
+	})
+	if hint then
 		new("TextLabel", {
-			Position = UDim2.fromOffset(38, 22),
-			Size = UDim2.new(1, -240, 0, 14),
+			Position = UDim2.fromOffset(2, 20),
+			Size = UDim2.new(1, -4, 0, 14),
 			BackgroundTransparency = 1,
-			Text = d.title,
+			Text = hint,
 			TextColor3 = Theme.Dim,
 			TextSize = 11,
 			FontFace = font(Enum.FontWeight.Regular),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextTruncate = Enum.TextTruncate.AtEnd,
-			Parent = item,
+			Parent = head,
 		})
-
-		-- ป้ายเลเวล + สถานะชิดขวา
-		local tags = new("Frame", {
-			AnchorPoint = Vector2.new(1, 0.5),
-			Position = UDim2.new(1, -14, 0.5, 0),
-			Size = UDim2.fromOffset(0, 20),
-			AutomaticSize = Enum.AutomaticSize.X,
-			BackgroundTransparency = 1,
-			Parent = item,
-		}, { new("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
-			HorizontalAlignment = Enum.HorizontalAlignment.Right,
-			VerticalAlignment = Enum.VerticalAlignment.Center,
-			Padding = UDim.new(0, 6),
-			SortOrder = Enum.SortOrder.LayoutOrder,
-		}) })
-		local badgeText, badgeColor = QuestInfo.badge(d)
-		if badgeText then
-			new("TextLabel", {
-				Size = UDim2.fromOffset(0, 20),
-				AutomaticSize = Enum.AutomaticSize.X,
-				BackgroundTransparency = 1,
-				Text = badgeText,
-				TextColor3 = badgeColor,
-				TextSize = 11,
-				FontFace = font(Enum.FontWeight.Medium),
-				LayoutOrder = 1,
-				Parent = tags,
-			})
-		end
-		new("TextLabel", {
-			Size = UDim2.fromOffset(0, 20),
-			AutomaticSize = Enum.AutomaticSize.X,
-			BackgroundColor3 = Theme.Raised,
-			Text = levelText(d),
-			TextColor3 = d.level and Theme.Accent or Theme.Warn,
-			TextSize = 11,
-			FontFace = font(Enum.FontWeight.SemiBold),
-			LayoutOrder = 2,
-			Parent = tags,
-		}, { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
-
-		-- ปุ่ม ข้อมูล: กางรายละเอียดใต้แถว แยกจากการติ๊ก (กดแถว = ติ๊ก, กดปุ่มนี้ = ดูข้อมูล)
-		local detail
-		local infoBtn = new("TextButton", {
-			Size = UDim2.fromOffset(0, 20),
-			AutomaticSize = Enum.AutomaticSize.X,
-			BackgroundColor3 = Theme.Raised,
-			AutoButtonColor = false,
-			Text = "ข้อมูล ▾",
-			TextColor3 = Theme.Muted,
-			TextSize = 11,
-			FontFace = font(Enum.FontWeight.Medium),
-			LayoutOrder = 3,
-			ZIndex = 2,
-			Parent = tags,
-		}, {
-			corner(6),
-			stroke(Theme.Stroke, 1),
-			new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
-		})
-		track(infoBtn.MouseButton1Click:Connect(function()
-			if not detail then
-				detail = Detail.box(block, i * 2 + 1)
-			end
-			local open = not detail.frame.Visible
-			if open then
-				QuestInfo.fill(detail, d)
-			end
-			detail.frame.Visible = open
-			infoBtn.Text = open and "ข้อมูล ▴" or "ข้อมูล ▾"
-			infoBtn.TextColor3 = open and Theme.Accent or Theme.Muted
-		end))
-
-		local function paint()
-			local on = row.picked[i] == true
-			tween(tickFill, { BackgroundTransparency = on and 0 or 1 }, FAST)
-			tickStroke.Color = on and Theme.Accent or Theme.Muted
-			tween(bg, { BackgroundTransparency = on and 0.85 or 1 }, FAST)
-		end
-
-		track(item.MouseButton1Click:Connect(function()
-			-- เปลี่ยนตัวเลือกระหว่างที่กำลังรันไม่ได้ Runner ถือรายการของรอบนี้อยู่
-			if Runner.active then
-				return
-			end
-			row.picked[i] = not row.picked[i] or nil
-			paint()
-			questsChanged()
-		end))
-		track(item.MouseEnter:Connect(function()
-			if not row.picked[i] then
-				tween(bg, { BackgroundTransparency = 0.94 }, FAST)
-			end
-		end))
-		track(item.MouseLeave:Connect(function()
-			if not row.picked[i] then
-				tween(bg, { BackgroundTransparency = 1 }, FAST)
-			end
-		end))
-
-		row.items[i] = { frame = item, paint = paint }
 	end
-
-	return row
+	local body = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = 1,
+		Visible = not collapsed,
+		Parent = box,
+	}, { new("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder }) })
+	local function paintTitle()
+		-- ▾ ▸ ↳ ไม่มีในฟอนต์ Gotham ขึ้นเป็นกล่องสี่เหลี่ยม ใช้ – + › ที่แสดงได้แทน
+		titleLabel.Text = string.format("%s %s  ·  %d", body.Visible and "–" or "+", title, #rows)
+	end
+	paintTitle()
+	track(head.MouseButton1Click:Connect(function()
+		body.Visible = not body.Visible
+		paintTitle()
+	end))
+	if #rows == 0 then
+		new("TextLabel", {
+			Size = UDim2.new(1, 0, 0, 22),
+			BackgroundTransparency = 1,
+			Text = "ไม่มี",
+			TextColor3 = Theme.Dim,
+			TextSize = 11,
+			FontFace = font(Enum.FontWeight.Regular),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Parent = body,
+		}, { new("UIPadding", { PaddingLeft = UDim.new(0, 18) }) })
+	end
+	for i, e in ipairs(rows) do
+		QL.item(body, e.d, i, e.state, e.reason)
+	end
+	return box
 end
 
 -- ล้างที่ติ๊กทั้งหมด (ปุ่ม ล้าง ท้ายแผง)
+local rebuildQuests
 local function clearQuestPicks()
 	if Runner.active then
 		return
 	end
-	for _, r in ipairs(questRows) do
-		table.clear(r.picked)
-		for _, it in ipairs(r.items) do
-			it.paint()
-		end
-	end
+	table.clear(QL.picks)
 	questsChanged()
+	rebuildQuests()
 end
 
 function applyQuestFilter()
 	local query = questUI.search.Text:lower()
 	local shown = 0
 	for _, r in ipairs(questRows) do
-		local any = false
-		for i, d in ipairs(r.group) do
-			local okKind = questFilter == "ทั้งหมด"
-				or (questFilter == "ที่เลือก" and r.picked[i] == true)
-				or d.kind == questFilter
-			local okText = query == ""
-				or d.npc:lower():find(query, 1, true) ~= nil
-				or d.title:lower():find(query, 1, true) ~= nil
-				or d.quest:lower():find(query, 1, true) ~= nil
-				or d.region:lower():find(query, 1, true) ~= nil
-			local visible = okKind and okText
-			r.items[i].frame.Visible = visible
-			if visible then
-				any = true
-				shown += 1
-			end
+		local visible = query == "" or r.haystack:find(query, 1, true) ~= nil
+		r.frame.Visible = visible
+		if visible then
+			shown += 1
 		end
-		r.frame.Visible = any
 	end
 	if not questSelected then
-		questUI.setStatus(string.format("แสดง %d เควส · กดที่เควสเพื่อติ๊ก เลือกได้หลายอัน", shown), Theme.Muted)
+		questUI.setStatus(string.format("แท็บ %s · แสดง %d เควส · กดที่เควสเพื่อติ๊ก เลือกได้หลายอัน", QL.tab, shown),
+			Theme.Muted)
 	end
 end
 
--- จับกลุ่มตาม NPC ที่ให้เควสจากการคุยเท่านั้น
--- Boss Hunts (30 เควส) กับ Evil Art Cores (9) ไม่มีคนให้ ถ้ารวมจะได้ชิปยาวเป็นพืด
--- ลำดับกลุ่มยึดเควสที่เลเวลต่ำสุดของ NPC นั้น (Game.quests เรียงมาแล้ว)
-local function questGroups()
-	local groups, byNpc = {}, {}
+-- จัดเควสทั้งเกมเข้าแท็บที่เลือก แล้วสร้างหัวข้อตามสถานะ
+function rebuildQuests()
+	for _, c in ipairs(questUI.list:GetChildren()) do
+		if c:IsA("GuiObject") then
+			c:Destroy()
+		end
+	end
+	table.clear(questRows)
+
+	local me = QL.player()
+	local buckets = { ok = {}, locked = {}, done = {} }
+	local all = {}
 	for _, d in ipairs(Game.quests()) do
-		local key = d.offerNpc and (d.region .. "/" .. d.offerNpc)
-		if key and byNpc[key] then
-			table.insert(byNpc[key], d)
-		else
-			local g = { d }
-			groups[#groups + 1] = g
-			if key then
-				byNpc[key] = g
+		local state, reason = QL.state(d, me)
+		local e = { d = d, state = state, reason = reason, cat = QL.category(d) }
+		all[#all + 1] = e
+	end
+	local function byExp(a, b)
+		local ea, eb = QL.reward(a.d), QL.reward(b.d)
+		if ea ~= eb then
+			return ea > eb
+		end
+		return a.d.sortLevel < b.d.sortLevel
+	end
+	local function pick(filter)
+		local out = { ok = {}, locked = {}, done = {} }
+		for _, e in ipairs(all) do
+			if filter(e) then
+				table.insert(out[e.state], e)
 			end
 		end
+		table.sort(out.ok, byExp)
+		return out
 	end
-	return groups
-end
+	local lv = me.level and ("Lv " .. me.level) or "เลเวลของคุณ"
 
-local function rebuildQuests()
-	if #questRows > 0 then
-		applyQuestFilter()
-		return
-	end
-	for i, group in ipairs(questGroups()) do
-		questRows[#questRows + 1] = buildQuestRow(group, i)
-	end
-	local npcs = {}
-	local count = 0
-	for _, d in ipairs(Game.quests()) do
-		if not npcs[d.npc] then
-			npcs[d.npc] = true
-			count += 1
+	if QL.tab == "แนะนำ" then
+		-- ทำได้ตอนนี้ เรียง EXP ต่อรอบมากไปน้อย: ทำซ้ำได้ (ฟาร์มยาว) กับครั้งเดียว (EXP ก้อน) แยกกัน
+		local loop = pick(function(e)
+			return e.cat == "loop" or (e.cat == "boss" and not (e.d.raw and e.d.raw.Category == "BossHunt"))
+		end)
+		local once = pick(function(e)
+			return e.cat == "once"
+		end)
+		local top = {}
+		for i = 1, math.min(8, #loop.ok) do
+			top[i] = loop.ok[i]
 		end
+		QL.section("ฟาร์มซ้ำ คุ้มสุดสำหรับ " .. lv, "เรียงตาม EXP ต่อรอบ มากไปน้อย · ทำซ้ำได้เรื่อย ๆ", Theme.Good, top, 1)
+		QL.section("ครั้งเดียว ยังไม่ได้ทำ", "EXP ก้อนใหญ่ ทำจบแล้วรับซ้ำไม่ได้", Theme.Accent, once.ok, 2)
+	elseif QL.tab == "ทำซ้ำได้" then
+		local b = pick(function(e)
+			return e.cat == "loop"
+		end)
+		QL.section("ทำได้ตอนนี้", "ทำซ้ำได้ไม่จำกัด พักระหว่างเควส " .. Runner.questCD() .. " วิ · เรียง EXP มากไปน้อย",
+			Theme.Good, b.ok, 1)
+		QL.section("ยังทำไม่ได้", "เลเวลไม่ถึง / เผ่าไม่ตรง / สคริปต์ยังไม่รองรับ", Theme.Warn, b.locked, 2)
+	elseif QL.tab == "ครั้งเดียว" then
+		local b = pick(function(e)
+			return e.cat == "once"
+		end)
+		QL.section("ยังไม่ได้ทำ", "ทำได้รอบเดียว เกมจดว่าจบแล้ว", Theme.Good, b.ok, 1)
+		QL.section("ยังทำไม่ได้", nil, Theme.Warn, b.locked, 2)
+		QL.section("ทำแล้ว", nil, Theme.Dim, b.done, 3, true)
+	elseif QL.tab == "บอส" then
+		local npc = pick(function(e)
+			return e.cat == "boss" and not (e.d.raw and e.d.raw.Category == "BossHunt")
+		end)
+		local hunts = pick(function(e)
+			return e.d.raw and e.d.raw.Category == "BossHunt"
+		end)
+		QL.section("บอสจาก NPC", "รับจาก NPC แล้วไปล้มบอส ทำซ้ำได้", Theme.Good, npc.ok, 1)
+		QL.section("บอสจาก NPC · ยังทำไม่ได้", nil, Theme.Warn, npc.locked, 2)
+		QL.section("Boss Hunts (ทำได้)", "ล่าบอสจำกัดเวลา 30 นาที · เกมส่งให้ตามเผ่า Slayer/Demon/Hybrid",
+			Theme.Good, hunts.ok, 3)
+		QL.section("Boss Hunts · ยังทำไม่ได้", nil, Theme.Warn, hunts.locked, 4, true)
+	elseif QL.tab == "ปราณ/สไตล์" then
+		-- ปราณที่ใช้อยู่ขึ้นก่อน: เควสเรียนปราณนั้น + Boss Hunt ของ Trainee ปราณเดียวกัน
+		local mine = me.breathing and me.breathing:lower()
+		local function isMine(e)
+			if not mine then
+				return false
+			end
+			local power = e.d.raw and e.d.raw.Rewards and e.d.raw.Rewards.Power
+			return (type(power) == "string" and power:lower() == mine)
+				or (e.d.raw and e.d.raw.Category == "BossHunt" and e.d.title:lower():find(mine, 1, true) ~= nil)
+		end
+		local own = {}
+		for _, e in ipairs(all) do
+			if isMine(e) then
+				own[#own + 1] = e
+			end
+		end
+		local rest = pick(function(e)
+			return e.cat == "power" and not isMine(e)
+		end)
+		QL.section("ปราณของคุณ: " .. (me.breathing or "ยังไม่มี"),
+			"เรียนปราณผ่านหน้า Auto-Breathing (มีมินิเกมฝึก) · Boss Hunt ของ Trainee ปราณเดียวกัน", Theme.Accent2, own, 1)
+		local others = {}
+		for _, e in ipairs(rest.ok) do
+			others[#others + 1] = e
+		end
+		for _, e in ipairs(rest.locked) do
+			others[#others + 1] = e
+		end
+		QL.section("ปราณ / Evil Art / สไตล์หมัด อื่น ๆ", nil, Theme.Muted, others, 2)
+		QL.section("ได้แล้ว", nil, Theme.Dim, rest.done, 3, true)
+	else
+		local sel = {}
+		for _, d in ipairs(pickedQuests()) do
+			local state, reason = QL.state(d, me)
+			sel[#sel + 1] = { d = d, state = state, reason = reason }
+		end
+		QL.section("ที่เลือกไว้ (ลำดับที่จะทำ)", "กด START ทำตามลำดับนี้ วนซ้ำเควสที่ทำซ้ำได้", Theme.Accent, sel, 1)
 	end
+
 	questUI.subtitle.Text = string.format(
-		'<font color="#8f8f9e">NPC</font> %d   <font color="#8f8f9e">เควส</font> %d',
-		count,
+		'<font color="#8f8f9e">เลเวล</font> %s   <font color="#8f8f9e">เผ่า</font> %s   <font color="#8f8f9e">ปราณ</font> %s   <font color="#8f8f9e">เควส</font> %d',
+		me.level and tostring(me.level) or "?",
+		me.race ~= "" and me.race or "?",
+		me.breathing or "-",
 		#Game.quests()
 	)
 	applyQuestFilter()
 end
 
-addPills(questUI.filterRow, { "ทั้งหมด", "ที่เลือก", "เควส NPC", "บอส", "ฝึกวิชา" }, function(name)
-	questFilter = name
-	applyQuestFilter()
+addPills(questUI.filterRow, QL.tabs, function(name)
+	QL.tab = name
+	rebuildQuests()
 end)
 
 track(questUI.search:GetPropertyChangedSignal("Text"):Connect(applyQuestFilter))
