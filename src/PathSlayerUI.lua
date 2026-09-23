@@ -44,9 +44,9 @@ local RarityColor = {
 
 local Config = {
 	-- แผงรายการ (ร้าน/เควส) กินพื้นที่ content ทั้งหมด ต่ำกว่า ~500 กว้างแล้วแถวของสวมใส่ล้น
-	Width = 720,
-	Height = 500,
-	SidebarW = 172,
+	Width = 760,
+	Height = 540,
+	SidebarW = 186,
 	TitleH = 54,
 	-- ปุ่มหมวดสองบรรทัด (ชื่อ + ของในหมวด)
 	TabH = 46,
@@ -1160,10 +1160,20 @@ local function selectTab(tab)
 	end
 end
 
-local function addTab(name, sub)
+-- icon = อีโมจิหน้าชื่อหมวด Roblox วาดอีโมจิสีได้เอง ไม่ต้องพึ่งรูปใน asset
+local function addTab(name, sub, icon)
+	local iconBox = new("TextLabel", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 12, 0.5, 0),
+		Size = UDim2.fromOffset(30, 30),
+		BackgroundColor3 = Theme.Base,
+		Text = icon or "",
+		TextSize = 15,
+		FontFace = font(Enum.FontWeight.Regular),
+	}, { corner(8) })
 	local label = new("TextLabel", {
-		Position = UDim2.fromOffset(14, 7),
-		Size = UDim2.new(1, -14, 0, 16),
+		Position = UDim2.fromOffset(52, 7),
+		Size = UDim2.new(1, -56, 0, 16),
 		BackgroundTransparency = 1,
 		Text = name,
 		TextColor3 = Theme.Muted,
@@ -1172,8 +1182,8 @@ local function addTab(name, sub)
 		TextXAlignment = Enum.TextXAlignment.Left,
 	})
 	local subLabel = new("TextLabel", {
-		Position = UDim2.fromOffset(14, 24),
-		Size = UDim2.new(1, -14, 0, 13),
+		Position = UDim2.fromOffset(52, 24),
+		Size = UDim2.new(1, -56, 0, 13),
 		BackgroundTransparency = 1,
 		Text = sub or "",
 		TextColor3 = Theme.Dim,
@@ -1192,7 +1202,7 @@ local function addTab(name, sub)
 		Text = "",
 		LayoutOrder = #tabs + 1,
 		Parent = sidebar,
-	}, { corner(9), label, subLabel })
+	}, { corner(9), iconBox, label, subLabel })
 
 	local page = new("CanvasGroup", {
 		Name = name .. "Page",
@@ -1237,8 +1247,8 @@ end
 -- ตอนนี้: หมวด (แถบซ้าย) > หัวข้อ > การ์ดต่อหนึ่งฟีเจอร์ ตัวเลือกย่อยอยู่ในการ์ดของมันเอง
 local Pages = {}
 do
-	local function makePage(key, name, sub)
-		local tab = addTab(name, sub)
+	local function makePage(key, name, sub, icon)
+		local tab = addTab(name, sub, icon)
 		local scroll = new("ScrollingFrame", {
 			Size = UDim2.new(1, 0, 1, 0),
 			BackgroundTransparency = 1,
@@ -1258,10 +1268,10 @@ do
 		return Pages[key]
 	end
 
-	makePage("combat", "ต่อสู้", "โจมตี · สกิล · หลบ")
-	makePage("quest", "เควส", "เควส · ฝึกปราณ")
-	makePage("items", "ไอเทม", "อาวุธ · หีบ · ของดรอป")
-	makePage("settings", "ตั้งค่า", "Discord · ปุ่มลัด")
+	makePage("combat", "ต่อสู้", "โจมตี · สกิล · หลบ", "⚔️")
+	makePage("quest", "เควส", "เควส · ฝึกปราณ", "📜")
+	makePage("items", "ไอเทม", "อาวุธ · หีบ · ของดรอป", "🎒")
+	makePage("settings", "ตั้งค่า", "Discord · ปุ่มลัด", "⚙️")
 
 	-- ลำดับหัวข้อในแต่ละหมวดตามลำดับในตารางนี้ ไม่ใช่ตามลำดับที่โค้ดฟีเจอร์สร้างแถว
 	local Sections = {
@@ -2547,6 +2557,8 @@ function QuestInfo.badge(d)
 	local status = Runner.questStatus(d)
 	if status == "completed" then
 		return "จบแล้ว", Theme.Good
+	elseif status == "unsupported" and d.raw and d.raw.Rewards and d.raw.Rewards.Power then
+		return "ใช้ Auto-Breathing", Theme.Warn
 	elseif status == "unsupported" then
 		return "ยังไม่รองรับ", Theme.Dim
 	end
@@ -2636,6 +2648,9 @@ function QuestInfo.fill(box, d)
 	local status = Runner.questStatus(d)
 	if status == "completed" then
 		times[#times + 1] = { "จบไปแล้ว", Theme.Good }
+	elseif status == "unsupported" and rewards.Power then
+		-- เควสปราณมีมินิเกมฝึก ตัวรันของ Auto-Quest ไม่รู้จัก แต่แผง Auto-Breathing ทำให้ได้
+		times[#times + 1] = { "ทำผ่านหน้า Auto-Breathing แทน", Theme.Warn }
 	elseif status == "unsupported" then
 		times[#times + 1] = { "สคริปต์ยังทำเควสนี้ให้ไม่ได้", Theme.Danger }
 	end
