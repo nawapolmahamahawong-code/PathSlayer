@@ -459,6 +459,106 @@ function Game.noSourceText(itemName, own)
 	return own and "ยังไม่รู้แหล่งได้" or ("ยังไม่รู้แหล่งได้ " .. itemName)
 end
 
+-- ร้านทุกเจ้าในเกม อ่านจาก ReplicatedStorage.Regions (ตัวเดียวกับที่ดัชนี "ได้จากไหน" ของเกมใช้)
+-- ชื่อ NPC -> โซน ร้านหมุนเวียนไหม (สุ่มกี่ชิ้นจากกี่ชิ้น) เฉพาะกลางคืนไหม ต้องจบเควสอะไรก่อน
+function Game.sellers()
+	if Game.sellerCache then
+		return Game.sellerCache
+	end
+	local sellerCache = {}
+	Game.sellerCache = sellerCache
+	local ok, Regions = pcall(require, ReplicatedStorage.Regions)
+	for regionName, region in pairs(ok and Regions.Regions or {}) do
+		for _, npc in ipairs(region.Npcs or {}) do
+			if type(npc.Name) == "string" and (npc.Shop or npc.RotatingShop or npc.TimedVendor) then
+				local rs, tv = npc.RotatingShop, npc.TimedVendor
+				-- ราคาในร้านหมุนเวียน/ตลาดมืด: Price ใน Pool ก่อน ไม่มีค่อยใช้ Price ของโมดูลไอเทม
+				-- (RotatingShop.RegisterStock -> Shop.RegisterItem) ร้านประจำใช้ราคาใน Shop.itemsforsale
+				local prices = {}
+				for _, list in ipairs({ rs and rs.Pool, tv and tv.Stock, tv and tv.Always }) do
+					for _, e in ipairs(list or {}) do
+						if type(e) == "table" and e.Name and e.Price then
+							prices[e.Name] = e.Price
+						end
+					end
+				end
+				sellerCache[npc.Name] = {
+					prices = prices,
+					region = regionName,
+					night = npc.NightOnly == true,
+					quest = npc.RequiresQuestDone or (rs and rs.RequiresQuestDone),
+					rotating = rs and { pool = #(rs.Pool or {}), slots = rs.SlotCount } or nil,
+					-- Black Marketer: โผล่ในเมืองครั้งละ ActiveFor วิ ของสุ่มจาก Stock ตามความหายาก
+					timed = tv and { minutes = math.floor((tv.ActiveFor or 0) / 60) } or nil,
+				}
+			end
+		end
+	end
+	return sellerCache
+end
+
+-- โซนของม็อบ/บอส (ตามโฟลเดอร์ ActiveNpcs ที่มันเกิด) ค้นจากรหัส NpcCode หรือชื่อ
+function Game.mobRegion(codeOrName)
+	for _, m in ipairs(Game.mobs()) do
+		if m.code == codeOrName or m.name == codeOrName or m.key == codeOrName then
+			return m.region
+		end
+	end
+	return nil
+end
+
+-- ม็อบที่ดรอปหีบแบบนี้ (NpcDataTable.Chest / ExtraChests) เรียงเลือดน้อยก่อน = ฟาร์มง่ายก่อน
+function Game.chestDroppers(chestId)
+	local list = {}
+	for code, npc in pairs(lootTables().npc) do
+		if type(npc) == "table" then
+			local drops = npc.Chest == chestId
+			for _, extra in ipairs(npc.ExtraChests or {}) do
+				drops = drops or extra == chestId
+			end
+			if drops then
+				list[#list + 1] = {
+					name = npc.Name or code,
+					code = code,
+					hp = npc.Stats and npc.Stats.MaxHealth,
+					night = npc.OnlyAtNight == true,
+				}
+			end
+		end
+	end
+	table.sort(list, function(a, b)
+		return (a.hp or math.huge) < (b.hp or math.huge)
+	end)
+	return list
+end
+
+-- แหล่งได้ทุกทางของไอเทมชิ้นนี้ จากดัชนีของเกมเอง (CAM.Client.Modules.ItemSources)
+-- คืน { { kind = "shop"|"drop"|"chest"|"craft"|"quest"|"fish", where, chance }, ... }
+-- ดัชนีว่าง = ในเกมไม่มีทางได้เลยตอนนี้ (Paper Bag, Ninja Scroll ฯลฯ ไม่มีร้าน ดรอป หรือสูตร)
+function Game.itemSources(itemName)
+	local ok, ItemSources = pcall(require, ReplicatedStorage.CAM.Client.Modules.ItemSources)
+	local out = {}
+	for _, e in ipairs(ok and ItemSources.Get(itemName) or {}) do
+		local where = e.Where
+		local kind, name
+		if where:match("^Sold by ") then
+			kind, name = "shop", where:match("^Sold by (.+)")
+		elseif where:match("^Quest: ") then
+			kind, name = "quest", where:match("^Quest: (.+)")
+		elseif where:match("^Crafted at ") then
+			kind, name = "craft", where:match("^Crafted at (.+)")
+		elseif where == "Fished up" then
+			kind, name = "fish", where
+		elseif lootTables().chests[where] then
+			kind, name = "chest", where
+		else
+			kind, name = "drop", where
+		end
+		out[#out + 1] = { kind = kind, where = name, chance = e.Chance }
+	end
+	return out
+end
+
 -- วัตถุดิบทั้งสูตร เรียง: ของหลัก (อาจต้องตีต่ออีกชั้น) > วัตถุดิบเสริม > แบบพิมพ์ > เงิน
 -- เงินไว้ท้ายสุดเพราะการซื้อวัตถุดิบข้างหน้ากิน Wen ก้อนเดียวกัน เช็กก่อนจะผ่านแล้วมาขาดทีหลัง
 -- keep = แบบพิมพ์ต้องถือไว้แต่ตีแล้วไม่หาย (Crafting.keep เช่น Firstlight Katana Schematic)
@@ -617,6 +717,8 @@ function Game.listings()
 			group = item.group,
 			rarity = def.Rarity or 1,
 			icon = def.Icon,
+			-- นิยามดิบ ใช้โชว์สเตตัส คำอธิบาย ราคาหน้าร้านหมุนเวียน ในกล่องข้อมูล
+			def = def,
 			mastery = def.Mastery,
 			cost = {},
 			locked = false,
@@ -1366,9 +1468,12 @@ local Layout = {
 	feature = {
 		["Auto-Attack-Mob"] = { page = "combat", section = "attack", card = "attackMob", child = 1,
 			title = "เลือกม็อบ", help = "ติ๊กชื่อม็อบที่จะให้ตี" },
-		["Auto-Quest"] = { page = "quest", section = "quest", card = "quest", order = 1 },
-		["Auto-Breathing"] = { page = "quest", section = "quest", card = "breath", order = 2 },
-		["Get Weapons"] = { page = "items", section = "gear", card = "shop", order = 1 },
+		["Auto-Quest"] = { page = "quest", section = "quest", card = "quest", order = 1,
+			help = "แท็บ แนะนำ / ทำซ้ำได้ / ครั้งเดียว / บอส / ปราณ · ติ๊กได้หลายเควส บอกรางวัลทุกอัน" },
+		["Get Weapons"] = { page = "items", section = "gear", card = "shop", order = 1,
+			help = "อาวุธและของสวมใส่ทุกชิ้น · ร้าน / ดรอป / หีบ / คราฟต์ พร้อมแหล่งได้ทุกทาง" },
+		["Auto-Breathing"] = { page = "quest", section = "quest", card = "breath", order = 2,
+			help = "เลือกปราณ ดูของที่ขาดและวิธีหา แล้วสคริปต์ทำเควสฝึกให้จนได้" },
 	},
 }
 
@@ -1765,8 +1870,8 @@ end
 -- ประกาศไว้ก่อนแผงพวกนี้ ไม่งั้นโค้ดแผงอ้างถึงแล้วได้ global ว่าง ๆ
 local Runner
 
-local shopUI = makePanel("Get Weapons", true)
-shopUI.search.PlaceholderText = "ค้นหาชื่อ หมวด หรือแหล่งได้ เช่น Rengu, ตีที่, ฟาร์ม…"
+local shopUI = makePanel("Get Weapons / ไอเทม", true)
+shopUI.search.PlaceholderText = "ค้นหาชื่อของ ประเภท หรือแหล่งได้ เช่น Rengu, Katana, คอ…"
 
 local buyLabel = new("TextLabel", {
 	Size = UDim2.new(1, 0, 1, 0),
@@ -2015,18 +2120,182 @@ function Detail.have(name, have, need)
 	return { string.format("%s %s/%s", name, comma(have), comma(need)), have >= need and Theme.Good or Theme.Danger }
 end
 
+-- ชื่อประเภทภาษาไทย (ชื่อโฟลเดอร์ใน ReplicatedStorage.Items) ใช้ทั้งเม็ดกรองและบรรทัดรองของแถว
+Game.TypeThai = {
+	Katana = "ดาบ", Weapons = "อาวุธ", Head = "หัว", Face = "หน้า", Ear = "หู", Neck = "คอ",
+	Back = "หลัง", Waist = "เอว", Haori = "ฮาโอริ", Outfits = "ชุด",
+}
+
+function Game.priceText(price)
+	local parts = {}
+	for _, p in ipairs(priceParts(price)) do
+		parts[#parts + 1] = p.currency == "Product" and "Robux" or (comma(p.amount) .. " " .. p.currency)
+	end
+	return table.concat(parts, " + ")
+end
+
+-- รายละเอียดไอเทม: สคริปต์จะทำอะไรตอนกด GET แล้วตามด้วยแหล่งได้ทุกทางแยกตามชนิด
+-- ข้อมูลทั้งหมดอ่านจากตารางของเกม: ดัชนีแหล่งได้ (ItemSources) ร้าน (Regions / Shop) ดรอป (NpcDataTable)
+-- หีบ (ChestsLootTable) สูตร (Crafting) ไม่มีค่าที่เดาเอง
+function Detail.item(box, data)
+	box.clear()
+	local wallet = Game.wallet()
+	local def = data.def or {}
+
+	if data.locked then
+		box.note("กด GET ตอนนี้ไม่ได้", data.reason or "-", Theme.Warn)
+	else
+		-- ร้านประจำไม่มี reason ราคาอยู่ใน data.cost (จาก Shop.itemsforsale) ไม่ใช่ def.Price
+		-- Fancy Katana: def.Price = 6 Metal Scraps แต่ร้าน Raze ขาย 1,500 Wen
+		local price = {}
+		for _, p in ipairs(data.cost) do
+			price[p.currency] = p.amount
+		end
+		box.note("กด GET แล้วสคริปต์จะ", data.reason or ("ซื้อ " .. Game.priceText(price)), Theme.Good)
+	end
+
+	local groups = { shop = {}, drop = {}, chest = {}, craft = {}, quest = {}, fish = {} }
+	for _, s in ipairs(Game.itemSources(data.name)) do
+		table.insert(groups[s.kind], s)
+	end
+	local function pct(c)
+		return c and string.format("%g%%", math.floor(c * 1000 + 0.5) / 10) or ""
+	end
+
+	local shops = {}
+	for _, s in ipairs(groups.shop) do
+		local info = Game.sellers()[s.where] or {}
+		local listing = Shop and Shop.itemsforsale[data.name]
+		local price = (listing and listing.Price) or (info.prices and info.prices[data.name]) or def.Price
+		local text = string.format("%s · %s", s.where, info.region or "?")
+		if price then
+			text ..= " · " .. Game.priceText(price)
+		end
+		local color = Theme.Text
+		if info.rotating then
+			-- ร้านหมุนเวียนสุ่มของขึ้นแผงทีละรอบ รอบนี้ไม่มีก็ต้องรอรอบถัดไป
+			text ..= string.format(" · ร้านหมุนเวียน สุ่ม %s จาก %d ชิ้น", tostring(info.rotating.slots or "?"), info.rotating.pool)
+			color = listing and Theme.Good or Theme.Warn
+		end
+		if info.timed then
+			text ..= string.format(" · ตลาดมืด โผล่ครั้งละ %d นาที", info.timed.minutes)
+			color = Theme.Warn
+		end
+		if info.night then
+			text ..= " · เฉพาะกลางคืน"
+		end
+		if info.quest then
+			text ..= " · ต้องจบเควส " .. info.quest
+		end
+		shops[#shops + 1] = { text, color }
+	end
+	box.section("ซื้อจากร้าน", shops)
+
+	local drops = {}
+	for _, s in ipairs(groups.drop) do
+		local npc
+		for code, n in pairs(lootTables().npc) do
+			if type(n) == "table" and (n.Name == s.where or code == s.where) then
+				npc = { code = code, def = n }
+			end
+		end
+		local region = npc and Game.mobRegion(npc.code) or Game.mobRegion(s.where)
+		local text = string.format("%s %s", s.where, pct(s.chance))
+		if region then
+			text ..= " · " .. region
+		end
+		if npc and npc.def.OnlyAtNight then
+			text ..= " · กลางคืน"
+		end
+		local hp = npc and npc.def.Stats and npc.def.Stats.MaxHealth
+		if hp then
+			text ..= " · " .. comma(hp) .. " HP"
+		end
+		drops[#drops + 1] = { text, Theme.Text }
+	end
+	box.section("ดรอปจากม็อบ / บอส (โอกาสต่อตัว)", drops)
+
+	for _, s in ipairs(groups.chest) do
+		local who = {}
+		for i, m in ipairs(Game.chestDroppers(s.where)) do
+			if i > 5 then
+				who[#who + 1] = "…"
+				break
+			end
+			who[#who + 1] = m.name .. (m.hp and (" (" .. comma(m.hp) .. " HP)") or "")
+		end
+		box.note(string.format("%s · โอกาสได้ %s ต่อหีบ", s.where, pct(s.chance)),
+			#who > 0 and ("หีบนี้ดรอปจาก: " .. table.concat(who, ", ")) or "หีบวางในแมพ ไม่ได้ดรอปจากม็อบ", Theme.Text)
+	end
+
+	for _, c in ipairs(Game.recipesFor(data.name)) do
+		local station = c.recipe.station
+		local chips = {}
+		for _, input in ipairs(Game.recipeInputs(c.recipe)) do
+			if input.keep then
+				chips[#chips + 1] = { input.name .. " (ต้องมี ไม่หาย)", (wallet[input.name] or 0) > 0 and Theme.Good or Theme.Danger }
+			else
+				chips[#chips + 1] = Detail.have(input.name, wallet[input.name] or 0, input.amount)
+			end
+		end
+		local where = Game.Forges[station] and ("ช่าง " .. Game.Forges[station]) or "อีกแมพ ยังไปไม่ได้"
+		box.section(string.format("คราฟต์ที่ %s (%s) · มี/ต้องใช้", tostring(station), where), chips)
+	end
+
+	local quests = {}
+	for _, s in ipairs(groups.quest) do
+		quests[#quests + 1] = { "รางวัลเควส " .. s.where, Theme.Accent }
+	end
+	for _ in ipairs(groups.fish) do
+		quests[#quests + 1] = { "ได้จากตกปลา", Theme.Accent }
+	end
+	box.section("อื่น ๆ", quests)
+
+	if #Game.itemSources(data.name) == 0 and #Game.recipesFor(data.name) == 0 then
+		box.note("แหล่งได้", "ในเกมตอนนี้ไม่มีร้าน ม็อบ หีบ หรือสูตรไหนให้ชิ้นนี้เลย (ดัชนี \"ได้จากไหน\" ของเกมก็ว่าง)",
+			Theme.Danger)
+	end
+
+	local stats = {}
+	for stat, v in pairs(type(def.Stats) == "table" and def.Stats or {}) do
+		stats[#stats + 1] = { string.format("%s +%s", stat, tostring(v)), Theme.Accent }
+	end
+	table.sort(stats, function(a, b)
+		return a[1] < b[1]
+	end)
+	local race = def.EquipRequirements and def.EquipRequirements.Race
+	if race then
+		local list = {}
+		for _, r in pairs(race) do
+			list[#list + 1] = r
+		end
+		stats[#stats + 1] = { "ใส่ได้เฉพาะเผ่า " .. table.concat(list, "/"), Theme.Warn }
+	end
+	box.section("สเตตัสตอนสวมใส่", stats)
+	if type(def.Description) == "string" then
+		box.note("คำอธิบาย", def.Description)
+	end
+end
+
+-- แถวไอเทม: ช่องติ๊ก · ไอคอนจริงของเกม (ขอบสีตามความหายาก) · ชื่อ · ประเภท/ความหายาก · ทางที่จะได้ · ปุ่มข้อมูล
 local function buildShopRow(data, order)
 	local frame = new("Frame", {
-		Size = UDim2.new(1, -6, 0, Config.RowH),
+		Size = UDim2.new(1, -6, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundColor3 = Theme.Row,
 		BorderSizePixel = 0,
 		LayoutOrder = order,
 		Parent = shopUI.list,
-	}, { corner(7) })
+	}, { corner(8), new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }) })
+	local head = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 52),
+		BackgroundTransparency = 1,
+		LayoutOrder = 1,
+		Parent = frame,
+	})
 
-	local tickFill, tickStroke = tickBox(frame)
+	local tickFill, tickStroke = tickBox(head)
 	-- ลำดับคิวเป็นป้ายกลมมุมขวาบนของช่องติ๊ก ในช่องเป็นเครื่องหมายถูกเหมือนแผงอื่น
-	-- เดิมเลขอยู่ในช่องที่หดเป็น 8px ตอนไม่ติ๊ก คนใช้บอกว่าดูแปลก
 	local tickNum = new("TextLabel", {
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.new(1, 0, 0, 0),
@@ -2040,53 +2309,71 @@ local function buildShopRow(data, order)
 		ZIndex = 3,
 		Parent = tickFill.Parent,
 	}, { corner(8) })
-	new("Frame", {
+	if data.locked then
+		tickStroke.Color = Theme.Stroke
+	end
+
+	local rarityColor = RarityColor[data.rarity] or Theme.Muted
+	new("ImageLabel", {
 		AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(0, 40, 0.5, 0),
-		Size = UDim2.fromOffset(3, 14),
-		BackgroundColor3 = RarityColor[data.rarity] or Theme.Muted,
-		BackgroundTransparency = data.locked and 0.6 or 0,
-		BorderSizePixel = 0,
-		Parent = frame,
-	}, { corner(2) })
+		Size = UDim2.fromOffset(36, 36),
+		BackgroundColor3 = Theme.Base,
+		Image = data.icon or "",
+		ImageTransparency = data.locked and 0.4 or 0,
+		ScaleType = Enum.ScaleType.Fit,
+		Parent = head,
+	}, { corner(8), stroke(rarityColor, 1.5) })
 
+	local rarities = require(ReplicatedStorage.CAM.Global.Rarities)
+	local rarityName = rarities.Order[data.rarity] or ("Rarity " .. data.rarity)
 	new("TextLabel", {
-		Position = UDim2.fromOffset(52, 0),
-		Size = UDim2.new(0.5, -52, 1, 0),
+		Position = UDim2.fromOffset(86, 8),
+		Size = UDim2.new(0.5, -86, 0, 17),
 		BackgroundTransparency = 1,
 		Text = data.name,
-		TextColor3 = data.locked and Theme.Dim or Theme.Text,
-		TextSize = 12,
-		FontFace = font(Enum.FontWeight.Medium),
+		TextColor3 = data.locked and Theme.Muted or Theme.Text,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.SemiBold),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Parent = frame,
+		Parent = head,
+	})
+	new("TextLabel", {
+		Position = UDim2.fromOffset(86, 27),
+		Size = UDim2.new(0.5, -86, 0, 14),
+		BackgroundTransparency = 1,
+		RichText = true,
+		Text = string.format('<font color="#%s">%s</font>  ·  %s%s', rarityColor:ToHex(), rarityName,
+			Game.TypeThai[data.group] or data.group, (data.have or 0) > 0 and ("  ·  มีแล้ว " .. data.have) or ""),
+		TextColor3 = Theme.Dim,
+		TextSize = 11,
+		FontFace = font(Enum.FontWeight.Regular),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = head,
 	})
 
+	-- ทางที่สคริปต์จะใช้ (ร้าน / ฟาร์ม / ตี) หรือเหตุผลที่ยังทำไม่ได้ ชิดขวา
 	local costText = {}
 	for _, p in ipairs(data.cost) do
 		costText[#costText + 1] = comma(p.amount) .. " " .. p.currency
 	end
-	local right = (data.locked or data.farmable) and (data.reason or "ล็อก") or table.concat(costText, " + ")
-	if #right == 0 then
-		right = "-"
-	end
-	if (data.have or 0) > 0 then
-		right = "มีแล้ว " .. data.have .. "  ·  " .. right
-	end
-
+	local right = (data.locked or data.farmable) and (data.reason or "ล็อก") or ("ซื้อ " .. table.concat(costText, " + "))
 	new("TextLabel", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -12, 0.5, 0),
-		Size = UDim2.new(0.5, -12, 1, 0),
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -86, 0, 10),
+		Size = UDim2.new(0.5, -100, 0, 32),
 		BackgroundTransparency = 1,
 		Text = right .. (data.note and ("  ·  " .. data.note) or ""),
-		TextColor3 = data.locked and Theme.Dim or Theme.Accent,
+		TextColor3 = data.locked and Theme.Warn or Theme.Good,
 		TextSize = 11,
-		FontFace = font(Enum.FontWeight.Regular),
+		FontFace = font(Enum.FontWeight.Medium),
 		TextXAlignment = Enum.TextXAlignment.Right,
+		TextYAlignment = Enum.TextYAlignment.Center,
+		TextWrapped = true,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Parent = frame,
+		Parent = head,
 	})
 
 	local row = {
@@ -2095,16 +2382,49 @@ local function buildShopRow(data, order)
 		tickStroke = tickStroke,
 		tickNum = tickNum,
 		data = data,
-		haystack =table.concat({ data.name, data.group, right, data.note or "" }, " "):lower(),
+		haystack = table.concat({ data.name, data.group, Game.TypeThai[data.group] or "", right, data.note or "" }, " "):lower(),
 	}
 
 	local hit = new("TextButton", {
-		Size = UDim2.new(1, 0, 1, 0),
+		Size = UDim2.new(1, -86, 1, 0),
 		BackgroundTransparency = 1,
 		Text = "",
-		Parent = frame,
+		Parent = head,
 	})
+	local infoBtn = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -10, 0.5, 0),
+		Size = UDim2.fromOffset(66, 24),
+		BackgroundColor3 = Theme.Raised,
+		AutoButtonColor = false,
+		Text = "ข้อมูล +",
+		TextColor3 = Theme.Muted,
+		TextSize = 11,
+		FontFace = font(Enum.FontWeight.Medium),
+		Parent = head,
+	}, { corner(6), stroke(Theme.Stroke, 1) })
+
+	local detail
+	local function toggleInfo()
+		if not detail then
+			detail = Detail.box(frame, 2)
+		end
+		local open = not detail.frame.Visible
+		if open then
+			Detail.item(detail, data)
+		end
+		detail.frame.Visible = open
+		infoBtn.Text = open and "ข้อมูล –" or "ข้อมูล +"
+		infoBtn.TextColor3 = open and Theme.Accent or Theme.Muted
+	end
+	track(infoBtn.MouseButton1Click:Connect(toggleInfo))
+
 	track(hit.MouseButton1Click:Connect(function()
+		-- ติ๊กไม่ได้ กดแล้วเปิดข้อมูลแทน จะได้เห็นว่าได้จากไหน ติดอะไร
+		if data.locked then
+			toggleInfo()
+			return
+		end
 		selectShopRow(row)
 	end))
 	track(hit.MouseEnter:Connect(function()
@@ -2126,23 +2446,39 @@ local function applyShopFilter()
 	local shown = 0
 	for _, r in ipairs(shopRows) do
 		local d = r.data
-		local okGroup
-		if shopFilter.top == "Accessory" then
-			okGroup = d.wear and (shopFilter.wear == "All" or d.group == shopFilter.wear)
-		else
-			okGroup = shopFilter.top == "All" or d.group == shopFilter.top
+		-- ชนิดแหล่งได้ของแถว อ่านจากดัชนีของเกมครั้งแรกที่ต้องใช้ แล้วเก็บไว้กับแถว
+		if not r.kinds then
+			r.kinds = {}
+			for _, s in ipairs(Game.itemSources(d.name)) do
+				r.kinds[s.kind] = true
+			end
+			-- ร้าน Spins / Gamepass ไม่อยู่ในดัชนีร้านของเกม (ไม่มี NPC) แต่ขายจริงใน Shop.itemsforsale
+			r.kinds.shop = r.kinds.shop or d.source == "shop"
+			r.kinds.craft = r.kinds.craft or #Game.recipesFor(d.name) > 0
 		end
+		local src, okSrc = shopFilter.src, true
+		if src == "หาได้ตอนนี้" then
+			okSrc = not d.locked
+		elseif src == "ซื้อได้" then
+			okSrc = r.kinds.shop == true
+		elseif src == "ดรอป/หีบ" then
+			okSrc = r.kinds.drop or r.kinds.chest or false
+		elseif src == "คราฟต์" then
+			okSrc = r.kinds.craft == true
+		end
+		local okType = shopFilter.type == "ทุกประเภท" or Game.TypeThai[d.group] == shopFilter.type
 		-- ค้นได้ทั้งชื่อ หมวด และข้อความแหล่งได้ที่โชว์ขวาแถว พิมพ์ชื่อบอสก็เจอของทุกชิ้นที่บอสนั้นให้
 		local okText = query == "" or r.haystack:find(query, 1, true) ~= nil
-		r.frame.Visible = okGroup and okText and (not shopFilter.ready or not d.locked)
+		r.frame.Visible = okSrc and okType and okText
 		if r.frame.Visible then
 			shown += 1
 		end
 	end
 	if shown == 0 then
-		shopUI.setStatus("ไม่พบของที่ตรงกับคำค้น", Theme.Muted)
-	elseif query ~= "" or shopFilter.top ~= "All" or shopFilter.ready then
-		shopUI.setStatus(string.format("แสดง %d จาก %d ชิ้น", shown, #shopRows), Theme.Muted)
+		shopUI.setStatus("ไม่พบของในแท็บนี้ ลองแท็บ ทั้งหมด หรือเปลี่ยนประเภท", Theme.Muted)
+	else
+		shopUI.setStatus(string.format("แสดง %d จาก %d ชิ้น · กดแถวเพื่อติ๊ก · กด ข้อมูล ดูแหล่งได้ทุกทาง", shown, #shopRows),
+			Theme.Muted)
 	end
 end
 
@@ -2153,6 +2489,16 @@ local function rebuildShop()
 	table.clear(shopRows)
 
 	local listings, wallet = Game.listings()
+	-- ของที่ได้ตอนนี้ขึ้นก่อน แล้วหายากก่อน เดิมเรียง Common ก่อน ของดีจมอยู่ท้ายรายการ
+	table.sort(listings, function(a, b)
+		if a.locked ~= b.locked then
+			return not a.locked
+		end
+		if a.rarity ~= b.rarity then
+			return a.rarity > b.rarity
+		end
+		return a.name < b.name
+	end)
 	for i, data in ipairs(listings) do
 		shopRows[#shopRows + 1] = buildShopRow(data, i)
 	end
@@ -2192,49 +2538,30 @@ local function rebuildShop()
 	refreshBuyButton()
 end
 
-addPills(shopUI.filterRow, { "All", "Katana", "Weapons", "Accessory" }, function(name)
-	shopFilter.top = name
-	local wear = name == "Accessory"
-	shopFilter.wearRow.Visible = wear
-	shopUI.list.Position = UDim2.fromOffset(0, wear and 144 or 114)
-	shopUI.list.Size = UDim2.new(1, 0, 1, wear and -200 or -170)
+-- แถวบน = แท็บตามแหล่งได้ แถวล่าง = ประเภทของ (โชว์ตลอด)
+-- เดิมแถวบนเป็นประเภทอังกฤษ + ปุ่ม "เฉพาะที่หาได้" แยก คนใช้บอกว่าดูยาก หาของที่เอาได้จริงไม่เจอ
+Game.ShopTabs = { "หาได้ตอนนี้", "ซื้อได้", "ดรอป/หีบ", "คราฟต์", "ทั้งหมด" }
+shopFilter.src = Game.ShopTabs[1]
+shopFilter.type = "ทุกประเภท"
+shopFilter.wearRow.Visible = true
+shopUI.list.Position = UDim2.fromOffset(0, 144)
+shopUI.list.Size = UDim2.new(1, 0, 1, -200)
+
+addPills(shopUI.filterRow, Game.ShopTabs, function(name)
+	shopFilter.src = name
 	applyShopFilter()
 end)
 
--- ของ 191 จาก 313 ชิ้นยังหาไม่ได้ (ยังไม่รู้แหล่งได้ / ล็อกเควส) ขึ้นปนเต็มรายการ หาของที่เอาได้จริงยาก
--- เปิดไว้เป็นค่าเริ่ม กดอีกทีดูทั้งหมด
-shopFilter.ready = true
 do
-	local pill = new("TextButton", {
-		Size = UDim2.fromOffset(textWidth("เฉพาะที่หาได้", 11) + 36, 24),
-		BackgroundColor3 = Theme.Accent,
-		BackgroundTransparency = 0.8,
-		AutoButtonColor = false,
-		Text = "✓  เฉพาะที่หาได้",
-		TextColor3 = Theme.Text,
-		TextSize = 11,
-		FontFace = font(Enum.FontWeight.Medium),
-		LayoutOrder = 99,
-		Parent = shopUI.filterRow,
-	}, { corner(6), stroke(Theme.Accent, 1) })
-	track(pill.MouseButton1Click:Connect(function()
-		shopFilter.ready = not shopFilter.ready
-		pill.Text = shopFilter.ready and "✓  เฉพาะที่หาได้" or "เฉพาะที่หาได้"
-		tween(pill, {
-			BackgroundTransparency = shopFilter.ready and 0.8 or 1,
-			TextColor3 = shopFilter.ready and Theme.Text or Theme.Muted,
-		}, FAST)
-		applyShopFilter()
-	end))
-end
-
-do
-	local wearPills = { "All" }
-	for _, group in ipairs(Game.WearGroups) do
-		wearPills[#wearPills + 1] = group
+	local types = { "ทุกประเภท" }
+	for _, group in ipairs(Game.WeaponGroups) do
+		types[#types + 1] = Game.TypeThai[group]
 	end
-	addPills(shopFilter.wearRow, wearPills, function(name)
-		shopFilter.wear = name
+	for _, group in ipairs(Game.WearGroups) do
+		types[#types + 1] = Game.TypeThai[group]
+	end
+	addPills(shopFilter.wearRow, types, function(name)
+		shopFilter.type = name
 		applyShopFilter()
 	end, true)
 end
