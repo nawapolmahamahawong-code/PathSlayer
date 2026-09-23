@@ -1338,9 +1338,11 @@ local Layout = {
 		["Auto-Attack-Mob"] = { page = "combat", section = "attack", card = "attackMob", order = 1,
 			title = "Auto-Attack", help = "บินไปลอยเหนือม็อบที่เลือกไว้แล้วตี (Auto-Quest ตีให้เองอยู่แล้ว)" },
 		["Kill Aura"] = { page = "combat", section = "attack", card = "aura", order = 3,
-			help = "ยิงหมัดใส่ม็อบในระยะ 6 stud เองโดยไม่ต้องคลิก" },
+			help = "ตามม็อบในระยะ 80 stud ไปยืนข้าง หันเข้าหา แล้วตีต่อเนื่องเอง" },
 		["Kill Aura ระยะไกล"] = { page = "combat", section = "attack", card = "aura", child = 1,
 			title = "ระยะไกล" },
+		["Parry อัตโนมัติ"] = { page = "combat", section = "attack", card = "aura", child = 2,
+			title = "Parry อัตโนมัติ", help = "ม็อบในระยะ 12 stud เริ่มท่าตี กดบล็อกให้ตรงจังหวะ ตีต่อได้ไม่ขาด" },
 		["Insta Kill"] = { page = "combat", section = "attack", card = "insta", order = 4,
 			help = "ตีเร็วที่สุดที่เซิร์ฟยอมรับ ได้ของ เงิน และ EXP ครบ" },
 		["โหมด Insta Kill"] = { page = "combat", section = "attack", card = "insta", child = 1,
@@ -4771,6 +4773,16 @@ local function switchRow(name, desc, order, onChange, opts)
 
 	local entry = { frame = frame, name = where and where.title or name }
 	local on = false
+	-- identity ของ thread ลูปฟีเจอร์หล่นเองกลางทาง (executor ตัวนี้ identity ของ thread ลูกที่ Auto Skill
+	-- ตั้งเป็น 2 รั่วไปถึง thread อื่น) แล้ว setDesc เจอ "lacking capability Plugin" ลูปตายเงียบ
+	-- Kill Aura ค้างป้าย "รอม็อบเข้าระยะ" ทั้งที่ม็อบอยู่ห่าง 2 stud จำ identity ตอนสร้างแถว (thread หลัก)
+	-- แล้วตั้งคืนก่อนแตะ GUI ทุกครั้ง ลูปไหนเรียก setDesc ก็หายจากอาการนี้หมด
+	local rowIdentity = getthreadidentity and getthreadidentity()
+	local function fixIdentity()
+		if rowIdentity and setthreadidentity then
+			setthreadidentity(rowIdentity)
+		end
+	end
 
 	local function fitLabels(rightWidth)
 		for _, label in ipairs({ titleLabel, descLabel }) do
@@ -4782,6 +4794,7 @@ local function switchRow(name, desc, order, onChange, opts)
 	-- ตอนปิดโชว์คำอธิบายว่าฟีเจอร์ทำอะไร ตอนเปิดโชว์สถานะสดที่ลูปส่งมาเป็นสีฟ้า
 	-- ลูปทุกตัวเขียน "ปิดอยู่" ตอนจบ ใช้ข้อความนั้นเป็นสัญญาณกลับไปโชว์คำอธิบาย
 	function entry.setDesc(text)
+		fixIdentity()
 		if opts.choices then
 			descLabel.Text = text
 			return
@@ -4922,6 +4935,7 @@ local function switchRow(name, desc, order, onChange, opts)
 	})
 
 	function entry.set(state)
+		fixIdentity()
 		if on == state then
 			return
 		end
@@ -5158,7 +5172,9 @@ local autoAttack = { on = false, onlySelected = false }
 -- fastKill: Insta Kill โหมดได้ของกำลังยิงหมัดเองตามจังหวะคอมโบของเซิร์ฟ ลูปอื่นห้ามยิงแทรก
 -- หมัดแทรกหนึ่งครั้งทำให้เลขคอมโบที่เซิร์ฟจำไว้ไม่ตรงกับที่ Insta Kill ส่ง แล้วเซิร์ฟทิ้งหมัดถัดไปทั้งชุด
 local killAura = { on = false, far = false, fastKill = false, lastFire = 0, fires = 0 }
-local autoDodge = { on = false, holdUntil = 0, dodges = 0, hitsTaken = 0, learned = 0 }
+-- parry: Kill Aura > Parry อัตโนมัติ ใช้ตัวจับท่าตีชุดเดียวกับ Auto-Dodge แต่กดบล็อกแทนการวาร์ปหลบ
+-- blockUntil: กำลังค้างปุ่มบล็อกถึงเวลานี้ ห้ามยิงหมัด (ต่อยตอนบล็อกเกมยกเลิกบล็อก)
+local autoDodge = { on = false, parry = false, holdUntil = 0, blockUntil = 0, dodges = 0, parries = 0, hitsTaken = 0, learned = 0 }
 
 local function selfParts()
 	local char = LocalPlayer.Character
@@ -6458,6 +6474,46 @@ local function learnedCount()
 	return n
 end
 
+-- Parry: กดปุ่มบล็อกค้างทันทีที่ม็อบในระยะเริ่มท่าตี -----------------------------
+-- วัดแล้ว: กดปุ่มผ่าน VirtualInputManager เกมสร้าง Values.Blocking พร้อม PerfectNpc ที่ 0.076 วิ
+-- PerfectNpc (หน้าต่าง parry ใส่ NPC) หายที่ 0.317 วิ ท่าตีม็อบดาเมจเข้าหลังเริ่มท่า 0.14-0.37 วิ
+-- กดทันทีที่เห็นท่าจึงครอบเกือบทุกท่า Checker.check_victim คืน "Perfect" ตอน Blocking มี PerfectNpc
+-- ต้องกดปุ่มจริง: Skill_Controller ปล่อยบล็อกเองทุกเฟรมถ้า IsKeyDown(ปุ่มบล็อก) เป็น false
+-- เรียก Attempt_Hold ตรง ๆ บล็อกอยู่ได้แค่ 0.06 วิ
+local Parry = {
+	-- ค้างปุ่มเท่านี้ ครอบท่าช้าสุด 0.37 วิ ปล่อยเร็วไป Blocking หายก่อนดาเมจมา
+	Hold = 0.45,
+}
+
+local function blockKey()
+	-- ปุ่มบล็อกคือช่องสกิลแรก (Skills_1st) ผู้เล่นเปลี่ยนปุ่มได้ อ่านจาก InputHandler ของเกม
+	local ok, map = pcall(function()
+		return require(ReplicatedStorage.CAM.Client.Components.Client.InputHandler).GetMapping("Skills_1st")
+	end)
+	for _, k in ipairs(ok and map or {}) do
+		if typeof(k) == "EnumItem" and k.EnumType == Enum.KeyCode and not k.Name:find("^Button") then
+			return k
+		end
+	end
+	return Enum.KeyCode.F
+end
+
+local function parryNow()
+	if os.clock() < autoDodge.blockUntil then
+		return
+	end
+	local key = blockKey()
+	autoDodge.blockUntil = os.clock() + Parry.Hold
+	autoDodge.parries += 1
+	if autoDodge.parryRow then
+		autoDodge.parryRow.setDesc("parry ไป " .. autoDodge.parries .. " ครั้ง · เฝ้าท่าตีในระยะ 12 stud")
+	end
+	VIM:SendKeyEvent(true, key, false, game)
+	task.delay(Parry.Hold, function()
+		VIM:SendKeyEvent(false, key, false, game)
+	end)
+end
+
 -- หลบทันทีในเฟรมที่ม็อบเริ่มท่า ไม่รอ task.wait
 -- ทิศหลบคือตรงข้ามกับม็อบตัวที่ออกท่า แนวนอนล้วน แล้ววางบนพื้นจริง
 local function blinkAwayFrom(mobRoot)
@@ -6487,7 +6543,7 @@ local function watchMob(mob)
 		return
 	end
 	watchedMobs[mob] = animator.AnimationPlayed:Connect(function(trackPlayed)
-		if not autoDodge.on then
+		if not (autoDodge.on or autoDodge.parry) then
 			return
 		end
 		local id = trackPlayed.Animation and trackPlayed.Animation.AnimationId or ""
@@ -6512,9 +6568,14 @@ local function watchMob(mob)
 				id:match("%d+$") or id, dist, attackAnims[id] and "ATTACK" or "?")
 		end
 
-		if attackAnims[id] and dist <= Dodge.ThreatRadius then
+		if attackAnims[id] and dist <= Dodge.ThreatRadius and autoDodge.parry then
+			-- เปิด Parry อยู่ใช้ parry แทนหลบ ยืนตีต่อได้ไม่ต้องวาร์ปออกไป
+			parryNow()
+		elseif attackAnims[id] and dist <= Dodge.ThreatRadius then
 			blinkAwayFrom(mobRoot)
 			dodgeRow.setDesc(string.format("หลบท่า %s · หลบไป %d ครั้ง", mob.Name, autoDodge.dodges))
+		elseif autoDodge.parry and not autoDodge.on then
+			-- parry อย่างเดียว ไม่ต้องกันเดินกลับเข้าไปแบบโหมดหลบ
 		elseif attackAnims[id] and dist <= Dodge.ThreatRadius + Dodge.WaitMargin then
 			-- ม็อบยังคอมโบต่ออยู่นอกระยะ ไม่ต้องวาร์ป แต่ห้ามเดินกลับเข้าไปหา
 			-- 3 หมัดที่โดนในเทสต์ล่าสุดเป็นแบบนี้ทั้งหมด: หลบทัน แล้วพ้น HoldTime
@@ -6545,13 +6606,15 @@ local function onDamaged(lost)
 			end
 		end
 	end
-	dodgeRow.setDesc(string.format(
-		"โดน -%.0f · หลบ %d · โดน %d · รู้จัก %d ท่า",
-		lost,
-		autoDodge.dodges,
-		autoDodge.hitsTaken,
-		learnedCount()
-	))
+	if autoDodge.on then
+		dodgeRow.setDesc(string.format(
+			"โดน -%.0f · หลบ %d · โดน %d · รู้จัก %d ท่า",
+			lost,
+			autoDodge.dodges,
+			autoDodge.hitsTaken,
+			learnedCount()
+		))
+	end
 end
 
 function stopDodge()
@@ -6613,7 +6676,7 @@ local function startDodge()
 		dodgeConns[#dodgeConns + 1] = hum.HealthChanged:Connect(function(health)
 			local lost = last - health
 			last = health
-			if lost > 0 and autoDodge.on then
+			if lost > 0 and (autoDodge.on or autoDodge.parry) then
 				onDamaged(lost)
 			end
 		end)
@@ -6623,12 +6686,17 @@ local function startDodge()
 	end
 	dodgeConns[#dodgeConns + 1] = LocalPlayer.CharacterAdded:Connect(hookHealth)
 
-	dodgeRow.setDesc(string.format(
-		"เฝ้าท่าตีอยู่ · รู้จัก %d ท่า%s",
-		learnedCount(),
-		restored > 0 and (" (โหลดจากไฟล์ " .. restored .. ")") or ""
-	))
+	-- เปิดจาก Parry อย่างเดียว แถว Auto-Dodge ยังปิดอยู่ ไม่ต้องเขียนสถานะทับ
+	if autoDodge.on then
+		dodgeRow.setDesc(string.format(
+			"เฝ้าท่าตีอยู่ · รู้จัก %d ท่า%s",
+			learnedCount(),
+			restored > 0 and (" (โหลดจากไฟล์ " .. restored .. ")") or ""
+		))
+	end
 end
+-- แถว Parry ในการ์ด Kill Aura อยู่นอกบล็อกนี้ เรียกผ่าน autoDodge
+autoDodge.start = startDodge
 
 dodgeRow = switchRow("Auto-Dodge", "ปิดอยู่", 4, function(on)
 	autoDodge.on = on
@@ -6636,7 +6704,10 @@ dodgeRow = switchRow("Auto-Dodge", "ปิดอยู่", 4, function(on)
 		autoDodge.dodges, autoDodge.hitsTaken, autoDodge.learned = 0, 0, 0
 		startDodge()
 	else
-		stopDodge()
+		-- Parry ยังเปิดอยู่ใช้ตัวจับท่าชุดเดียวกัน ห้ามถอดทิ้ง
+		if not autoDodge.parry then
+			stopDodge()
+		end
 		dodgeRow.setDesc("ปิดอยู่")
 	end
 end)
@@ -6654,8 +6725,19 @@ local Aura = {
 	--   ลอยสูง 3 stud 50%   6 stud ขึ้นไป 0%   หันหลังให้ที่ 3 stud ยังเข้า 40%
 	-- ตั้งระยะในโค้ดให้ไกลกว่านี้ไม่ช่วย เซิร์ฟเวอร์เป็นคนตัดสิน
 	Range = 6,
+	-- ยืนห่างม็อบเท่านี้ หันหน้าเข้าหา (ดู standBeside)
+	Beside = 2.5,
+	-- ม็อบในระยะนี้ Kill Aura เดินตามไปยืนข้างเอง ไม่ต้องรอให้เข้ามาใน Range
+	-- เดิมรอม็อบเข้า 6 stud เฉย ๆ ตีโดนหมัดเดียวม็อบกระเด็นออกนอกระยะ แล้วค้าง "รอม็อบเข้าระยะ"
+	-- ตั้ง 25 แล้ววัดที่ค่ายโจร 30 วิ: ยืนรอ 23 วิ ฆ่าได้ 2 ตัว เพราะโจรเกิดห่างกันเกิน 25
+	-- ต้องไม่เกิน ~150 ม็อบที่ไม่มีผู้เล่นใกล้เกิน DespawnDistance หายจากแมพ
+	Follow = 80,
+	-- ตัวที่ต้องเดิน/วาร์ปไปหา ข้ามตัวที่เลือดเกินนี้ (บอสจริง Gyutai / Datai 3000)
+	-- เดิมใช้ Combat.SkipBossAbove 120 ตัด Hoyuzo Subordinate 190 HP ที่ฟาร์ม Demon Horns ทิ้งด้วย
+	-- วัดแล้ว: ห่าง 75 stud ยืนรอเฉย 40 วิ
+	SkipAbove = 1000,
 
-	-- Kill Aura ระยะไกล: วาร์ปไปลอยเหนือม็อบ ตีจนจบคอมโบ แล้ววาร์ปกลับที่เดิมช่วงพักหลังหมัดปิด
+	-- Kill Aura ระยะไกล: วาร์ปไปยืนข้างม็อบ ตีจนจบคอมโบ แล้ววาร์ปกลับที่เดิมช่วงพักหลังหมัดปิด
 	-- ต้องค้างให้เซิร์ฟเวอร์เห็นตำแหน่งก่อนหมัดแรก วัดจากจุดห่าง 30 stud (หมัดเข้าใน 6 วิ):
 	--   ยิงเฟรมเดียวกับที่วาร์ป 0   ค้าง 0.1 วิ 6   ค้าง 0.2 วิ 7   ค้าง 0.3 วิ 8   (ยืนติดม็อบตลอด 10)
 	-- วาร์ปมา 50 stud แล้วยิงหลัง 0.25 วิ สองหมัดแรกหลุดทั้งคู่ เลยใช้ 0.3
@@ -6757,6 +6839,10 @@ do
 
 	-- ยิงหมัดถัดไปถ้าถึงเวลา คืน เลขหมัด, ชื่อท่า / nil, เวลาที่ต้องรออีก
 	function Chain.fire()
+		-- ต่อยตอนค้างบล็อก เกมยกเลิกบล็อกทิ้ง parry เลยพลาด รอจนปล่อยปุ่มก่อน
+		if os.clock() < autoDodge.blockUntil then
+			return nil, autoDodge.blockUntil - os.clock()
+		end
 		local style, preset, swing = Chain.style()
 		local combo, readyAt = Chain.next(preset)
 		local left = readyAt - os.clock()
@@ -6777,7 +6863,7 @@ end
 
 -- ม็อบที่ใกล้ที่สุดในระยะ
 -- ต้องเป็นตัวที่ใกล้ที่สุดเสมอ เพราะเซิร์ฟเวอร์ตีตามตำแหน่งและทิศของเรา ไม่ได้ตีตามเป้าที่เลือก
--- skipBoss ใช้กับโหมดระยะไกล: วาร์ปไปตีบอสเองโดยไม่ได้สั่ง ทดสอบแล้วมันไปตี Gyutai 3000 HP
+-- skipBoss ใช้ตอนต้องเดิน/วาร์ปไปหาเอง: เคยวาร์ปไปตี Gyutai 3000 HP เองโดยไม่ได้สั่ง
 local function mobInReach(origin, range, skipBoss)
 	local folder = workspace:FindFirstChild("Humanoids")
 	local best, bestD
@@ -6789,7 +6875,7 @@ local function mobInReach(origin, range, skipBoss)
 		if m:IsA("Model") and m:GetAttribute("IsMob") and allowed then
 			local hum = m:FindFirstChildOfClass("Humanoid")
 			local root = m:FindFirstChild("HumanoidRootPart")
-			local tierOk = not skipBoss or wanted or (hum and hum.MaxHealth <= Combat.SkipBossAbove)
+			local tierOk = not skipBoss or wanted or (hum and hum.MaxHealth <= Aura.SkipAbove)
 			if hum and root and hum.Health > 0 and root.Position.Y > Combat.WorldFloorY and tierOk then
 				local d = (root.Position - origin).Magnitude
 				if d <= (range or Aura.Range) and (not bestD or d < bestD) then
@@ -6815,17 +6901,34 @@ local function auraFire()
 	return combo, style
 end
 
--- ค้างตัวเหนือหัวม็อบทุกเฟรมตามเวลาที่กำหนด ม็อบเดินอยู่ วาร์ปครั้งเดียวแล้วตำแหน่งจะเพี้ยน
-local function holdAbove(hrp, root, seconds)
-	local untilT = os.clock() + seconds
+-- ยืนข้างม็อบแล้วหันหน้าเข้าหา ทุกเฟรมตามเวลาที่กำหนด (0 = เฟรมเดียว) ม็อบเดิน/กระเด็นอยู่ วาร์ปครั้งเดียวตำแหน่งเพี้ยน
+-- hitbox ของเซิร์ฟอยู่หน้าตัวเรา (Combat_presets.Get_Players_For_Combat ใช้ lookVector ตอนยืนนิ่ง)
+-- วัดกับ Zuko 12 วิ ยิง 21 หมัดเท่ากัน:
+--   ยืนข้าง 2.5 stud หันเข้า   เข้า 13 (95 ดาเมจ)
+--   ยืนข้าง หันหลังให้         เข้า 2
+--   ลอยเหนือหัว 3 stud แบบเดิม  เข้า 0
+local function standBeside(hrp, root, seconds)
+	local untilT = os.clock() + (seconds or 0)
 	repeat
 		if not (root.Parent and hrp.Parent) then
 			return false
 		end
-		local spot = root.Position + Vector3.new(0, Combat.HoverHeight, 0)
-		placeAt(hrp, facing(spot, root.Position, hrp.CFrame.LookVector), "blink")
+		local dir = (root.Position - hrp.Position) * Vector3.new(1, 0, 1)
+		if dir.Magnitude < 0.1 then
+			dir = hrp.CFrame.LookVector * Vector3.new(1, 0, 1)
+		end
+		if dir.Magnitude < 0.1 then
+			dir = Vector3.new(0, 0, -1)
+		end
+		dir = dir.Unit
+		local spot = root.Position - dir * Aura.Beside
+		if not placeAt(hrp, CFrame.lookAt(spot, spot + dir), "beside") then
+			return false
+		end
 		hrp.AssemblyLinearVelocity = Vector3.zero
-		game:GetService("RunService").Heartbeat:Wait()
+		if seconds and seconds > 0 then
+			game:GetService("RunService").Heartbeat:Wait()
+		end
 	until os.clock() >= untilT
 	return true
 end
@@ -6843,7 +6946,7 @@ local function blinkCombo(hrp, mob)
 	local fired = 0
 	local _, preset = Chain.style()
 	while killAura.on and not killAura.fastKill and root.Parent and mobHum.Health > 0 do
-		if not holdAbove(hrp, root, 0) then
+		if not standBeside(hrp, root) then
 			break
 		end
 		if os.clock() - arrived >= Aura.BlinkBefore then
@@ -6855,58 +6958,85 @@ local function blinkCombo(hrp, mob)
 				end
 			end
 		end
+		game:GetService("RunService").Heartbeat:Wait()
 	end
 	if root.Parent then
-		holdAbove(hrp, root, Aura.BlinkAfter)
+		standBeside(hrp, root, Aura.BlinkAfter)
 	end
 	placeAt(hrp, home, "blink-back")
 	hrp.AssemblyLinearVelocity = Vector3.zero
 	return fired
 end
 
+-- หนึ่งรอบของ Kill Aura แยกออกมาเพื่อครอบ pcall: error กลางลูปเคยทำให้ลูปตายเงียบ
+-- ทั้งที่สวิตช์ยังเปิดค้าง คนใช้เห็นแค่ว่า "Kill Aura ไม่ทำงาน"
+local function auraStep()
+	local _, hrp, hum = selfParts()
+	if killAura.fastKill then
+		auraRow.setDesc("Insta Kill ยิงหมัดแทนอยู่")
+		task.wait(0.2)
+	-- ระหว่างหลบ ตัวอยู่ไกลเป้า ยิงไปก็ไม่เข้า ได้แต่เผาโควตาความถี่ของเซิร์ฟเวอร์
+	-- โดนตีล้มเองก็ตีไม่ได้ เกมเช็ก Checker.check(combat) ก่อนทุกหมัด
+	elseif hrp and hum and hum.Health > 0 and not isKnockedDown(hum) and os.clock() >= autoDodge.holdUntil then
+		-- Auto-Attack พาตัวไปเองอยู่แล้ว ใช้ระยะหมัดตรง ๆ ไม่งั้นเดินตามม็อบในระยะ Follow
+		-- ตัวที่ยืนติดอยู่แล้วตีได้ทุกตัวรวมบอส ตัวที่ต้องตามไปข้ามบอส (ไม่ลากไปตี Gyutai 3000 HP เอง)
+		local mob = mobInReach(hrp.Position)
+		if not mob and not autoAttack.on then
+			mob = mobInReach(hrp.Position, Aura.Follow, true)
+		end
+		local far = false
+		-- ระยะไกลใช้ตอนไม่ได้เปิด Auto-Attack เท่านั้น Auto-Attack ลอยติดม็อบให้อยู่แล้ว
+		-- ถ้าวาร์ปซ้อนกัน สองลูปจะแย่งเขียน CFrame
+		if not mob and killAura.far and not autoAttack.on then
+			mob = mobInReach(hrp.Position, Aura.BlinkRange, true)
+			far = mob ~= nil
+		end
+		local mobHum = mob and mob:FindFirstChildOfClass("Humanoid")
+		if mobHum then
+			Runner.hook("engage", mob)
+			-- ม็อบล้ม/เล่นท่าอยู่ก็ยิงต่อ ไม่รอลุกแบบเดิม ช่วงล้มหลังหมัดปิดเซิร์ฟพักให้อยู่แล้ว
+			local style
+			if far then
+				if blinkCombo(hrp, mob) > 0 then
+					auraRow.setDesc(string.format("วาร์ปตี %s · HP %d/%d · ยิงไป %d", mob.Name,
+						math.max(0, math.floor(mobHum.Health)), math.floor(mobHum.MaxHealth), killAura.fires))
+				end
+			else
+				-- ยืนข้างม็อบหันหน้าเข้าหาทุกรอบ รวมช่วงพักหลังหมัดปิด ม็อบกระเด็นไปก็ตามไปทันที
+				if not autoAttack.on then
+					local root = mob:FindFirstChild("HumanoidRootPart")
+					-- ย้ายไกลเกินระยะหมัด ต้องค้างให้เซิร์ฟเห็นตำแหน่งใหม่ก่อน ยิงทันทีหมัดหลุด (ดู BlinkBefore)
+					if (root.Position - hrp.Position).Magnitude > Aura.Range then
+						killAura.settleUntil = os.clock() + Aura.BlinkBefore
+					end
+					standBeside(hrp, root)
+				end
+				local combo
+				if os.clock() >= (killAura.settleUntil or 0) then
+					combo, style = auraFire()
+				end
+				if combo then
+					auraRow.setDesc(string.format("ตี %s หมัด %d · HP %d/%d · %s", mob.Name, combo,
+						math.max(0, math.floor(mobHum.Health)), math.floor(mobHum.MaxHealth), style))
+				end
+			end
+			task.wait(Aura.Poll)
+		else
+			auraRow.setDesc("รอม็อบเข้าระยะ " .. (autoAttack.on and Aura.Range or Aura.Follow) .. " stud")
+			task.wait(0.1)
+		end
+	else
+		task.wait(0.1)
+	end
+end
+
 local function auraLoop()
 	Chain.last = 0
 	while killAura.on do
-		local _, hrp, hum = selfParts()
-		if killAura.fastKill then
-			auraRow.setDesc("Insta Kill ยิงหมัดแทนอยู่")
-			task.wait(0.2)
-		-- ระหว่างหลบ ตัวอยู่ไกลเป้า ยิงไปก็ไม่เข้า ได้แต่เผาโควตาความถี่ของเซิร์ฟเวอร์
-		-- โดนตีล้มเองก็ตีไม่ได้ เกมเช็ก Checker.check(combat) ก่อนทุกหมัด
-		elseif hrp and hum and hum.Health > 0 and not isKnockedDown(hum) and os.clock() >= autoDodge.holdUntil then
-			local mob = mobInReach(hrp.Position)
-			local far = false
-			-- ระยะไกลใช้ตอนไม่ได้เปิด Auto-Attack เท่านั้น Auto-Attack ลอยติดม็อบให้อยู่แล้ว
-			-- ถ้าวาร์ปซ้อนกัน สองลูปจะแย่งเขียน CFrame
-			if not mob and killAura.far and not autoAttack.on then
-				mob = mobInReach(hrp.Position, Aura.BlinkRange, true)
-				far = mob ~= nil
-			end
-			local mobHum = mob and mob:FindFirstChildOfClass("Humanoid")
-			if mobHum then
-				Runner.hook("engage", mob)
-				-- ม็อบล้ม/เล่นท่าอยู่ก็ยิงต่อ ไม่รอลุกแบบเดิม ช่วงล้มหลังหมัดปิดเซิร์ฟพักให้อยู่แล้ว
-				local style
-				if far then
-					if blinkCombo(hrp, mob) > 0 then
-						auraRow.setDesc(string.format("วาร์ปตี %s · HP %d/%d · ยิงไป %d", mob.Name,
-							math.max(0, math.floor(mobHum.Health)), math.floor(mobHum.MaxHealth), killAura.fires))
-					end
-				else
-					local combo
-					combo, style = auraFire()
-					if combo then
-						auraRow.setDesc(string.format("ตี %s หมัด %d · HP %d/%d · %s", mob.Name, combo,
-							math.max(0, math.floor(mobHum.Health)), math.floor(mobHum.MaxHealth), style))
-					end
-				end
-				task.wait(Aura.Poll)
-			else
-				auraRow.setDesc("รอม็อบเข้าระยะ " .. Aura.Range .. " stud")
-				task.wait(0.1)
-			end
-		else
-			task.wait(0.1)
+		local ok, err = pcall(auraStep)
+		if not ok then
+			auraRow.setDesc("ผิดพลาด: " .. tostring(err):sub(1, 80))
+			task.wait(1)
 		end
 	end
 	auraRow.setDesc("ปิดอยู่")
@@ -6921,7 +7051,7 @@ auraRow = switchRow("Kill Aura", "ปิดอยู่", 5, function(on)
 	killAura.on = on
 	if on then
 		killAura.fires = 0
-		auraRow.setDesc("รอม็อบเข้าระยะ " .. Aura.Range .. " stud")
+		auraRow.setDesc("รอม็อบเข้าระยะ " .. (autoAttack.on and Aura.Range or Aura.Follow) .. " stud")
 		task.spawn(auraLoop)
 	end
 end)
@@ -6934,6 +7064,27 @@ switchRow("Kill Aura ระยะไกล", "วาร์ปไปตีม็�
 		auraRow.set(true)
 	end
 end)
+
+-- ผู้ใช้ขอ: ม็อบออกท่าใส่ระหว่างตี โดนตีล้ม/ชะงักแล้วคอมโบขาด parry กลับทำให้ตีต่อเนื่องได้
+-- ตัวจับท่าเป็นชุดเดียวกับ Auto-Dodge (ท่าที่เรียนไว้ในไฟล์ใช้ร่วมกัน)
+switchRow("Parry อัตโนมัติ", "ปิดอยู่", 7, function(on, row)
+	autoDodge.parry = on
+	-- parryNow อยู่ในบล็อก Auto-Dodge อัปเดตตัวนับผ่านตรงนี้
+	autoDodge.parryRow = row
+	if on then
+		if not autoDodge.on then
+			autoDodge.start()
+		end
+		row.setDesc("เฝ้าท่าตีของม็อบในระยะ 12 stud · parry ไป " .. autoDodge.parries .. " ครั้ง")
+	elseif not autoDodge.on then
+		stopDodge()
+	end
+end)
+track({
+	Disconnect = function()
+		autoDodge.parry = false
+	end,
+})
 
 -- Auto-Quest อยู่เหนือไฟล์ อ้าง auraRow ตรง ๆ ไม่ได้ เลยผูกผ่าน Runner
 -- ผ่าน auraRow.set เพื่อให้สวิตช์บนจอขยับตามจริง ไม่ใช่แค่ตั้ง flag เงียบ ๆ
@@ -7301,14 +7452,14 @@ local function fastLoop()
 			if heldSlot() == 0 and slotHasItem(primarySlot()) then
 				equipSlot(primarySlot())
 			end
-			-- รอจนถึงเวลาหมัดถัดไป ระหว่างนั้นลอยเหนือหัวเป้าทุกเฟรม (ม็อบเดิน วาร์ปครั้งเดียวตำแหน่งเพี้ยน)
+			-- รอจนถึงเวลาหมัดถัดไป ระหว่างนั้นยืนข้างเป้าหันเข้าหาทุกเฟรม (ม็อบเดิน วาร์ปครั้งเดียวตำแหน่งเพี้ยน)
 			local fireAt = os.clock() + math.max(0, Chain.waitLeft())
 			-- เพิ่งวาร์ปมาถึง ต้องค้างให้เซิร์ฟเห็นตำแหน่งก่อน ยิงเฟรมเดียวกับที่วาร์ปเข้า 0 หมัด (ดู Aura.BlinkBefore)
 			if not positioned and (hrp.Position - root.Position).Magnitude > Aura.Range then
 				fireAt = math.max(fireAt, os.clock() + Aura.BlinkBefore)
 			end
 			repeat
-				if not positioned and not pinAbove(hrp, root) then
+				if not positioned and not standBeside(hrp, root) then
 					break
 				end
 				if os.clock() < fireAt then
@@ -7318,7 +7469,7 @@ local function fastLoop()
 			local combo, style
 			if insta.on and mob.Parent and mobHum.Health > 0 then
 				if not positioned then
-					pinAbove(hrp, root)
+					standBeside(hrp, root)
 				end
 				combo, style = Chain.fire()
 			end
