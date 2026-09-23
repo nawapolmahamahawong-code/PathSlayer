@@ -7767,7 +7767,7 @@ local function dropBlock(drops)
 		local label = Rarities.Order[e.r] or "?"
 		lines[#lines + 1] = string.format("\27[1;%sm%-10s\27[0m %s  x%d", AnsiColor[e.r] or "37", label, e.name, e.n)
 	end
-	return "```ansi\n" .. table.concat(lines, "\n") .. "\n```", list[1].r
+	return "```ansi\n" .. table.concat(lines, "\n") .. "\n```", list[1].r, list
 end
 
 -- ค่าตั้งต้นของเลเวล/เงิน นับส่วนต่างจากข้อความก่อนหน้า ผู้อ่านเห็นว่าได้เพิ่มเท่าไรตั้งแต่ข้อความที่แล้ว
@@ -7837,20 +7837,93 @@ task.spawn(function()
 end)
 
 -- ของดรอปหมวดเดียว: code block สีตามความหายาก หรือข้อความว่าง
+-- คืนรายการที่เรียงแล้วด้วย ให้ post ทำการ์ดไอคอนต่อท้าย
 local function dropsSection(drops, emptyText)
-	local block, best = dropBlock(drops)
-	return { "ของที่ได้", { block or emptyText } }, best
+	local block, best, list = dropBlock(drops)
+	return { "ของที่ได้", { block or emptyText } }, best, list
+end
+
+-- ไอคอนไอเทม: Items[ชื่อ].Icon เป็น rbxassetid (ครบทุกชิ้นในเกม ตรวจแล้ว 0 ชิ้นที่ไม่มี)
+-- Discord ดึง rbxassetid ไม่ได้ ต้องแปลงเป็นลิงก์ tr.rbxcdn.com ผ่าน thumbnails API ก่อน
+-- ถามทีละชุดแล้วเก็บไว้ ชิ้นเดิมไม่ต้องถามซ้ำ ถามไม่ผ่านก็ส่งข้อความได้ตามปกติแค่ไม่มีรูป
+local IconDefs = require(ReplicatedStorage.CAM.Global.Collectibles.Items)
+local iconUrl = {}
+local function fetchIcons(names)
+	local ids, byId = {}, {}
+	for _, name in ipairs(names) do
+		local def = IconDefs[name]
+		local id = iconUrl[name] == nil and def and tostring(def.Icon or ""):match("%d+")
+		if id then
+			ids[#ids + 1] = id
+			byId[id] = name
+		elseif iconUrl[name] == nil then
+			iconUrl[name] = false
+		end
+	end
+	if #ids == 0 then
+		return
+	end
+	local ok, res = pcall(httpRequest, {
+		Url = "https://thumbnails.roblox.com/v1/assets?size=150x150&format=Png&isCircular=false&assetIds="
+			.. table.concat(ids, ","),
+		Method = "GET",
+	})
+	local okBody, body = pcall(HttpService.JSONDecode, HttpService, ok and res.Body or "")
+	for _, e in ipairs(okBody and type(body) == "table" and body.data or {}) do
+		local name = byId[tostring(e.targetId)]
+		if name and e.state == "Completed" and e.imageUrl then
+			iconUrl[name] = e.imageUrl
+		end
+	end
+end
+
+-- การ์ดเล็กต่อไอเทม: ไอคอนเกม + ชื่อ × จำนวน แถบสีตามความหายาก ข้อความเดียวใส่ embed ได้ 10 อัน
+-- อันแรกเป็นการ์ดหลัก เหลือให้ไอเทม 9 ชิ้น ที่เกินจากนั้นยังอยู่ในรายการ code block ของการ์ดหลัก
+local MaxItemCards = 9
+local function itemCards(list)
+	local names = {}
+	for i = 1, math.min(#list, MaxItemCards) do
+		names[i] = list[i].name
+	end
+	fetchIcons(names)
+	local cards = {}
+	for i = 1, #names do
+		local e = list[i]
+		cards[i] = {
+			color = colorInt(e.r),
+			author = {
+				name = string.format("%s  ×%d  ·  %s", e.name, e.n, Rarities.Order[e.r] or "?"),
+				icon_url = iconUrl[e.name] or nil,
+			},
+		}
+	end
+	return cards
 end
 
 local outbox = {}
 local function post(embed)
-	embed.footer = { text = "XIIIN" }
-	embed.timestamp = DateTime.now():ToIsoDate()
+	-- ทำสำเนา ไม่แก้ตัวในคิว: โดน 429 แล้วส่งตัวเดิมซ้ำ items ต้องยังอยู่
+	-- items / iconOf ใช้ภายใน ห้ามส่งไป Discord (ช่องที่ไม่รู้จักทำให้ทั้งข้อความโดนปฏิเสธได้)
+	local main = table.clone(embed)
+	main.items, main.iconOf = nil, nil
+	main.footer = { text = "XIIIN" }
+	main.timestamp = DateTime.now():ToIsoDate()
+	local items, iconOf = embed.items, embed.iconOf
+	local embeds = { main }
+	if iconOf then
+		fetchIcons({ iconOf })
+		if iconUrl[iconOf] then
+			main.thumbnail = { url = iconUrl[iconOf] }
+		end
+	end
+	for _, c in ipairs(items and itemCards(items) or {}) do
+		embeds[#embeds + 1] = c
+	end
 	return httpRequest({
 		Url = cfg.url,
 		Method = "POST",
 		Headers = { ["Content-Type"] = "application/json" },
-		Body = HttpService:JSONEncode({ username = "XIIIN", embeds = { embed } }),
+		Body = HttpService:JSONEncode({ username = "XIIIN", embeds = embeds }),
 	})
 end
 
@@ -7895,8 +7968,10 @@ local function sendBoss(b)
 		bossLines[#bossLines + 1] = string.format("**กำลังฟาร์ม:** %s  (%s)", b.target,
 			b.drops[b.target] and "ดรอปแล้ว!" or "ยังไม่ดรอป")
 	end
-	local drops, best = dropsSection(b.drops, Runner.lootOn() and "ไม่มีของตก" or "ไม่ได้เก็บ (Auto-Chest ปิดอยู่)")
-	queue(card("ฆ่าบอส " .. b.name, best > 0 and colorInt(best) or 0xE25F5F, { { "บอส", bossLines }, drops }))
+	local drops, best, list = dropsSection(b.drops, Runner.lootOn() and "ไม่มีของตก" or "ไม่ได้เก็บ (Auto-Chest ปิดอยู่)")
+	local embed = card("ฆ่าบอส " .. b.name, best > 0 and colorInt(best) or 0xE25F5F, { { "บอส", bossLines }, drops })
+	embed.items = list
+	queue(embed)
 end
 
 local function onKill(model, hum)
@@ -7956,7 +8031,10 @@ function Runner.hook(kind, value)
 		if cfg.rare and rarityOf(value) >= Hook.RareAt then
 			local drops, best = dropsSection({ [value] = 1 }, "-")
 			local from = pendingBoss and ("หีบบอส " .. pendingBoss.name) or "ม็อบ / หีบ"
-			queue(card("ได้ของหายาก!", colorInt(best), { drops, { "ที่มา", { "**จาก:** " .. from } } }))
+			local embed = card("ได้ของหายาก!", colorInt(best), { drops, { "ที่มา", { "**จาก:** " .. from } } })
+			-- ชิ้นเดียว ใช้รูปไอเทมใหญ่มุมขวาแทนรูปผู้เล่น
+			embed.iconOf = value
+			queue(embed)
 		end
 	elseif kind == "quest" then
 		Hook.quests = (Hook.quests or 0) + 1
@@ -7978,7 +8056,7 @@ local function sendSummary()
 		total += n
 	end
 	local minutes = math.max(1, math.floor((os.clock() - batch.since) / 60 + 0.5))
-	local drops, best = dropsSection(batch.drops, "ยังไม่มีของตก")
+	local drops, best, list = dropsSection(batch.drops, "ยังไม่มีของตก")
 	local empty = total == 0 and next(batch.drops) == nil
 	batch = { kills = {}, drops = {}, since = os.clock() }
 	if empty then
@@ -7992,14 +8070,16 @@ local function sendSummary()
 	for _, k in ipairs(kills) do
 		lines[#lines + 1] = string.format("[%d] - %s", k.n, k.name)
 	end
-	queue(card("สรุปการฟาร์ม", best > 0 and colorInt(best) or 0x6EBE82, {
+	local embed = card("สรุปการฟาร์ม", best > 0 and colorInt(best) or 0x6EBE82, {
 		{ "ม็อบที่ฆ่า", #lines > 0 and lines or { "-" } },
 		drops,
 		{ "ช่วงเวลา", {
 			string.format("**เวลา:** %d นาทีล่าสุด", minutes),
 			string.format("**ฆ่ารวม:** %d ตัว", total),
 		} },
-	}))
+	})
+	embed.items = list
+	queue(embed)
 end
 
 -- ตัวส่ง: ทีละข้อความ เว้น SendGap โดน 429 ก็รอตามที่ Discord บอกแล้วส่งตัวเดิมซ้ำ
@@ -8161,9 +8241,11 @@ track(testBtn.MouseButton1Click:Connect(function()
 		for _, name in ipairs({ "Flame Katana", "Black Kumo Haori", "Metal Scraps" }) do
 			sample[name] = 1
 		end
-		local drops = dropsSection(sample, "-")
+		local drops, _, list = dropsSection(sample, "-")
 		drops[1] = "ตัวอย่างของที่ได้ (สีตามความหายากในเกม)"
-		local ok, res = pcall(post, card("เชื่อมต่อสำเร็จ", 0x7AA2FF, { drops }))
+		local embed = card("เชื่อมต่อสำเร็จ", 0x7AA2FF, { drops })
+		embed.items = list
+		local ok, res = pcall(post, embed)
 		local code = ok and type(res) == "table" and res.StatusCode or 0
 		if code >= 200 and code < 300 then
 			lastStatus("ส่งทดสอบสำเร็จ ดูในห้อง Discord ได้เลย", true)
