@@ -118,7 +118,13 @@ end
 
 local Game = {}
 
--- โมดูลไอเทมมี 57 ตัว require ครั้งเดียวแล้วแคช ไม่งั้นทุกครั้งที่รีเฟรชร้านจะ require ซ้ำ
+-- หมวดในแผง = ชื่อโฟลเดอร์ใน ReplicatedStorage.Items
+-- ของสวมใส่คือโฟลเดอร์ที่ทุกโมดูลมี EquipType 3-5 (ตรวจครบทั้ง 256 ตัว ไม่มีปนหมวดอื่น)
+-- Quest Items / Materials / Potions ไม่ใส่ ใส่ไม่ได้และส่วนใหญ่ได้จากเควส
+Game.WeaponGroups = { "Katana", "Weapons" }
+Game.WearGroups = { "Head", "Face", "Ear", "Neck", "Back", "Waist", "Haori", "Outfits" }
+
+-- โมดูลไอเทมรวมกว่า 300 ตัว require ครั้งเดียวแล้วแคช ไม่งั้นทุกครั้งที่รีเฟรชร้านจะ require ซ้ำ
 local itemCache
 local function allWeaponItems()
 	if itemCache then
@@ -126,12 +132,17 @@ local function allWeaponItems()
 	end
 	itemCache = {}
 	local items = ReplicatedStorage:FindFirstChild("Items")
-	for _, folderName in ipairs({ "Katana", "Weapons" }) do
-		local folder = items and items:FindFirstChild(folderName)
-		if folder then
-			for _, m in ipairs(folder:GetChildren()) do
+	for _, groups in ipairs({ Game.WeaponGroups, Game.WearGroups }) do
+		for _, folderName in ipairs(groups) do
+			local folder = items and items:FindFirstChild(folderName)
+			for _, m in ipairs(folder and folder:GetChildren() or {}) do
 				if m:IsA("ModuleScript") then
-					itemCache[#itemCache + 1] = { name = m.Name, group = folderName, def = require(m) }
+					itemCache[#itemCache + 1] = {
+						name = m.Name,
+						group = folderName,
+						wear = groups == Game.WearGroups,
+						def = require(m),
+					}
 				end
 			end
 		end
@@ -198,9 +209,18 @@ function Game.wallet()
 end
 
 -- เลเวลตัวละครไม่มีเก็บเป็นค่าตรง ๆ ใน Player_Service เกมคำนวณจาก Exp เอง
--- ยังหาสูตรไม่เจอ เลยอ่านจาก attribute/HUD ถ้ามี ไม่มีก็คืน nil
--- แล้วให้ฝั่ง UI แสดงเงื่อนไขเลเวลเป็นคำเตือนแทนการล็อก จะได้ไม่โกหกผู้ใช้
+-- ยังหาสูตรไม่เจอ แต่ HUD ซ้ายบนเขียนไว้ "Lv 56" (LeftHudPortion.ExpFrame.Context.Level) อ่านจากตรงนั้น
+-- attribute ของผู้เล่น/ตัวละครตรวจแล้วไม่มีเลเวล เก็บไว้เผื่อเกมเพิ่มทีหลัง
+-- หาไม่เจอทั้งคู่คืน nil ฝั่ง UI แสดงเงื่อนไขเลเวลเป็นคำเตือนแทนการล็อก จะได้ไม่โกหกผู้ใช้
 function Game.level()
+	local hud = LocalPlayer.PlayerGui:FindFirstChild("ComponentsHolder")
+	hud = hud and hud:FindFirstChild("LeftHudPortion")
+	hud = hud and hud:FindFirstChild("ExpFrame")
+	local label = hud and hud:FindFirstChild("Level", true)
+	local shown = label and label:IsA("TextLabel") and tonumber(label.Text:match("(%d+)"))
+	if shown then
+		return shown
+	end
 	local char = LocalPlayer.Character
 	for _, src in ipairs({ LocalPlayer, char }) do
 		if src then
@@ -221,18 +241,48 @@ function Game.race()
 	return r and tostring(r.Value) or nil
 end
 
--- แหล่งที่ได้อาวุธมี 2 ทาง: ร้าน NPC (itemsforsale) กับโต๊ะตีของช่าง (Crafting.Definitions)
--- ที่เหลือคือของดรอป/แลกอย่างเดียว ซื้อไม่ได้
-local function craftingFor(itemName)
-	if not (Crafting and Crafting.Definitions) then
-		return nil
-	end
-	for _, recipe in pairs(Crafting.Definitions) do
-		if recipe.result == itemName then
-			return recipe
+-- สูตรตีที่ให้ของชิ้นนี้เป็นชิ้นใหม่ เรียงตามรหัสให้เลือกซ้ำได้ผลเดิมทุกครั้ง
+-- สูตร _t2/_t3 คืออัปเทียร์ของที่ถืออยู่ (วัตถุดิบตัวแรกคือของชิ้นเดียวกัน) ไม่ได้ของเพิ่ม เลยตัดทิ้ง
+-- ของบางชิ้นมีหลายสูตร เช่น Firstlight Katana ตีได้จากดาบฐาน 4 เล่ม
+function Game.recipesFor(itemName)
+	local list = {}
+	for id, recipe in pairs(Crafting and Crafting.Definitions or {}) do
+		local first = recipe.required and recipe.required[1]
+		if recipe.result == itemName and not (first and first.name == itemName) then
+			list[#list + 1] = { id = id, recipe = recipe }
 		end
 	end
-	return nil
+	table.sort(list, function(a, b)
+		return a.id < b.id
+	end)
+	return list
+end
+
+-- โรงตีที่ไปถึงได้จากแมพนี้ กับ NPC ที่ต้องไปยืนข้าง ๆ (เซิร์ฟตอบ "You need to be at the forge" ถ้ายืนไกล)
+-- Crafting.StationNpcs บอก Ouwigahara = Blacksmith Togane ด้วย แต่ Togane ในแมพนี้มีตัวเดียวที่ Hidden Mist Village
+-- และหน้าคุยของเขาเปิดโต๊ะ Station "Ouwland" ส่วน Ouwigahara อยู่อีกแมพหลังเควสประตู Lv 65
+-- ลองยิง CraftRecipe ข้าง Togane แล้ว: shotgun (Ouwland) ตอบ "You need 100 Metal Scraps" = ยืนถูกโรง
+Game.Forges = { ["Hidden Mist"] = "Yagane", Ouwland = "Blacksmith Togane" }
+
+-- เงินไม่มีทางหาเพิ่มจากสคริปต์ ขาดเมื่อไรก็จบตรงนั้น
+Game.Currencies = { Wen = true, RunPoints = true }
+
+-- ของที่ไม่มีในตารางดรอป ร้าน หรือสูตร แต่บทพูดของเกมบอกไว้ว่าได้จากไหน
+Game.SourceHints = {
+	-- Yagane (Dialogues.Yap): "Crude Iron is issued at Final Selection" ไม่มีเควสไหนแจกตรง ๆ เซิร์ฟเวอร์ให้เอง
+	["Crude Iron Ingot"] = "แจกที่ Final Selection",
+}
+
+-- ร้านที่ขายผ่านหน้าคุย NPC ไม่มีแผง เกมล็อกหน้าร้านไว้ด้วยเควส (BeforeRun ใน Dialogues.Yap)
+-- ไม่ได้อยู่ใน RequiresQuestDone ของ itemsforsale เลยต้องจดเอง
+Game.ShopGates = {
+	-- Ginzo ขาย Metal Scraps / Silk Thread หลังคืนกล่องเครื่องประดับ ก่อนนั้นหน้าคุยไม่มีปุ่มดูของ
+	Ginzo = "Ill find the jewelry box(Lv 45)",
+}
+
+function Game.questDone(questName)
+	local Quests = require(ReplicatedStorage.CAM.Global.Subsets.Gameplay.Quests)
+	return Quests.GetPlayerQuestState(LocalPlayer, questName) == "Done"
 end
 
 local function priceParts(price)
@@ -258,6 +308,8 @@ local function lootTables()
 		liveTables = {
 			npc = type(npc) == "table" and npc or {},
 			chests = type(chests) == "table" and chests or {},
+			-- ชื่อไอเทม -> เส้นทาง (false = ไม่มี) แผงมีของกว่า 300 แถว วนตาราง NPC x หีบทุกแถวทุกรอบช้าเกิน
+			routes = {},
 		}
 	end
 	return liveTables
@@ -266,8 +318,15 @@ end
 -- ทางที่ได้ของชิ้นนี้เร็วสุดจากการฟาร์มม็อบ: ดรอปตรงจากม็อบก่อน ไม่มีค่อยดูว่าหีบไหนมี แล้วใครดรอปหีบนั้น
 -- เลือกโอกาสสูงสุด ถ้าเท่ากันเอาตัวเลือดน้อยกว่า (ฆ่าเร็วกว่า)
 -- คืน { kind = "drop"|"chest", code = รหัสม็อบ (ตรงกับ NpcCode), npc, chance, level, night, chest }
-function Game.weaponRoute(itemName)
+function Game.dropRoute(itemName)
 	local t = lootTables()
+	if t.routes[itemName] == nil then
+		t.routes[itemName] = Game.findRoute(t, itemName) or false
+	end
+	return t.routes[itemName] or nil
+end
+
+function Game.findRoute(t, itemName)
 	local function better(a, b)
 		if not b then
 			return true
@@ -347,6 +406,195 @@ function Game.routeText(route)
 	return text
 end
 
+-- ร้านที่ขายของชิ้นนี้ด้วย Wen ได้จริงตอนนี้ คืน listing หรือ nil กับเหตุผล
+-- ราคา Product = Robux ข้ามไป ของพวกนั้นเกือบทุกชิ้นดรอปหรือตีได้อยู่แล้ว
+function Game.shopListing(itemName)
+	local listing = Shop and Shop.itemsforsale[itemName]
+	if not (listing and listing.Price) or listing.Price.Product then
+		return nil
+	end
+	if listing.RequiresQuestDone and not Game.questDone(listing.RequiresQuestDone) then
+		return nil, "ต้องจบเควส: " .. listing.RequiresQuestDone
+	end
+	local _, seller = Game.shopSpot(itemName)
+	local gate = seller and Game.ShopGates[seller]
+	if gate and not Game.questDone(gate) then
+		return nil, string.format("ร้าน %s ต้องจบเควส: %s", seller, gate)
+	end
+	return listing
+end
+
+-- own = ข้อความของแถวตัวเอง ไม่ต้องขึ้นชื่อซ้ำ
+function Game.noSourceText(itemName, own)
+	local subject = own and "" or (itemName .. " ")
+	if Game.SourceHints[itemName] then
+		return string.format("ต้องมี %s (%s)", itemName, Game.SourceHints[itemName])
+	end
+	-- มาถึงตรงนี้คือไม่มีร้านที่ขายตอนนี้ ไม่มีม็อบดรอป และตีไม่ได้ ถามดัชนีแหล่งของเกมเอง (ตัวที่ทำ tooltip "ได้จากไหน")
+	-- ที่เหลือจะเป็น: ร้านหมุนเวียน (Elara / Lynx สลับของทุกรอบ, Black Marketer โผล่ 30 นาที)
+	-- ของพวกนี้ลงทะเบียนเข้า itemsforsale เฉพาะรอบที่มีขาย รอบไหนมีแถวจะเป็น BUY เอง
+	-- หีบที่วางในแมพเอง (Snow Chest, Sealed Cache, หีบของ Ouwigahara) และของตกปลา
+	local ItemSources = require(ReplicatedStorage.CAM.Client.Modules.ItemSources)
+	for _, e in ipairs(ItemSources.Get(itemName)) do
+		local seller = e.Where:match("^Sold by (.+)")
+		local quest = e.Where:match("^Quest: (.+)")
+		if seller then
+			return string.format("%sขายที่ %s (ร้านหมุนเวียน รอบนี้ไม่มี)", subject, seller)
+		elseif quest then
+			return string.format("%sรางวัลเควส %s", subject, quest)
+		elseif e.Where == "Fished up" then
+			return subject .. "ได้จากตกปลา (ยังไม่รองรับ)"
+		elseif lootTables().chests[e.Where] then
+			return string.format("%sได้จากหีบ %s ในแมพ (ยังไม่รองรับ)", subject, e.Where)
+		end
+	end
+	return own and "ยังไม่รู้แหล่งได้" or ("ยังไม่รู้แหล่งได้ " .. itemName)
+end
+
+-- วัตถุดิบทั้งสูตร เรียง: ของหลัก (อาจต้องตีต่ออีกชั้น) > วัตถุดิบเสริม > แบบพิมพ์ > เงิน
+-- เงินไว้ท้ายสุดเพราะการซื้อวัตถุดิบข้างหน้ากิน Wen ก้อนเดียวกัน เช็กก่อนจะผ่านแล้วมาขาดทีหลัง
+-- keep = แบบพิมพ์ต้องถือไว้แต่ตีแล้วไม่หาย (Crafting.keep เช่น Firstlight Katana Schematic)
+function Game.recipeInputs(recipe)
+	local list = {}
+	for _, m in ipairs(recipe.required or {}) do
+		list[#list + 1] = { name = m.name, amount = m.amount }
+	end
+	for _, m in ipairs(recipe.additionalMaterials or {}) do
+		list[#list + 1] = { name = m.name, amount = m.amount }
+	end
+	for _, name in ipairs(recipe.keep or {}) do
+		list[#list + 1] = { name = name, amount = 1, keep = true }
+	end
+	for _, p in ipairs(priceParts(recipe.price)) do
+		list[#list + 1] = { name = p.currency, amount = p.amount }
+	end
+	return list
+end
+
+function Game.newPlan()
+	return { buy = {}, farm = {}, craft = {}, spend = {}, how = {} }
+end
+
+-- จำลองการหาของทั้งต้นไม้บนกระเป๋าจำลอง w โดยไม่ยิงอะไรไปเซิร์ฟเวอร์ ใช้สองที่:
+-- แถวในแผง (ทำได้ไหม ติดอะไร) กับ Runner.obtain (ชั้นนี้ต้องซื้อ ฟาร์ม หรือตีสูตรไหน)
+-- ลำดับเลือกทาง: ร้าน > ฟาร์มม็อบ/บอส > ตี ตรงกับที่แถวอาวุธใช้มาตลอด
+-- w ถูกหักตามที่ใช้ ทางที่เลือกบันทึกลง out.how[ชื่อ] คืน nil ถ้าหาได้ครบ ไม่งั้นคืนเหตุผลข้อแรกที่ติด
+function Game.plan(name, need, w, out, depth)
+	depth = depth or 0
+	local have = w[name] or 0
+	w[name] = math.max(have - need, 0)
+	if Game.Currencies[name] then
+		out.spend[name] = (out.spend[name] or 0) + need
+		return have < need and string.format("ขาด %s %s", comma(need - have), name) or nil
+	end
+	if have >= need then
+		return nil
+	end
+	local short = need - have
+	-- สูตรที่ลึกสุดในเกมคือ 3 ชั้น (Firstlight Katana <- Thundercloud Katana <- Thunder Katana) เกินนี้แปลว่าวน
+	if depth > 6 then
+		return "สูตรวนกลับมาที่ " .. name
+	end
+
+	local listing, shopWhy = Game.shopListing(name)
+	if listing then
+		out.how[name] = { kind = "shop", listing = listing }
+		out.buy[name] = (out.buy[name] or 0) + short
+		for _, p in ipairs(priceParts(listing.Price)) do
+			local err = Game.plan(p.currency, p.amount * short, w, out, depth + 1)
+			if err then
+				return err
+			end
+		end
+		return nil
+	end
+
+	local route = Game.dropRoute(name)
+	if route then
+		out.how[name] = { kind = "farm", route = route }
+		out.farm[#out.farm + 1] = { item = name, amount = short, route = route }
+		return nil
+	end
+
+	local why
+	for _, c in ipairs(Game.recipesFor(name)) do
+		local station = c.recipe.station
+		if not Game.Forges[station] then
+			why = why or string.format("%s ต้องตีที่ %s (อีกแมพ ยังไม่รองรับ)", name, tostring(station))
+		else
+			-- ลองสูตรนี้บนสำเนา ติดก็ทิ้งไปลองสูตรถัดไป กระเป๋าจริงไม่ถูกแตะจนกว่าจะผ่าน
+			local tw, to = table.clone(w), Game.newPlan()
+			local times = math.ceil(short / (c.recipe.amount or 1))
+			local err
+			for _ = 1, times do
+				for _, input in ipairs(Game.recipeInputs(c.recipe)) do
+					err = Game.plan(input.name, input.amount, tw, to, depth + 1)
+					if err then
+						break
+					end
+					if input.keep then
+						tw[input.name] = (tw[input.name] or 0) + input.amount
+					end
+				end
+				if err then
+					break
+				end
+			end
+			if not err then
+				table.clear(w)
+				for k, v in pairs(tw) do
+					w[k] = v
+				end
+				for k, v in pairs(to.buy) do
+					out.buy[k] = (out.buy[k] or 0) + v
+				end
+				for k, v in pairs(to.spend) do
+					out.spend[k] = (out.spend[k] or 0) + v
+				end
+				for k, v in pairs(to.how) do
+					out.how[k] = out.how[k] or v
+				end
+				table.move(to.farm, 1, #to.farm, #out.farm + 1, out.farm)
+				table.move(to.craft, 1, #to.craft, #out.craft + 1, out.craft)
+				out.how[name] = { kind = "craft", id = c.id, recipe = c.recipe }
+				out.craft[#out.craft + 1] = { item = name, station = station, times = times }
+				return nil
+			end
+			why = why or err
+		end
+	end
+	return why or shopWhy or Game.noSourceText(name)
+end
+
+-- สรุปแผนสั้น ๆ ให้พอดีแถว: ตีที่ไหน ต้องฟาร์มอะไร ซื้ออะไร ใช้เงินเท่าไร
+function Game.planText(station, o)
+	local parts = { "ตีที่ " .. tostring(station) }
+	local farmed = {}
+	for _, f in ipairs(o.farm) do
+		farmed[#farmed + 1] = f.item
+	end
+	if #farmed > 0 then
+		parts[#parts + 1] = "ฟาร์ม " .. table.concat(farmed, ", ")
+	end
+	local bought = {}
+	for item in pairs(o.buy) do
+		bought[#bought + 1] = item
+	end
+	table.sort(bought)
+	if #bought > 0 then
+		parts[#parts + 1] = "ซื้อ " .. table.concat(bought, ", ")
+	end
+	for _, currency in ipairs({ "Wen", "RunPoints" }) do
+		if (o.spend[currency] or 0) > 0 then
+			parts[#parts + 1] = comma(o.spend[currency]) .. " " .. currency
+		end
+	end
+	if #parts == 1 then
+		parts[2] = "ของครบแล้ว"
+	end
+	return table.concat(parts, " · ")
+end
+
 function Game.listings()
 	local wallet = Game.wallet()
 	local level = Game.level()
@@ -370,9 +618,14 @@ function Game.listings()
 		}
 
 		local listing = forSale[item.name]
-		local recipe = craftingFor(item.name)
-		local route = not listing and Game.weaponRoute(item.name) or nil
+		local recipes = Game.recipesFor(item.name)
+		-- ขายเป็น Robux แต่ดรอปหรือตีได้ด้วย ไปทางที่ไม่ต้องจ่ายเงินจริง
+		if listing and listing.Price and listing.Price.Product and (Game.dropRoute(item.name) or #recipes > 0) then
+			listing = nil
+		end
+		local route = not listing and Game.dropRoute(item.name) or nil
 		row.have = wallet[item.name] or 0
+		row.wear = item.wear
 
 		if route then
 			-- ฟาร์มม็อบ/บอสจนดรอป ไม่ต้องใช้เงิน เลยข้ามการเช็กราคาข้างล่าง (cost ว่าง)
@@ -384,30 +637,42 @@ function Game.listings()
 			row.source = "shop"
 			row.buyable = true
 			row.cost = priceParts(listing.Price)
-			if listing.RequiresQuestDone then
+			-- เดิมล็อกทุกชิ้นที่มี RequiresQuestDone ทั้งที่จบเควสแล้ว (แผง Elara ทั้งร้านขึ้นล็อกหมด)
+			if listing.RequiresQuestDone and not Game.questDone(listing.RequiresQuestDone) then
 				row.locked = true
 				row.reason = "ต้องจบเควส: " .. listing.RequiresQuestDone
 			end
 			if listing.Requirements and listing.Requirements.Level then
 				row.reqLevel = listing.Requirements.Level
 			end
-		elseif recipe then
+		elseif #recipes > 0 then
 			row.source = "craft"
-			row.station = recipe.station
-			for _, p in ipairs(priceParts(recipe.price)) do
-				row.cost[#row.cost + 1] = p
+			row.station = recipes[1].recipe.station
+			for _, c in ipairs(recipes) do
+				if Game.Forges[c.recipe.station] then
+					row.station = c.recipe.station
+					break
+				end
 			end
-			for _, mat in pairs(recipe.required or {}) do
-				row.cost[#row.cost + 1] = { currency = mat.name, amount = mat.amount }
+			-- ขอเพิ่มอีก 1 ชิ้นจากที่มี เหมือนแถวฟาร์ม ของที่มีอยู่แล้วไม่นับเป็นวัตถุดิบของตัวเอง
+			local w = table.clone(wallet)
+			w[item.name] = 0
+			local o = Game.newPlan()
+			local err = Game.plan(item.name, 1, w, o)
+			if not Game.Forges[row.station] then
+				row.locked = true
+				row.reason = "ตีที่ " .. tostring(row.station) .. " (อีกแมพ ยังไม่รองรับ)"
+			elseif err then
+				row.locked = true
+				row.reason = "ตีที่ " .. tostring(row.station) .. " · " .. err
+			else
+				row.station = o.how[item.name].recipe.station
+				row.farmable = true
+				row.reason = Game.planText(row.station, o)
 			end
-			for _, mat in pairs(recipe.additionalMaterials or {}) do
-				row.cost[#row.cost + 1] = { currency = mat.name, amount = mat.amount }
-			end
-			row.locked = true
-			row.reason = "ตีที่ช่าง " .. tostring(recipe.station) .. " (ยังไม่รองรับ)"
 		else
 			row.locked = true
-			row.reason = "ยังไม่รู้แหล่งได้ / ยังไม่รองรับ"
+			row.reason = Game.noSourceText(item.name, true)
 		end
 
 		-- เงินไม่พอ: เช็กทุกสกุลในราคา ขาดตัวไหนบอกตัวนั้น
@@ -473,20 +738,44 @@ end
 -- ร้านไหนขายอะไรดูได้จากข้อมูลเกมโดยไม่ต้องรอ stream:
 -- Ouwland.Content.<โซน>.Npcs.<NPC>.Shop มีโมเดลชื่อตามของที่ขาย (Raze: Fancy Katana, Regular Katana)
 -- คืนตำแหน่งยืนของ NPC ร้านนั้น จาก Spawns[1] ของโมดูล NPC
+-- ร้านแบบคุยกับ NPC ไม่มีโฟลเดอร์ Shop แต่มีตาราง Shop ในโมดูล (Ginzo: Metal Scraps, Silk Thread)
+-- ตัวนี้ไม่มีแผง ต้องยืนข้าง NPC แทน เลยคืน true ตัวที่สาม
+-- ยังไม่ได้ยืนยันว่าเซิร์ฟรับ PurchaseFromShop ข้าง Ginzo บัญชีที่ทดสอบยังไม่จบเควสกล่องของเขา
+-- ร้านที่ไม่มี NPC ถือของเลย (หุ่นโชว์ชุดของ Elara) มีโมเดลโชว์ชื่อเดียวกับของวางใน workspace.Debree ตลอด
+-- แม้ prompt ยังไม่ stream (เจอ ...Elara.outfit_stand.Manequin.DisplayClothing.Checkered Haori จาก Windy Peak)
 function Game.shopSpot(itemName)
-	for _, region in ipairs(ReplicatedStorage.Ouwland.Content:GetChildren()) do
-		local npcs = region:FindFirstChild("Npcs")
-		for _, m in ipairs(npcs and npcs:GetDescendants() or {}) do
-			local shop = m:IsA("ModuleScript") and m:FindFirstChild("Shop")
-			if shop and shop:FindFirstChild(itemName) then
-				local ok, def = pcall(require, m)
-				local spawn = ok and def.Spawns and def.Spawns[1]
-				if typeof(spawn) == "CFrame" then
-					return spawn.Position, def.Name or m.Name
-				elseif typeof(spawn) == "Vector3" then
-					return spawn, def.Name or m.Name
+	if not Game.shopSpots then
+		Game.shopSpots = {}
+		for _, region in ipairs(ReplicatedStorage.Ouwland.Content:GetChildren()) do
+			local npcs = region:FindFirstChild("Npcs")
+			for _, m in ipairs(npcs and npcs:GetDescendants() or {}) do
+				local ok, def = false, nil
+				if m:IsA("ModuleScript") then
+					ok, def = pcall(require, m)
+				end
+				local spawn = ok and type(def) == "table" and def.Spawns and def.Spawns[1]
+				local pos = typeof(spawn) == "CFrame" and spawn.Position or (typeof(spawn) == "Vector3" and spawn)
+				if pos then
+					local seller = def.Name or m.Name
+					local folder = m:FindFirstChild("Shop")
+					for _, stock in ipairs(folder and folder:GetChildren() or {}) do
+						Game.shopSpots[stock.Name] = { pos = pos, seller = seller }
+					end
+					for name in pairs(type(def.Shop) == "table" and def.Shop or {}) do
+						Game.shopSpots[name] = { pos = pos, seller = seller, talk = true }
+					end
 				end
 			end
+		end
+	end
+	local spot = Game.shopSpots[itemName]
+	if spot then
+		return spot.pos, spot.seller, spot.talk
+	end
+	local debree = workspace:FindFirstChild("Debree")
+	for _, d in ipairs(debree and debree:GetDescendants() or {}) do
+		if d.Name == itemName and d:IsA("Model") then
+			return d:GetPivot().Position, "แผงโชว์"
 		end
 	end
 	return nil
@@ -499,7 +788,10 @@ end
 -- ยิงจากที่ไหนก็ได้เซิร์ฟเวอร์เงียบ (ลองแล้ว Wen ค้าง 1880) ต้องยืนที่แผงขายของชิ้นนั้น
 -- เซิร์ฟเวอร์ไม่ตอบกลับ เลยยืนยันผลจากเงินที่ลดลงจริงแทน
 -- Shop.CanBuy ไม่ได้ใช้: เรียกจาก executor แล้วพังทุกครั้ง ("Cannot require a non-RobloxScript module")
-function Game.buy(row)
+-- amount: เซิร์ฟตัดเหลือ 1-99 (Shop.SanitizeAmount) และอาวุธได้ทีละ 1 เสมอ (EffectiveAmount)
+-- คนเรียกที่ต้องการเยอะกว่านั้นให้วนเช็กจำนวนในกระเป๋าเอง
+function Game.buy(row, amount)
+	amount = amount or 1
 	if not (Shop and SignalEvent) then
 		return false, "ไม่พบโมดูลร้าน"
 	end
@@ -521,9 +813,10 @@ function Game.buy(row)
 	end
 
 	-- อยู่คนละโซนกับร้าน: วาร์ปไปที่ NPC ร้านก่อน แล้วรอแผง stream เข้ามา
+	local standPos
 	local stand = Game.findStand(row.name)
 	if not stand then
-		local spot, shopName = Game.shopSpot(row.name)
+		local spot, shopName, talk = Game.shopSpot(row.name)
 		if not spot then
 			return false, "ไม่รู้ว่าร้านไหนขาย " .. row.name
 		end
@@ -531,22 +824,33 @@ function Game.buy(row)
 		local untilT = os.clock() + 6
 		repeat
 			task.wait(0.25)
-			stand = Game.findStand(row.name)
-		until stand or os.clock() > untilT
-		if not stand then
+			if talk then
+				-- ร้านแบบคุย: ยืนข้างตัว NPC เหมือนตอนเปิดหน้าคุย ระยะ prompt ของเกมคือ 10
+				for _, d in ipairs(workspace:GetDescendants()) do
+					if d:IsA("Model") and d.Name == shopName and d:FindFirstChildWhichIsA("ProximityPrompt", true) then
+						standPos = d:GetPivot().Position
+						break
+					end
+				end
+			else
+				stand = Game.findStand(row.name)
+			end
+		until stand or standPos or os.clock() > untilT
+		if not (stand or standPos) then
 			goHome()
 			return false, "วาร์ปไปร้าน " .. tostring(shopName) .. " แล้วแต่แผงขายไม่โหลด"
 		end
 	end
 
-	local standPos = stand.Parent:IsA("BasePart") and stand.Parent.Position
+	standPos = standPos
+		or stand.Parent:IsA("BasePart") and stand.Parent.Position
 		or (stand.Parent:IsA("Attachment") and stand.Parent.WorldPosition)
 		or stand.Parent:GetPivot().Position
 	hrp.CFrame = CFrame.lookAt(standPos + Vector3.new(0, 1, 4), standPos)
 	task.wait(0.6)
 
 	local before = Game.wallet()
-	local sent, err = pcall(SignalEvent.ToServer, "PurchaseFromShop", row.name, 1)
+	local sent, err = pcall(SignalEvent.ToServer, "PurchaseFromShop", row.name, amount)
 	local bought = false
 	if sent then
 		local deadline = os.clock() + 4
@@ -1075,7 +1379,9 @@ local function makePanel(title, hasFooter)
 	return self
 end
 
-local function addPills(container, names, onChange)
+-- compact: แถวหมวดของสวมใส่มี 9 เม็ด ขนาดปกติกว้างราว 520px ล้นแผง (ในแผงเหลือ ~450px)
+-- ย่อเป็น 6px/ตัวอักษร + ขอบ 14 เหลือราว 410px
+local function addPills(container, names, onChange, compact)
 	local current = names[1]
 	local buttons = {}
 	for _, name in ipairs(names) do
@@ -1088,7 +1394,7 @@ local function addPills(container, names, onChange)
 			FontFace = font(Enum.FontWeight.Medium),
 		})
 		local pill = new("TextButton", {
-			Size = UDim2.fromOffset(#name * 7 + 22, 24),
+			Size = compact and UDim2.fromOffset(#name * 6 + 14, 24) or UDim2.fromOffset(#name * 7 + 22, 24),
 			BackgroundColor3 = Theme.Raised,
 			BackgroundTransparency = name == current and 0 or 1,
 			AutoButtonColor = false,
@@ -1116,7 +1422,7 @@ end
 local Runner
 
 local shopUI = makePanel("Get Weapons", true)
-shopUI.search.PlaceholderText = "ค้นหาอาวุธ…"
+shopUI.search.PlaceholderText = "ค้นหาชื่อ หมวด หรือแหล่งได้ เช่น Rengu, ตีที่, ฟาร์ม…"
 
 local buyLabel = new("TextLabel", {
 	Size = UDim2.new(1, 0, 1, 0),
@@ -1137,44 +1443,82 @@ local buyBtn = new("TextButton", {
 	Parent = shopUI.panel,
 }, { corner(8), buyLabel })
 
-local shopFilter = "All"
-local shopSelected
+-- top = เม็ดแถวบน (All / Katana / Weapons / Accessory) wear = หมวดย่อยของสวมใส่
+-- แถวหมวดย่อยโชว์เฉพาะตอนเลือก Accessory รวมแถวเดียวไม่พอ 11 เม็ดกว้างเกินแผง
+local shopFilter = {
+	top = "All",
+	wear = "All",
+	wearRow = new("Frame", {
+		Position = UDim2.fromOffset(0, 112),
+		Size = UDim2.new(1, 0, 0, 24),
+		BackgroundTransparency = 1,
+		Visible = false,
+		Parent = shopUI.panel,
+	}, { new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 6),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}) }),
+}
+-- ของที่ติ๊กไว้ เรียงตามลำดับที่ติ๊ก GET หาทีละชิ้นตามลำดับนี้
+-- เก็บเป็นชื่อ ไม่ใช่แถว เพราะ rebuildShop สร้างแถวใหม่ทุกครั้ง แต่ชิ้นที่ยังหาไม่ได้ต้องติ๊กค้างไว้
+local shopQueue = {}
 local shopRows = {}
 
+-- ข้อความจาก Runner ขึ้นแผงนี้พร้อมบอกว่ากำลังทำชิ้นที่เท่าไรของคิว
+-- ต้องเป็นฟังก์ชันตัวเดิมตลอด ปุ่มเช็กว่าตัวรันเป็นของแผงนี้ไหมจาก Runner.statusSink == shopUI.queueStatus
+function shopUI.queueStatus(text, color)
+	shopUI.setStatus((shopUI.progress or "") .. text, color)
+end
+
 local function refreshBuyButton()
-	if Runner and Runner.active and Runner.statusSink == shopUI.setStatus then
+	if Runner and Runner.active and Runner.statusSink == shopUI.queueStatus then
 		buyLabel.Text = "STOP"
 		tween(buyBtn, { BackgroundColor3 = Theme.Danger }, FAST)
 		tween(buyLabel, { TextColor3 = Theme.Text }, FAST)
 		return
 	end
-	local enabled = shopSelected ~= nil
-		and not shopSelected.locked
-		and (shopSelected.buyable or shopSelected.farmable)
-		and not (Runner and Runner.active)
+	local enabled = #shopQueue > 0 and not (Runner and Runner.active)
 	if Runner and Runner.active then
 		buyLabel.Text = "มีระบบอื่นกำลังรันอยู่"
+	elseif #shopQueue == 1 then
+		buyLabel.Text = "GET  ·  " .. shopQueue[1]
+	elseif #shopQueue > 1 then
+		buyLabel.Text = string.format("GET  ·  %d ชิ้นตามลำดับ", #shopQueue)
 	else
-		buyLabel.Text = shopSelected and ("GET  ·  " .. shopSelected.name) or "GET"
+		buyLabel.Text = "GET"
 	end
 	tween(buyBtn, { BackgroundColor3 = enabled and Theme.Accent or Theme.Raised }, FAST)
 	tween(buyLabel, { TextColor3 = enabled and Theme.Base or Theme.Dim }, FAST)
 end
 
--- กดซ้ำแถวเดิม = ยกเลิกการเลือก ไม่ต้องมีปุ่ม Cancel แยก
+-- ติ๊กแล้วกล่องเต็มพร้อมเลขลำดับ ผู้ใช้จะได้เห็นว่าชิ้นไหนหาก่อน
+-- hovered = แถวที่เพิ่งกดยกเลิก เมาส์ยังค้างอยู่ ให้อยู่สถานะ hover ไม่ใช่ปกติ
+local function paintShopTicks(hovered)
+	for _, r in ipairs(shopRows) do
+		local order = table.find(shopQueue, r.data.name)
+		tween(r.tickFill, {
+			BackgroundTransparency = order and 0 or 1,
+			Size = order and UDim2.fromOffset(14, 14) or UDim2.fromOffset(8, 8),
+		}, FAST)
+		r.tickNum.Text = order and tostring(order) or ""
+		tween(r.frame, { BackgroundColor3 = (order or r == hovered) and Theme.Raised or Theme.Row }, FAST)
+		r.tickStroke.Color = order and Theme.Accent or Theme.Stroke
+	end
+end
+
+-- กดซ้ำแถวเดิม = เอาออกจากคิว ติ๊กเพิ่มระหว่างกำลังหาได้ ตัวรันอ่านคิวใหม่ทุกชิ้น
 local function selectShopRow(row)
 	if row.data.locked then
 		return
 	end
-	local target = shopSelected ~= row.data and row or nil
-	for _, r in ipairs(shopRows) do
-		local on = r == target
-		tween(r.tickFill, { BackgroundTransparency = on and 0 or 1 }, FAST)
-		-- แถวที่เพิ่งยกเลิกยังมีเมาส์ค้างอยู่ ให้อยู่สถานะ hover ไม่ใช่ปกติ
-		tween(r.frame, { BackgroundColor3 = (on or r == row) and Theme.Raised or Theme.Row }, FAST)
-		r.tickStroke.Color = on and Theme.Accent or Theme.Stroke
+	local at = table.find(shopQueue, row.data.name)
+	if at then
+		table.remove(shopQueue, at)
+	else
+		table.insert(shopQueue, row.data.name)
 	end
-	shopSelected = target and row.data or nil
+	paintShopTicks(row)
 	refreshBuyButton()
 end
 
@@ -1209,6 +1553,16 @@ local function buildShopRow(data, order)
 	}, { corner(7) })
 
 	local tickFill, tickStroke = tickBox(frame)
+	local tickNum = new("TextLabel", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Text = "",
+		TextColor3 = Theme.Base,
+		TextSize = 10,
+		FontFace = font(Enum.FontWeight.Bold),
+		ZIndex = 2,
+		Parent = tickFill.Parent,
+	})
 
 	new("Frame", {
 		AnchorPoint = Vector2.new(0, 0.5),
@@ -1259,7 +1613,14 @@ local function buildShopRow(data, order)
 		Parent = frame,
 	})
 
-	local row = { frame = frame, tickFill = tickFill, tickStroke = tickStroke, data = data }
+	local row = {
+		frame = frame,
+		tickFill = tickFill,
+		tickStroke = tickStroke,
+		tickNum = tickNum,
+		data = data,
+		haystack =table.concat({ data.name, data.group, right, data.note or "" }, " "):lower(),
+	}
 
 	local hit = new("TextButton", {
 		Size = UDim2.new(1, 0, 1, 0),
@@ -1271,12 +1632,12 @@ local function buildShopRow(data, order)
 		selectShopRow(row)
 	end))
 	track(hit.MouseEnter:Connect(function()
-		if not data.locked and shopSelected ~= data then
+		if not data.locked and not table.find(shopQueue, data.name) then
 			tween(frame, { BackgroundColor3 = Theme.Raised }, FAST)
 		end
 	end))
 	track(hit.MouseLeave:Connect(function()
-		if shopSelected ~= data then
+		if not table.find(shopQueue, data.name) then
 			tween(frame, { BackgroundColor3 = Theme.Row }, FAST)
 		end
 	end))
@@ -1289,15 +1650,23 @@ local function applyShopFilter()
 	local shown = 0
 	for _, r in ipairs(shopRows) do
 		local d = r.data
-		local okGroup = shopFilter == "All" or d.group == shopFilter
-		local okText = query == "" or d.name:lower():find(query, 1, true) ~= nil
+		local okGroup
+		if shopFilter.top == "Accessory" then
+			okGroup = d.wear and (shopFilter.wear == "All" or d.group == shopFilter.wear)
+		else
+			okGroup = shopFilter.top == "All" or d.group == shopFilter.top
+		end
+		-- ค้นได้ทั้งชื่อ หมวด และข้อความแหล่งได้ที่โชว์ขวาแถว พิมพ์ชื่อบอสก็เจอของทุกชิ้นที่บอสนั้นให้
+		local okText = query == "" or r.haystack:find(query, 1, true) ~= nil
 		r.frame.Visible = okGroup and okText
 		if r.frame.Visible then
 			shown += 1
 		end
 	end
 	if shown == 0 then
-		shopUI.setStatus("ไม่พบอาวุธที่ตรงกับคำค้น", Theme.Muted)
+		shopUI.setStatus("ไม่พบของที่ตรงกับคำค้น", Theme.Muted)
+	elseif query ~= "" or shopFilter.top ~= "All" then
+		shopUI.setStatus(string.format("แสดง %d จาก %d ชิ้น", shown, #shopRows), Theme.Muted)
 	end
 end
 
@@ -1306,12 +1675,24 @@ local function rebuildShop()
 		r.frame:Destroy()
 	end
 	table.clear(shopRows)
-	shopSelected = nil
 
 	local listings, wallet = Game.listings()
 	for i, data in ipairs(listings) do
 		shopRows[#shopRows + 1] = buildShopRow(data, i)
 	end
+
+	-- ติ๊กที่ค้างจากคิวรอบก่อน (ชิ้นที่ยังหาไม่ได้) คงไว้ถ้าแถวนั้นยังหาได้อยู่
+	-- ได้ชิ้นแรกแล้วเงินลด แถวข้างหลังอาจกลายเป็นล็อก อันนั้นเอาออก
+	for i = #shopQueue, 1, -1 do
+		local keep = false
+		for _, r in ipairs(shopRows) do
+			keep = keep or (r.data.name == shopQueue[i] and not r.data.locked)
+		end
+		if not keep then
+			table.remove(shopQueue, i)
+		end
+	end
+	paintShopTicks()
 
 	local parts = {}
 	for _, currency in ipairs(Config.WalletShown) do
@@ -1323,91 +1704,147 @@ local function rebuildShop()
 	end
 	shopUI.subtitle.Text = table.concat(parts, "   ")
 
-	applyShopFilter()
-	refreshBuyButton()
-
 	local sellable = 0
 	for _, d in ipairs(listings) do
 		if not d.locked then
 			sellable += 1
 		end
 	end
-	shopUI.setStatus(string.format("อาวุธทั้งหมด %d · ซื้อได้ตอนนี้ %d", #listings, sellable), Theme.Muted)
+	shopUI.setStatus(string.format("ของทั้งหมด %d · ได้ตอนนี้ %d", #listings, sellable), Theme.Muted)
+
+	applyShopFilter()
+	refreshBuyButton()
 end
 
-addPills(shopUI.filterRow, { "All", "Katana", "Weapons" }, function(name)
-	shopFilter = name
+addPills(shopUI.filterRow, { "All", "Katana", "Weapons", "Accessory" }, function(name)
+	shopFilter.top = name
+	local wear = name == "Accessory"
+	shopFilter.wearRow.Visible = wear
+	shopUI.list.Position = UDim2.fromOffset(0, wear and 144 or 114)
+	shopUI.list.Size = UDim2.new(1, 0, 1, wear and -200 or -170)
 	applyShopFilter()
 end)
 
+do
+	local wearPills = { "All" }
+	for _, group in ipairs(Game.WearGroups) do
+		wearPills[#wearPills + 1] = group
+	end
+	addPills(shopFilter.wearRow, wearPills, function(name)
+		shopFilter.wear = name
+		applyShopFilter()
+	end, true)
+end
+
 track(shopUI.search:GetPropertyChangedSignal("Text"):Connect(applyShopFilter))
 
--- Game.buy รอดูเงินลดได้ถึง 4 วิ กดซ้ำระหว่างนั้นจะส่งคำสั่งซื้อซ้อน
-local buying = false
--- ของที่ต้องฟาร์ม: ฆ่าม็อบ/บอสตามเส้นทางจากตารางดรอป เปิดหีบ เก็บของ จนมีเพิ่มอีก 1 ชิ้น
-local function startFarmWeapon(target)
+-- หาของที่ติ๊กไว้ทีละชิ้นตามลำดับที่ติ๊ก ได้ชิ้นไหนเอาติ๊กออกแล้วไปชิ้นถัดไป
+-- ของร้านซื้อตรง ของที่ต้องฟาร์ม/ตีใช้ Runner.obtain ไล่หาวัตถุดิบทุกชั้นจนมีเพิ่มอีก 1 ชิ้น
+-- ชิ้นที่ติด (เงินไม่พอ ของหมดรอบ) ข้ามไปก่อนแต่ติ๊กค้างไว้ ให้เห็นว่ายังไม่ได้
+local function runShopQueue()
 	Runner.active = true
 	Runner.cancel = false
-	Runner.statusSink = shopUI.setStatus
+	Runner.lastStart = os.clock()
+	Runner.statusSink = shopUI.queueStatus
 	refreshBuyButton()
 	local auraWasOn = Runner.auraOn and Runner.auraOn()
 	if Runner.setAura and not auraWasOn then
 		Runner.setAura(true)
 	end
+	-- แยก thread เพราะ Game.buy / Runner.obtain รอ ถ้า handler ถูกเรียกแบบห้าม yield
+	-- (getconnections():Fire() ของ executor) จะพังด้วย "thread is not yieldable"
 	task.spawn(function()
-		local want = (Game.wallet()[target.name] or 0) + 1
-		local done, ok, err = pcall(Runner.farm, target.name, want, target.route.code)
-		if not done then
-			ok, err = false, ok
+		local got, skipped, lastErr = {}, {}, nil
+		while not Runner.cancel do
+			-- อ่านคิวใหม่ทุกชิ้น ผู้ใช้ติ๊กเพิ่มหรือเอาออกระหว่างรันได้
+			local target
+			for _, name in ipairs(shopQueue) do
+				if not skipped[name] then
+					for _, r in ipairs(shopRows) do
+						if r.data.name == name then
+							target = r.data
+						end
+					end
+					break
+				end
+			end
+			if not target then
+				break
+			end
+
+			shopUI.progress = string.format("[%d/%d] %s · ", #got + 1, #got + #shopQueue, target.name)
+			shopUI.queueStatus("กำลังหา…", Theme.Accent)
+			-- ครอบ pcall เสมอ ถ้าพังกลางทาง Runner.active จะค้างเป็น true แล้วปุ่มเงียบไปจนกว่าจะรีโหลด
+			-- (เจอจริงสมัยปุ่ม BUY: สถานะค้าง "กำลังซื้อ Fancy Katana…")
+			local done, ok, err
+			if target.farmable then
+				done, ok, err = pcall(Runner.obtain, target.name, (Game.wallet()[target.name] or 0) + 1)
+			else
+				done, ok, err = pcall(Game.buy, target)
+			end
+			if not done then
+				ok, err = false, ok
+			end
+
+			if ok then
+				got[#got + 1] = target.name
+				local at = table.find(shopQueue, target.name)
+				if at then
+					table.remove(shopQueue, at)
+				end
+				paintShopTicks()
+			elseif Runner.cancel then
+				break
+			else
+				skipped[target.name] = true
+				lastErr = target.name .. ": " .. tostring(err)
+			end
 		end
+		shopUI.progress = nil
+
 		if Runner.setAura and not auraWasOn then
 			Runner.setAura(false)
 		end
+		local cancelled = Runner.cancel
 		Runner.active = false
 		Runner.statusSink = nil
-		if ok then
-			shopUI.setStatus("ได้ " .. target.name .. " แล้ว!", Theme.Accent)
-			task.delay(1, rebuildShop)
+
+		local gotText = #got > 0 and ("ได้ " .. table.concat(got, ", ")) or "ยังไม่ได้สักชิ้น"
+		local summary, color
+		if cancelled then
+			summary, color = "หยุดแล้ว · " .. gotText, Theme.Warn
+		elseif lastErr then
+			summary, color = gotText .. " · ข้าม " .. lastErr, #got > 0 and Theme.Warn or Theme.Danger
 		else
-			shopUI.setStatus("หยุด: " .. tostring(err), err == "ยกเลิกแล้ว" and Theme.Warn or Theme.Danger)
+			summary, color = gotText .. " ครบแล้ว!", Theme.Accent
 		end
+		shopUI.setStatus(summary, color)
 		refreshBuyButton()
+		-- เงินกับคลังเปลี่ยนแล้ว สร้างแถวใหม่ แต่ rebuildShop เขียนสถานะนับของทับ เลยใส่สรุปกลับ
+		if #got > 0 then
+			task.delay(1, function()
+				rebuildShop()
+				shopUI.setStatus(summary, color)
+			end)
+		end
 	end)
 end
 
 track(buyBtn.MouseButton1Click:Connect(function()
+	-- getconnections ของ executor ยิงซ้ำได้ คลิกที่สองภายใน 1 วิจะกลายเป็น STOP ทันทีที่เพิ่งเริ่ม
+	if os.clock() - Runner.lastStart < 1 then
+		return
+	end
 	if Runner.active then
-		if Runner.statusSink == shopUI.setStatus then
+		if Runner.statusSink == shopUI.queueStatus then
 			Runner.stop()
 			shopUI.setStatus("กำลังยกเลิก…", Theme.Warn)
 		end
 		return
 	end
-	if shopSelected and not shopSelected.locked and shopSelected.farmable then
-		startFarmWeapon(shopSelected)
-		return
+	if #shopQueue > 0 then
+		runShopQueue()
 	end
-	if buying or not shopSelected or shopSelected.locked or not shopSelected.buyable then
-		return
-	end
-	buying = true
-	shopUI.setStatus("กำลังซื้อ " .. shopSelected.name .. "…", Theme.Muted)
-	-- แยก thread เพราะ Game.buy รอเงินลด ถ้า handler ถูกเรียกแบบห้าม yield
-	-- (getconnections():Fire() ของ executor) จะพังด้วย "thread is not yieldable"
-	local target = shopSelected
-	task.spawn(function()
-		-- ครอบ pcall เสมอ ถ้า Game.buy พังกลางทาง buying จะค้างเป็น true ตลอด
-		-- แล้วปุ่ม BUY เงียบไปจนกว่าจะรีโหลด (เจอจริง: สถานะค้าง "กำลังซื้อ Fancy Katana…")
-		local done, ok, msg = pcall(Game.buy, target)
-		if not done then
-			ok, msg = false, "ซื้อไม่สำเร็จ: " .. tostring(ok)
-		end
-		buying = false
-		shopUI.setStatus(msg, ok and Theme.Accent or Theme.Danger)
-		if ok then
-			task.delay(0.6, rebuildShop)
-		end
-	end)
 end))
 
 -- เควส ----------------------------------------------------------------------
@@ -2063,6 +2500,9 @@ local function clickGui(btn)
 end
 
 Runner = { active = false, cancel = false, lastStart = 0, hasAlternative = false }
+-- จุดแจ้งเหตุการณ์ให้ Webhook (ล็อกเป้าม็อบ / เก็บของ / จบเควส) ตัวจริงผูกทีหลังในแท็บ Settings
+-- ต้องมีตัวว่างไว้ก่อน Auto-Chest เปิดตั้งแต่โหลดไฟล์ เก็บของได้ก่อนแท็บ Settings ถูกสร้าง
+function Runner.hook() end
 -- ค่าที่ Runner.hunt คืนเมื่อยกเลิกเควสบอสเพราะบอสตาย ไม่ใช่ความผิดพลาด ไม่ต้องตัดเควสออก
 Runner.BOSS_GONE = "boss-gone"
 
@@ -2354,6 +2794,7 @@ function Runner.start(list)
 			end
 			task.wait(1.5)
 		end
+		Runner.hook("quest", d.title)
 
 		-- ขั้นก่อนหน้าได้ของ/จบเควสที่ต้องใช้แล้ว ไม่ต้องวนทำซ้ำ (ฆ่าสายลับได้โน้ตแล้วพอ)
 		-- รางวัลเข้ากระเป๋าช้ากว่าตัวนับเควสนิดหน่อย รอดูได้ถึง 3 วิ ไม่งั้นรอบหน้าทำซ้ำเปล่า ๆ
@@ -2838,7 +3279,7 @@ track(mobUI.search:GetPropertyChangedSignal("Text"):Connect(applyMobFilter))
 
 local shopFeature = featureRow(
 	"Get Weapons",
-	"หาอาวุธทุกชิ้นในเกม ดูวิธีได้ แล้วกด GET",
+	"หาอาวุธและของสวมใส่ทุกชิ้นในเกม ซื้อ ฟาร์ม หรือตีที่ช่างให้เอง",
 	1,
 	function()
 		-- อ่านเงินกับคลังใหม่ทุกครั้งที่เปิด ไม่งั้นซื้อของที่อื่นแล้วตัวเลขในแผงค้าง
@@ -3466,10 +3907,17 @@ new("TextLabel", {
 	Parent = visualsTab.page,
 })
 
-local switchList = new("Frame", {
+-- เลื่อนได้ แถวเกิน 7 แถวตั้งแต่มี Auto Skill ความสูงแผงรับได้ราว 6.5 แถว
+local switchList = new("ScrollingFrame", {
 	Position = UDim2.fromOffset(0, 26),
 	Size = UDim2.new(1, 0, 1, -26),
 	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 3,
+	ScrollBarImageColor3 = Theme.Stroke,
+	VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
 	Parent = visualsTab.page,
 }, { new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
 
@@ -3499,6 +3947,9 @@ local function switchRow(name, desc, order, onChange, opts)
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Parent = frame,
 	})
+
+	-- opts.parent: แท็บ Settings ใช้สวิตช์หน้าตาเดียวกัน แต่วางในหน้าของตัวเอง
+	frame.Parent = opts.parent or switchList
 
 	local descLabel = new("TextLabel", {
 		Position = UDim2.fromOffset(14, 24),
@@ -3975,6 +4426,9 @@ local function attackLoop()
 			-- target มาจาก Auto-Quest ตอนไล่ฆ่าตามเควส มาก่อนตัวที่ติ๊กในแผง
 			local wanted = autoAttack.target or (autoAttack.onlySelected and selectedMob or nil)
 			local mob, dist = pickTarget(hrp.Position, wanted)
+			if mob then
+				Runner.hook("engage", mob)
+			end
 			local mobRoot = mob and mob:FindFirstChild("HumanoidRootPart")
 			if mobRoot and mobRoot.Position.Y <= Combat.WorldFloorY then
 				mobRoot = nil
@@ -4228,6 +4682,7 @@ local function collectLoot(opts)
 			end
 			if not d.part.Parent then
 				got[#got + 1] = tostring(d.item)
+				Runner.hook("loot", tostring(d.item))
 			end
 		end
 	end
@@ -4486,6 +4941,8 @@ function Runner.farm(item, need, code)
 
 	goToSpawn(mob.center)
 	startAttack()
+	-- Webhook บอกในข้อความฆ่าบอสว่าของที่ตามหาดรอปหรือยัง
+	Runner.farmTarget = item
 	local emptySince
 	while not Runner.cancel do
 		local have = itemCount(item)
@@ -4527,10 +4984,120 @@ function Runner.farm(item, need, code)
 	end
 	stopAttack()
 	autoAttack.target = nil
+	Runner.farmTarget = nil
 	if Runner.cancel then
 		return false, "ยกเลิกแล้ว"
 	end
 	return true
+end
+
+-- วาร์ปไปยืนข้างช่างของสูตรนี้แล้วสั่งตี แบบเดียวกับปุ่ม Craft ในหน้าคุยช่าง (Blacksmith.Recipe)
+-- SignalFunction.ToServer("CraftRecipe", รหัสสูตร) ตอบ { Ok, Reason } ไม่ต้องเปิดหน้าคุยก่อน
+-- Reason บอกของที่ขาดตัวแรกตรง ๆ เช่น "You need 1 Crude Iron Ingot" เลยส่งต่อให้ผู้ใช้เห็นเลย
+function Runner.craftAt(id, recipe)
+	local npcName = Game.Forges[recipe.station]
+	local spawn = npcName and npcSpawnPoint(npcName)
+	if not spawn then
+		return false, "ไม่รู้ตำแหน่งช่างของ " .. tostring(recipe.station)
+	end
+	local _, hrp = selfParts()
+	if not hrp then
+		return false, "ไม่พบตัวละคร"
+	end
+	report(string.format("วาร์ปไปหา %s เพื่อตี %s", npcName, recipe.result), Theme.Accent)
+	placeAt(hrp, CFrame.new(spawn.pos + Vector3.new(0, 3, 5), spawn.pos), "forge")
+
+	local npc
+	for _ = 1, 40 do
+		if Runner.cancel then
+			return false, "ยกเลิกแล้ว"
+		end
+		npc = findLiveNpc(npcName)
+		if npc then
+			break
+		end
+		task.wait(0.3)
+	end
+	if not npc then
+		return false, npcName .. " ยังไม่ stream เข้ามาใน 12 วิ"
+	end
+	-- ระยะเดียวกับตอนคุยเควส (prompt ช่างทั้งสองคนยอมรับที่ 10) ลองแล้วเซิร์ฟนับว่ายืนที่โรงตี
+	local pos = npc:GetPivot().Position
+	placeAt(hrp, CFrame.new(pos + Vector3.new(0, 0, 4), pos), "forge")
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	task.wait(0.6)
+
+	local before = itemCount(recipe.result)
+	local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
+	local sent, res = pcall(SignalFunction.ToServer, "CraftRecipe", id)
+	if not sent then
+		return false, tostring(res)
+	end
+	if not (type(res) == "table" and res.Ok) then
+		return false, string.format("%s ไม่ยอมตี: %s", npcName, type(res) == "table" and tostring(res.Reason) or "ไม่ตอบ")
+	end
+	-- ของเข้ากระเป๋าตามหลังคำตอบนิดหน่อย รอให้นับเจอก่อน ไม่งั้นรอบถัดไปคิดว่ายังไม่ได้แล้วตีซ้ำ
+	local untilT = os.clock() + 3
+	while itemCount(recipe.result) <= before and os.clock() < untilT do
+		task.wait(0.2)
+	end
+	report(string.format("ตี %s สำเร็จ", recipe.result), Theme.Accent)
+	return true
+end
+
+-- ทำให้มี name อย่างน้อย need ชิ้น เลือกทางด้วย Game.plan บนกระเป๋าจริง (ซื้อ > ฟาร์ม > ตี)
+-- ตีได้หลายชั้น เช่น Nightfall Claws <- Damascus Claws <- Claws (ดรอป) + Mythic Refinement Ore (หีบบอส)
+-- วางแผนใหม่ทุกชั้นทุกรอบ เพราะระหว่างฟาร์มอาจได้ของอื่นติดมา หรือการตีชั้นล่างกินวัตถุดิบไปแล้ว
+function Runner.obtain(name, need)
+	-- ซื้อ Metal Scraps 1000 ชิ้นใช้ 11 รอบ (ครั้งละ 99) เผื่อไว้ 3 เท่า เกินนี้แปลว่าวนไม่จบ
+	local rounds = 0
+	while not Runner.cancel do
+		rounds += 1
+		if rounds > 40 then
+			return false, "หา " .. name .. " วนเกิน 40 รอบ ของไม่เพิ่ม"
+		end
+		local have = itemCount(name)
+		if have >= need then
+			return true
+		end
+		local o = Game.newPlan()
+		local err = Game.plan(name, need, Game.wallet(), o)
+		if err then
+			return false, err
+		end
+		local how = o.how[name]
+		if how.kind == "shop" then
+			report(string.format("ซื้อ %s  %d/%d", name, have, need), Theme.Accent)
+			-- ครั้งละไม่เกิน 99 ตามที่เซิร์ฟรับ (Shop.SanitizeAmount)
+			local row = { name = name, source = "shop", cost = priceParts(how.listing.Price) }
+			local ok, msg = Game.buy(row, math.min(need - have, 99))
+			if not ok then
+				return false, msg
+			end
+			task.wait(0.5)
+		elseif how.kind == "farm" then
+			return Runner.farm(name, need, how.route.code)
+		else
+			for _, input in ipairs(Game.recipeInputs(how.recipe)) do
+				local ok, why = Runner.obtain(input.name, input.amount)
+				if not ok then
+					return false, why
+				end
+			end
+			-- วัตถุดิบที่หามาทีหลังอาจกินของที่หามาก่อน (ซื้อด้วย Wen ก้อนเดียวกัน) วนกลับไปวางแผนใหม่ถ้าไม่ครบ
+			local ready = true
+			for _, input in ipairs(Game.recipeInputs(how.recipe)) do
+				ready = ready and itemCount(input.name) >= input.amount
+			end
+			if ready then
+				local ok, why = Runner.craftAt(how.id, how.recipe)
+				if not ok then
+					return false, why
+				end
+			end
+		end
+	end
+	return false, "ยกเลิกแล้ว"
 end
 
 -- Auto-Dodge: อ่านท่าโจมตีของม็อบแล้วหลบก่อนดาเมจเข้า ------------------------
@@ -5001,6 +5568,7 @@ local function auraLoop()
 					stuckDown[mob] = true
 				end
 			elseif mob then
+				Runner.hook("engage", mob)
 				local slot = far and blinkShot(hrp, mob) or (not far and auraFire())
 				if slot then
 					auraRow.setDesc(string.format("%s %s · HP %d/%d · ช่อง %d · ยิงไป %d",
@@ -5052,6 +5620,140 @@ function Runner.auraOn()
 	return killAura.on
 end
 
+-- Auto Skill: ใช้สกิลของอาวุธ/ปราณที่ถืออยู่ใส่ม็อบใกล้ตัว --------------------------
+
+-- Mastery ของปราณ (Flame Mastery ฯลฯ) ขึ้นจากดาเมจของสกิลปราณเท่านั้น
+-- หมัดจาก Auto-Attack / Kill Aura นับเข้า Mastery ของอาวุธ (Sword) เลยต้องมีตัวนี้
+-- ฟังก์ชันที่เรียกทันทีแยกโควตา register จาก chunk หลัก เหตุผลเดียวกับแท็บ Settings
+;(function()
+local SkillCast = {
+	-- ม็อบในระยะนี้ถึงจะใช้สกิล ยังไม่ได้วัดระยะสกิลจริงทีละท่า
+	-- 15 เผื่อจากระยะหมัด 6 ของ Kill Aura สกิลปราณส่วนใหญ่พุ่งไปข้างหน้าไกลกว่าหมัด
+	Range = 15,
+	-- กดค้างแล้วปล่อย สกิลปราณชาร์จได้ถึง 5 วิ (Max_Hold) ปล่อยเร็วคือออกท่าแบบไม่ชาร์จ
+	-- 0.15 เป็นค่าเดา ยังไม่ได้วัดว่าชาร์จนานขึ้นดาเมจเพิ่มคุ้มเวลาไหม
+	HoldTime = 0.15,
+	-- เว้นหลังออกท่าก่อนสั่งท่าถัดไป ให้แอนิเมชันเล่นจบ ค่าเดา ยังไม่ได้วัด
+	Gap = 0.6,
+	Idle = 0.3,
+}
+
+local SkillController = require(ReplicatedStorage.CAM.Client.Controllers.Skill_Controller)
+local SkillsProvider = require(ReplicatedStorage.CAM.Client.Controllers.Skills_Provider)
+local PlatformHandler = require(ReplicatedStorage.CAM.Client.Controllers.Platform_Handler)
+local InputHandler = require(ReplicatedStorage.CAM.Client.Components.Client.InputHandler)
+
+-- สกิลเล็งจากตำแหน่งเมาส์ (Platform_Handler.mousepos) ระหว่างใช้สกิลให้มันคืนตัวม็อบแทน
+-- Skill_Controller เรียกผ่านตารางทุกครั้ง แทนฟิลด์ในตารางจึงมีผลทันที
+local aim = {}
+local realMousePos = PlatformHandler.mousepos
+PlatformHandler.mousepos = function(...)
+	if aim.pos then
+		return aim.pos
+	end
+	return realMousePos(...)
+end
+-- unload ไล่ Disconnect ทุกตัวใน conns ฝากตัวคืนค่าเดิมไว้ในรูปเดียวกัน
+track({
+	Disconnect = function()
+		PlatformHandler.mousepos = realMousePos
+	end,
+})
+
+-- ช่องสกิลบน HUD ผูกกับปุ่มตาม InputHandler (Skills_1st = F, Skills_2nd = Z ...) ผู้เล่นเปลี่ยนปุ่มเองได้
+local SlotActions = { "Skills_1st", "Skills_2nd", "Skills_3rd", "Skills_4th", "Skills_5th", "Skills_6th", "Skills_7th" }
+local function keyOf(slot)
+	for _, k in ipairs(InputHandler.GetMapping(SlotActions[slot]) or {}) do
+		if typeof(k) == "EnumItem" and not (k.Name:find("^Button") or k.Name:find("^DPad") or k.Name:find("^Thumb")) then
+			return k.Name
+		end
+	end
+	return tostring(slot)
+end
+
+-- ช่อง 1 คือ Blocking (F) เสมอ ไม่เอามาใช้ เลือกได้ตั้งแต่ช่อง 2 (Z) ถึงช่อง 7
+local choices = {}
+for slot = 2, #SlotActions do
+	choices[#choices + 1] = keyOf(slot)
+end
+local autoSkill = { on = false, picked = {} }
+for i = 1, #choices do
+	autoSkill.picked[i] = true
+end
+
+local skillRow
+local function skillLoop()
+	-- Attempt_Hold require โมดูลเพิ่มกลางทาง จาก thread ของ executor (identity 8) พังด้วย
+	-- "Cannot require a non-RobloxScript module from a RobloxScript" ลดเป็น 2 เท่า LocalScript ของเกมแล้วผ่าน
+	if setthreadidentity then
+		setthreadidentity(2)
+	end
+	while autoSkill.on do
+		local _, hrp, hum = selfParts()
+		local mob = hrp and hum and hum.Health > 0 and not isKnockedDown(hum) and mobInReach(hrp.Position, SkillCast.Range)
+		local used = false
+		if mob then
+			local keys = SkillsProvider.get_current_keys() or {}
+			for slot = 2, math.min(#keys, #SlotActions) do
+				local skill = keys[slot]
+				local root = mob:FindFirstChild("HumanoidRootPart")
+				if autoSkill.on and autoSkill.picked[slot - 1] and skill.Name ~= "Blocking" and root and mob.Parent then
+					aim.pos = root.Position
+					-- สกิลที่ยังล็อก (ไม่ได้ปลดใน Skill Tree) หรือติดคูลดาวน์ คืน nil เงียบ ๆ ไม่ส่งอะไรไปเซิร์ฟ
+					local ok, started = pcall(SkillController.Attempt_Hold, skill.Name, keyOf(slot))
+					if ok and started then
+						-- สองค่านี้คือสิ่งที่ปุ่มบน HUD ตั้งหลังกดติด ลูปของเกมใช้ปล่อยท่าเองถ้าค้างเกิน Max_Hold
+						SkillController.CurrentMax = skill.Max_Hold
+						SkillController.HeldSkill = skill.Name
+						task.wait(SkillCast.HoldTime)
+						aim.pos = root.Position
+						pcall(SkillController.StopHold, skill.Name)
+						SkillController.HeldSkill, SkillController.CurrentMax = nil, nil
+						skillRow.setDesc(string.format("ใช้ %s [%s] ใส่ %s", skill.Name, keyOf(slot), mob.Name))
+						used = true
+						task.wait(SkillCast.Gap)
+					end
+					aim.pos = nil
+				end
+			end
+		end
+		task.wait(used and 0.05 or SkillCast.Idle)
+	end
+	aim.pos = nil
+	skillRow.setDesc("ปิดอยู่")
+end
+
+skillRow = switchRow("Auto Skill", "ปิดอยู่", 7, function(on)
+	autoSkill.on = on
+	if on then
+		skillRow.setDesc("รอม็อบในระยะ " .. SkillCast.Range .. " stud · สกิลที่ยังล็อกจะถูกข้าม")
+		task.spawn(skillLoop)
+	end
+end)
+
+switchRow("สกิลที่ใช้", "ติ๊กปุ่มสกิลที่ให้ Auto Skill กด", 8, function() end, {
+	choices = choices,
+	multi = true,
+	selected = (function()
+		local all = {}
+		for i = 1, #choices do
+			all[i] = i
+		end
+		return all
+	end)(),
+	onChoice = function(_, picked)
+		autoSkill.picked = picked
+	end,
+})
+
+-- unload ปิดสวิตช์อื่นผ่าน flag ของมันเอง ตัวนี้อยู่ในฟังก์ชัน เลยผูกหยุดลูปไว้กับ conns แบบเดียวกับ mousepos
+track({
+	Disconnect = function()
+		autoSkill.on = false
+	end,
+})
+end)()
+
 -- Auto-Chest: เปิดหีบกับเก็บของดรอปที่เป็นของเรา ------------------------------
 
 -- ตอนรันเควส Runner.hunt เป็นคนเก็บเองหลังฆ่าเสร็จ ลูปนี้ถอยให้ ไม่งั้นวาร์ปแย่งกัน
@@ -5081,7 +5783,7 @@ local function chestLoop()
 	chestRow.setDesc("ปิดอยู่ · Auto-Quest จะไม่เปิดหีบ/เก็บของ")
 end
 
-chestRow = switchRow("Auto-Chest", "เปิดหีบบอสและเก็บของดรอปของเรา", 7, function(on)
+chestRow = switchRow("Auto-Chest", "เปิดหีบบอสและเก็บของดรอปของเรา", 9, function(on)
 	autoChest.on = on
 	if on then
 		chestRow.setDesc("รอหีบหรือของดรอปในระยะ " .. Loot.ChestRadius .. " stud")
@@ -5095,7 +5797,512 @@ function Runner.lootOn()
 	return autoChest.on
 end
 
-placeholderTab("Settings")
+-- แท็บ Settings: Webhook Discord ---------------------------------------------
+
+-- ทั้งก้อนอยู่ในฟังก์ชันที่เรียกทันที เพราะไฟล์ชนเพดาน local ระดับบนสุดของ Luau (200 ตัว)
+-- do ... end แบบ Auto-Dodge ไม่พอ local ในนั้นยังกิน register ของ chunk หลัก
+-- (ลองแล้ว: "Out of local registers when trying to allocate pendingBoss") ฟังก์ชันได้โควตา 200 ของตัวเอง
+-- ข้างนอกคุยกับตรงนี้ผ่าน Runner.hook(ชนิด, ค่า) อย่างเดียว:
+--   "engage" ม็อบที่ Auto-Attack / Kill Aura เพิ่งล็อกเป้า -> ดูต่อว่าตายไหม
+--   "loot"   ชื่อของที่ collectLoot เก็บได้ / "quest" ชื่อเควสที่ Auto-Quest ทำครบทุกขั้น
+;(function()
+local HttpService = game:GetService("HttpService")
+
+local Hook = {
+	SaveFile = "PathSlayer/webhook.json",
+	-- ม็อบธรรมดาตายถี่ (Bandit เกิดใหม่ทุก 30 วิ ฆ่าได้หลายตัวต่อนาที) ส่งทีละตัวจะท่วมห้อง
+	-- และชนเพดาน Discord 30 ข้อความ/นาที/webhook เลยรวบเป็นสรุปทุก 60 วิ
+	SummaryEvery = 60,
+	-- หีบบอสโผล่หลังบอสตาย แล้ว collectLoot ต้องวาร์ปไปเปิดกับเก็บทีละชิ้น (~0.8 วิ/ชิ้น)
+	-- รอ 20 วิก่อนส่งข้อความบอส ของจากหีบจะได้อยู่ในข้อความเดียวกัน ยังไม่ได้จับเวลาหีบจริง เป็นค่าเผื่อ
+	BossLootWindow = 20,
+	-- ม็อบที่ล็อกเป้าไว้ แล้วตายภายในเท่านี้ นับว่าเราฆ่า เกมไม่ได้แปะว่าใครฆ่า (ตรวจ attribute ม็อบแล้ว)
+	CreditWindow = 30,
+	-- Legendary ขึ้นไป (Rarities.Order[5]) แจ้งทันทีไม่รอสรุป
+	RareAt = 5,
+	-- Discord ห้ามยิงเกิน 5 ครั้งต่อ 2 วิ เว้นไว้ 1 วิต่อข้อความพอ
+	SendGap = 1,
+}
+
+local cfg = { url = "", on = false, boss = true, quest = true, mobs = true, rare = true }
+if typeof(isfile) == "function" and isfile(Hook.SaveFile) then
+	local ok, saved = pcall(HttpService.JSONDecode, HttpService, readfile(Hook.SaveFile))
+	if ok and type(saved) == "table" then
+		for k, v in pairs(saved) do
+			cfg[k] = v
+		end
+	end
+end
+local function saveCfg()
+	if typeof(writefile) == "function" then
+		pcall(writefile, Hook.SaveFile, HttpService:JSONEncode(cfg))
+	end
+end
+
+-- executor แต่ละตัวตั้งชื่อฟังก์ชันยิง HTTP ไม่เหมือนกัน HttpService:PostAsync ใช้ฝั่ง client ไม่ได้
+local httpRequest = request or http_request or (syn and syn.request) or (fluxus and fluxus.request)
+
+local Rarities = require(ReplicatedStorage.CAM.Global.Rarities)
+-- สีตัวอักษรใน code block ```ansi ของ Discord มีแค่ 8 สี จับคู่ใกล้สีเกมที่สุด (Rarities.Colors)
+-- Impossible เกมใช้ดำ ในแชตมองไม่เห็น เลยใช้ฟ้าแทน มือถือไม่แสดงสี ANSI เลยเขียนชื่อความหายากกำกับทุกบรรทัด
+local AnsiColor = { "30", "32", "34", "35", "33", "31", "36" }
+
+local rarityCache = {}
+local function rarityOf(itemName)
+	if rarityCache[itemName] == nil then
+		rarityCache[itemName] = 1
+		for _, m in ipairs(ReplicatedStorage.Items:GetDescendants()) do
+			if m.Name == itemName and m:IsA("ModuleScript") then
+				local def = require(m)
+				rarityCache[itemName] = type(def) == "table" and def.Rarity or 1
+				break
+			end
+		end
+	end
+	return rarityCache[itemName]
+end
+
+local function colorInt(rarity)
+	local c = Rarities.Colors[rarity] or Color3.new(1, 1, 1)
+	local n = math.floor(c.R * 255) * 65536 + math.floor(c.G * 255) * 256 + math.floor(c.B * 255)
+	-- 0 ใน Discord คือ "ไม่มีสี" แถบข้างหายไปเลย
+	return n == 0 and 1 or n
+end
+
+-- drops = { [ชื่อ] = จำนวน } เรียงหายากก่อน คืนข้อความ code block กับความหายากสูงสุด
+local function dropBlock(drops)
+	local list = {}
+	for name, n in pairs(drops) do
+		list[#list + 1] = { name = name, n = n, r = rarityOf(name) }
+	end
+	if #list == 0 then
+		return nil, 0
+	end
+	table.sort(list, function(a, b)
+		if a.r ~= b.r then
+			return a.r > b.r
+		end
+		return a.name < b.name
+	end)
+	local lines = {}
+	for i, e in ipairs(list) do
+		-- ช่องใส่ข้อความ embed ยาวได้ 1024 ตัว ของเกิน 15 ชนิดรวบเป็นบรรทัดเดียว
+		if i > 15 then
+			lines[#lines + 1] = string.format("… อีก %d ชนิด", #list - 15)
+			break
+		end
+		local label = Rarities.Order[e.r] or "?"
+		lines[#lines + 1] = string.format("\27[1;%sm%-10s\27[0m %s  x%d", AnsiColor[e.r] or "37", label, e.name, e.n)
+	end
+	return "```ansi\n" .. table.concat(lines, "\n") .. "\n```", list[1].r
+end
+
+-- ค่าตั้งต้นของเลเวล/เงิน นับส่วนต่างจากข้อความก่อนหน้า ผู้อ่านเห็นว่าได้เพิ่มเท่าไรตั้งแต่ข้อความที่แล้ว
+local last = { level = Game.level(), wen = Game.wallet().Wen or 0 }
+
+-- หน้าตาตามการ์ดตัวอย่างที่ผู้ใช้ส่งมา: บรรทัด **ชื่อ:** ค่า แบ่งหมวดด้วยบรรทัดว่าง รูปผู้เล่นมุมขวาบน
+-- ใส่ทุกอย่างใน description ก้อนเดียว ไม่ใช้ fields: fields แบบ inline บนมือถือเรียงเป็นคอลัมน์เพี้ยน
+-- sections = { { "หัวหมวด", { บรรทัด, ... } }, ... } ต่อท้ายหมวดผู้เล่นกับสถานะเสมอ
+local function card(title, color, sections)
+	local level = Game.level()
+	local wallet = Game.wallet()
+	local wen = wallet.Wen or 0
+	local lv = level and tostring(level) or "อ่านไม่ได้"
+	if level and last.level and level > last.level then
+		lv = string.format("%d  (อัปจาก %d)", level, last.level)
+	end
+	local diff = wen - last.wen
+	local money = comma(wen)
+	if diff ~= 0 then
+		money ..= string.format("  (%s%s)", diff > 0 and "+" or "-", comma(math.abs(diff)))
+	end
+	last.level, last.wen = level or last.level, wen
+
+	local lines = {
+		"**ผู้เล่น:** " .. LocalPlayer.Name,
+		"**เลเวล:** " .. lv,
+		"",
+		"**สถานะผู้เล่น**",
+		"**Wen:** " .. money,
+	}
+	-- สกุลเดียวกับหัวแผง Get Weapons ผู้ใช้เห็นตัวเลขชุดเดียวกันทั้งในเกมและในห้อง
+	for _, currency in ipairs(Config.WalletShown) do
+		if currency ~= "Wen" then
+			lines[#lines + 1] = string.format("**%s:** %s", currency, comma(wallet[currency] or 0))
+		end
+	end
+	for _, s in ipairs(sections) do
+		lines[#lines + 1] = ""
+		lines[#lines + 1] = "**" .. s[1] .. "**"
+		for _, line in ipairs(s[2]) do
+			lines[#lines + 1] = line
+		end
+	end
+	return {
+		title = title,
+		color = color,
+		description = table.concat(lines, "\n"),
+		thumbnail = Hook.avatar and { url = Hook.avatar } or nil,
+	}
+end
+
+-- รูปผู้เล่นมุมขวาบน: ใช้ลิงก์รูปตรงบน rbxcdn ไม่ใช้ headshot-thumbnail/image แบบเก่า
+-- ตัวเก่าเป็น redirect ไม่ใช่ไฟล์รูป Discord ไม่รับประกันว่าจะตามไปดึง
+-- (เช็กจากคำตอบ ?wait=true ไม่ได้ Discord ตอบ width 0 ทุกลิงก์ก่อนดึงรูปเสร็จ)
+-- ถาม thumbnails API ครั้งเดียวตอนเปิด ได้ไม่ได้ก็ส่งข้อความได้ตามปกติ แค่ไม่มีรูป
+task.spawn(function()
+	local ok, res = pcall(httpRequest, {
+		Url = string.format(
+			"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=%d&size=420x420&format=Png&isCircular=false",
+			LocalPlayer.UserId
+		),
+		Method = "GET",
+	})
+	local okBody, body = pcall(HttpService.JSONDecode, HttpService, ok and res.Body or "")
+	local entry = okBody and type(body) == "table" and body.data and body.data[1]
+	Hook.avatar = entry and entry.imageUrl or nil
+end)
+
+-- ของดรอปหมวดเดียว: code block สีตามความหายาก หรือข้อความว่าง
+local function dropsSection(drops, emptyText)
+	local block, best = dropBlock(drops)
+	return { "ของที่ได้", { block or emptyText } }, best
+end
+
+local outbox = {}
+local function post(embed)
+	embed.footer = { text = "PathSlayer" }
+	embed.timestamp = DateTime.now():ToIsoDate()
+	return httpRequest({
+		Url = cfg.url,
+		Method = "POST",
+		Headers = { ["Content-Type"] = "application/json" },
+		Body = HttpService:JSONEncode({ username = "PathSlayer", embeds = { embed } }),
+	})
+end
+
+local function validUrl(url)
+	return url:match("^https://[%w%.]*discord[%w]*%.com/api/webhooks/%d+/[%w%-_]+$") ~= nil
+end
+
+local function queue(embed)
+	if cfg.on and httpRequest and validUrl(cfg.url) then
+		outbox[#outbox + 1] = embed
+	end
+end
+
+-- สถิติตั้งแต่เปิดสคริปต์ ใช้บอก "ฆ่าไปกี่ครั้ง ดรอปรวมกี่ชิ้น" ในข้อความบอส
+local bossStats = {}
+-- ก้อนสรุปม็อบธรรมดา ล้างทุกครั้งที่ส่ง
+local batch = { kills = {}, drops = {}, since = os.clock() }
+-- บอสที่เพิ่งตาย รอเก็บของจากหีบก่อนส่ง ของที่เก็บได้ช่วงนี้นับเป็นของบอสตัวนี้
+local pendingBoss
+local engaged = setmetatable({}, { __mode = "k" })
+
+-- ปิดสวิตช์ฆ่าบอสไว้ ของจากหีบบอสไม่หายไปไหน ย้ายไปอยู่ในสรุปรอบถัดไปแทน
+local function sendBoss(b)
+	local stats = bossStats[b.name]
+	local got = 0
+	for name, n in pairs(b.drops) do
+		got += n
+		if not cfg.boss then
+			batch.drops[name] = (batch.drops[name] or 0) + n
+		end
+	end
+	stats.drops += got
+	if not cfg.boss then
+		return
+	end
+	local bossLines = {
+		"**ชื่อ:** " .. b.name,
+		string.format("**ฆ่าไปแล้ว:** %d ครั้ง", stats.kills),
+		string.format("**ดรอปรวม:** %d ชิ้น", stats.drops),
+	}
+	if b.target then
+		bossLines[#bossLines + 1] = string.format("**กำลังฟาร์ม:** %s  (%s)", b.target,
+			b.drops[b.target] and "ดรอปแล้ว!" or "ยังไม่ดรอป")
+	end
+	local drops, best = dropsSection(b.drops, Runner.lootOn() and "ไม่มีของตก" or "ไม่ได้เก็บ (Auto-Chest ปิดอยู่)")
+	queue(card("ฆ่าบอส " .. b.name, best > 0 and colorInt(best) or 0xE25F5F, { { "บอส", bossLines }, drops }))
+end
+
+local function onKill(model, hum)
+	local maxHealth = model:GetAttribute("BaseMaxHealth") or hum.MaxHealth
+	if tierOf(maxHealth) == "Boss" then
+		local stats = bossStats[model.Name] or { kills = 0, drops = 0 }
+		stats.kills += 1
+		bossStats[model.Name] = stats
+		if pendingBoss then
+			-- บอสตัวก่อนยังรอหีบอยู่ ส่งไปก่อนเลย ไม่ให้ของสองตัวปนกัน
+			sendBoss(pendingBoss)
+		end
+		local b = { name = model.Name, drops = {}, target = Runner.farmTarget }
+		pendingBoss = b
+		task.delay(Hook.BossLootWindow, function()
+			if pendingBoss == b then
+				pendingBoss = nil
+				sendBoss(b)
+			end
+		end)
+	else
+		batch.kills[model.Name] = (batch.kills[model.Name] or 0) + 1
+	end
+end
+
+function Runner.hook(kind, value)
+	if kind == "engage" then
+		local model = value
+		local hum = model:FindFirstChildOfClass("Humanoid")
+		if not hum then
+			return
+		end
+		-- ลูปสู้ล็อกเป้าเดิมซ้ำทุกรอบ อัปเดตแค่เวลาล่าสุด ต่อ HealthChanged ครั้งเดียวต่อตัว
+		local known = engaged[model] ~= nil
+		engaged[model] = os.clock()
+		if known then
+			return
+		end
+		-- ใช้ HealthChanged ไม่ใช้ Died: Died ของม็อบที่เซิร์ฟเวอร์ถือ บางทีไม่ยิงฝั่ง client
+		-- ส่วนเลือดลงถึง 0 replicate มาเสมอ (liveMobCount ก็นับตัวตายจาก Health อย่างเดียว)
+		local conn
+		conn = track(hum.HealthChanged:Connect(function(hp)
+			if hp > 0 then
+				return
+			end
+			conn:Disconnect()
+			if os.clock() - (engaged[model] or 0) <= Hook.CreditWindow then
+				onKill(model, hum)
+			end
+		end))
+	elseif kind == "loot" then
+		local bucket = pendingBoss and pendingBoss.drops or batch.drops
+		bucket[value] = (bucket[value] or 0) + 1
+		if cfg.rare and rarityOf(value) >= Hook.RareAt then
+			local drops, best = dropsSection({ [value] = 1 }, "-")
+			local from = pendingBoss and ("หีบบอส " .. pendingBoss.name) or "ม็อบ / หีบ"
+			queue(card("ได้ของหายาก!", colorInt(best), { drops, { "ที่มา", { "**จาก:** " .. from } } }))
+		end
+	elseif kind == "quest" then
+		Hook.quests = (Hook.quests or 0) + 1
+		if cfg.quest then
+			queue(card("ผ่านเควส", 0x7AA2FF, {
+				{ "เควส", {
+					"**ชื่อ:** " .. value,
+					string.format("**ผ่านไปแล้ว:** %d เควส (ตั้งแต่เปิดสคริปต์)", Hook.quests),
+				} },
+			}))
+		end
+	end
+end
+
+local function sendSummary()
+	local kills, total = {}, 0
+	for name, n in pairs(batch.kills) do
+		kills[#kills + 1] = { name = name, n = n }
+		total += n
+	end
+	local minutes = math.max(1, math.floor((os.clock() - batch.since) / 60 + 0.5))
+	local drops, best = dropsSection(batch.drops, "ยังไม่มีของตก")
+	local empty = total == 0 and next(batch.drops) == nil
+	batch = { kills = {}, drops = {}, since = os.clock() }
+	if empty then
+		return
+	end
+	table.sort(kills, function(a, b)
+		return a.n > b.n
+	end)
+	-- เลขนำหน้าแบบ [12] - ชื่อ ตามการ์ดตัวอย่าง ตาไล่แนวตั้งแล้วเห็นตัวที่ฆ่าเยอะสุดก่อน
+	local lines = {}
+	for _, k in ipairs(kills) do
+		lines[#lines + 1] = string.format("[%d] - %s", k.n, k.name)
+	end
+	queue(card("สรุปการฟาร์ม", best > 0 and colorInt(best) or 0x6EBE82, {
+		{ "ม็อบที่ฆ่า", #lines > 0 and lines or { "-" } },
+		drops,
+		{ "ช่วงเวลา", {
+			string.format("**เวลา:** %d นาทีล่าสุด", minutes),
+			string.format("**ฆ่ารวม:** %d ตัว", total),
+		} },
+	}))
+end
+
+-- ตัวส่ง: ทีละข้อความ เว้น SendGap โดน 429 ก็รอตามที่ Discord บอกแล้วส่งตัวเดิมซ้ำ
+local lastStatus
+task.spawn(function()
+	local summaryAt = os.clock() + Hook.SummaryEvery
+	while screen.Parent do
+		if os.clock() >= summaryAt then
+			summaryAt = os.clock() + Hook.SummaryEvery
+			if cfg.mobs then
+				sendSummary()
+			else
+				batch = { kills = {}, drops = {}, since = os.clock() }
+			end
+		end
+		local embed = outbox[1]
+		if embed then
+			local ok, res = pcall(post, embed)
+			local code = ok and type(res) == "table" and res.StatusCode or 0
+			if code == 429 then
+				local okBody, body = pcall(HttpService.JSONDecode, HttpService, res.Body)
+				task.wait(okBody and tonumber(body.retry_after) or 2)
+			else
+				table.remove(outbox, 1)
+				if lastStatus then
+					lastStatus(code >= 200 and code < 300 and ("ส่งล่าสุด: " .. embed.title) or ("ส่งไม่ผ่าน HTTP " .. tostring(code)),
+						code >= 200 and code < 300)
+				end
+			end
+		end
+		task.wait(Hook.SendGap)
+	end
+end)
+
+-- หน้า Settings -------------------------------------------------------------
+
+local settingsTab = addTab("Settings")
+
+local page = new("ScrollingFrame", {
+	Size = UDim2.new(1, 0, 1, 0),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 3,
+	ScrollBarImageColor3 = Theme.Stroke,
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	Parent = settingsTab.page,
+}, { new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+new("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 18),
+	BackgroundTransparency = 1,
+	Text = "Webhook (Discord)",
+	TextColor3 = Theme.Muted,
+	TextSize = 11,
+	FontFace = font(Enum.FontWeight.Medium),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	LayoutOrder = 1,
+	Parent = page,
+})
+
+local urlRow = new("Frame", {
+	Size = UDim2.new(1, -6, 0, 30),
+	BackgroundTransparency = 1,
+	LayoutOrder = 2,
+	Parent = page,
+})
+
+local urlBox = new("TextBox", {
+	Size = UDim2.new(1, -92, 1, 0),
+	BackgroundColor3 = Theme.Raised,
+	BorderSizePixel = 0,
+	Text = cfg.url,
+	PlaceholderText = "วางลิงก์ Webhook ของ Discord ตรงนี้",
+	PlaceholderColor3 = Theme.Dim,
+	TextColor3 = Theme.Text,
+	TextSize = 11,
+	FontFace = font(Enum.FontWeight.Regular),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+	ClearTextOnFocus = false,
+	Parent = urlRow,
+}, { corner(7), new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
+
+local testLabel = new("TextLabel", {
+	Size = UDim2.new(1, 0, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "ส่งทดสอบ",
+	TextColor3 = Theme.Base,
+	TextSize = 12,
+	FontFace = font(Enum.FontWeight.SemiBold),
+})
+local testBtn = new("TextButton", {
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.fromScale(1, 0),
+	Size = UDim2.new(0, 84, 1, 0),
+	BackgroundColor3 = Theme.Accent,
+	AutoButtonColor = false,
+	Text = "",
+	Parent = urlRow,
+}, { corner(7), testLabel })
+
+local statusLabel = new("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 14),
+	BackgroundTransparency = 1,
+	Text = "",
+	TextColor3 = Theme.Muted,
+	TextSize = 11,
+	FontFace = font(Enum.FontWeight.Regular),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+	LayoutOrder = 3,
+	Parent = page,
+})
+function lastStatus(text, good)
+	statusLabel.Text = text
+	statusLabel.TextColor3 = good and Theme.Accent or Theme.Danger
+end
+
+if not httpRequest then
+	lastStatus("executor นี้ไม่มีฟังก์ชัน request ยิง Webhook ไม่ได้", false)
+elseif cfg.url ~= "" and not validUrl(cfg.url) then
+	lastStatus("ลิงก์ที่บันทึกไว้ไม่ใช่ Webhook ของ Discord", false)
+end
+
+track(urlBox.FocusLost:Connect(function()
+	local url = urlBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+	urlBox.Text = url
+	cfg.url = url
+	saveCfg()
+	if url == "" then
+		statusLabel.Text = ""
+	elseif validUrl(url) then
+		lastStatus("บันทึกลิงก์แล้ว", true)
+	else
+		lastStatus("ลิงก์นี้ไม่ใช่ Webhook ของ Discord (ต้องขึ้นต้น https://discord.com/api/webhooks/)", false)
+	end
+end))
+
+-- ส่งตรงไม่ผ่านคิว ผู้ใช้กดแล้วอยากเห็นผลทันที และต้องส่งได้แม้ยังไม่เปิดสวิตช์หลัก
+track(testBtn.MouseButton1Click:Connect(function()
+	if not validUrl(cfg.url) then
+		lastStatus("ใส่ลิงก์ Webhook ก่อน", false)
+		return
+	end
+	lastStatus("กำลังส่ง…", true)
+	task.spawn(function()
+		local sample = {}
+		for _, name in ipairs({ "Flame Katana", "Black Kumo Haori", "Metal Scraps" }) do
+			sample[name] = 1
+		end
+		local drops = dropsSection(sample, "-")
+		drops[1] = "ตัวอย่างของที่ได้ (สีตามความหายากในเกม)"
+		local ok, res = pcall(post, card("เชื่อมต่อสำเร็จ", 0x7AA2FF, { drops }))
+		local code = ok and type(res) == "table" and res.StatusCode or 0
+		if code >= 200 and code < 300 then
+			lastStatus("ส่งทดสอบสำเร็จ ดูในห้อง Discord ได้เลย", true)
+		else
+			lastStatus("ส่งไม่ผ่าน: " .. (ok and ("HTTP " .. tostring(code)) or tostring(res)), false)
+		end
+	end)
+end))
+
+local function settingSwitch(key, name, desc, order)
+	local row = switchRow(name, desc, order, function(on)
+		cfg[key] = on
+		saveCfg()
+	end, { parent = page })
+	-- set(true) ยิง onChange ตอนสร้างด้วย เขียนค่าเดิมลงไฟล์ซ้ำ ไม่เสียหาย
+	row.set(cfg[key] == true)
+	return row
+end
+
+settingSwitch("on", "เปิด Webhook", "ปิดไว้ = ไม่ส่งอะไรเลย ปุ่มส่งทดสอบยังใช้ได้", 4)
+settingSwitch("boss", "ฆ่าบอส", "ชื่อบอส ครั้งที่ฆ่า ของที่ดรอป และของที่กำลังฟาร์มดรอปหรือยัง", 5)
+settingSwitch("quest", "ผ่านเควส", "ชื่อเควสที่ Auto-Quest ทำจบ พร้อมเลเวลและเงิน", 6)
+settingSwitch("mobs", "สรุปฆ่าม็อบ", "ทุก " .. Hook.SummaryEvery .. " วิ: ฆ่าอะไรกี่ตัว ได้ของอะไร เงินเพิ่มเท่าไร", 7)
+settingSwitch("rare", "ของหายาก", "ได้ของ " .. Rarities.Order[Hook.RareAt] .. " ขึ้นไป แจ้งทันทีไม่รอสรุป", 8)
+end)()
 
 -- การโต้ตอบหน้าต่าง ---------------------------------------------------------
 
@@ -5171,7 +6378,7 @@ local function unload()
 	table.clear(mobRows)
 	table.clear(features)
 	activeTab = nil
-	shopSelected = nil
+	table.clear(shopQueue)
 	questSelected = nil
 	questSelectedRow = nil
 	itemCache = nil

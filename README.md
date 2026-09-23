@@ -1,6 +1,6 @@
 # PathSlayer
 
-สคริปต์ช่วยเล่นสำหรับ executor: Auto-Quest, Auto-Attack, Kill Aura, Auto-Dodge, Auto-Chest, ซื้ออาวุธ
+สคริปต์ช่วยเล่นสำหรับ executor: Auto-Quest, Auto-Attack, Kill Aura, Auto-Dodge, Auto-Chest, Get Weapons (ซื้อ ฟาร์ม หรือตีอาวุธและของสวมใส่ให้อัตโนมัติ), Webhook Discord (แท็บ Settings)
 
 ## วิธีใช้
 
@@ -10,4 +10,4 @@
 loadstring(game:HttpGet("https://raw.githubusercontent.com/nawapolmahamahawong-code/PathSlayer/main/src/PathSlayerUI.lua"))()
 ```
 
-executor ต้องรองรับ `getconnections`, `fireproximityprompt`, `gethui`, `readfile` / `writefile` / `isfile` / `makefolder`
+executor ต้องรองรับ `getconnections`, `fireproximityprompt`, `gethui`, `readfile` / `writefile` / `isfile` / `makefolder`, `request` (สำหรับ Webhook)
