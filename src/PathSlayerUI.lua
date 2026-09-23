@@ -1897,8 +1897,10 @@ Runner = { active = false, cancel = false, lastStart = 0, hasAlternative = false
 -- ค่าที่ Runner.hunt คืนเมื่อยกเลิกเควสบอสเพราะบอสตาย ไม่ใช่ความผิดพลาด ไม่ต้องตัดเควสออก
 Runner.BOSS_GONE = "boss-gone"
 
+-- Auto-Breathing ใช้ตัวรันชุดเดียวกัน (คุยกับ NPC / ฆ่าม็อบ / เก็บของ) แต่มีแผงของตัวเอง
+-- ตอนมันรันจะตั้ง Runner.statusSink ให้ข้อความไปขึ้นแผงนั้นแทนแผง Auto-Quest
 local function report(text, color)
-	questUI.setStatus(text, color or Theme.Muted)
+	(Runner.statusSink or questUI.setStatus)(text, color or Theme.Muted)
 end
 
 -- คืน true เมื่อกดคำตอบเป้าหมายไปแล้ว
@@ -2008,6 +2010,27 @@ function Runner.stop()
 	Runner.cancel = true
 end
 
+-- เควสที่ NPC ไม่ยอมเสนอจนกว่าจะทำอย่างอื่นก่อน อ่านจาก BeforeRun ในบทพูดของเกม (Dialogues.Yap)
+-- quest = ต้องจบเควสนั้น (ดูจาก Completed) / item = ต้องมีของในกระเป๋า ได้จากเควส via
+--   Chaka ไม่เปิดเควสถ้ายังไม่จบจดหมายของ Noote ("You should speak with Kazu ... before coming here")
+--   Noote ให้เควสจดหมายเฉพาะตอนมี Suspicious Note ซึ่งเป็นรางวัลเควสฆ่าสายลับของ Kazu
+--   (โน้ตเป็น NoSave ออกเกมแล้วหาย ต้องทำต่อกันในรอบเล่นเดียว)
+--   Liv ให้เควส 500 เหรียญหลังจบเควสเพนนีแล้วเท่านั้น
+-- เควสฆ่าม็อบไม่ถูกบันทึกลง Completed เลยใช้ quest เป็นเงื่อนไขไม่ได้ ต้องใช้ของที่ได้แทน
+Runner.Prereqs = {
+	["Ill clear out his subordinates(Lv 26)"] = { { quest = "Ill get this letter delivered" } },
+	["Ill deal with Kaiden(Lv 34)"] = { { quest = "Ill get this letter delivered" } },
+	["Ill get this letter delivered"] = { { item = "Suspicious Note", via = "Ill help clear them out" } },
+	["Ill find the coins(Lv 21)"] = { { quest = "Ill look for the penny(Lv 14)" } },
+}
+
+function Runner.prereqMet(cond)
+	if cond.quest then
+		return questProgress(cond.quest) == "completed"
+	end
+	return (Game.wallet()[cond.item] or 0) > 0
+end
+
 -- list = เควสที่ติ๊กไว้ในแถวเดียวกัน เรียงบอสก่อนมาแล้ว (Krue: บอสโจร Lv 7 → โจร 3 ตัว)
 -- วนทำทีละเควสตามลำดับ ครบรายการก็เริ่มรอบใหม่ จนกว่าจะกด STOP
 function Runner.start(list)
@@ -2016,12 +2039,40 @@ function Runner.start(list)
 		return false
 	end
 
-	local queue = {}
+	-- ใส่เควสที่ต้องทำก่อนไว้หน้าเควสที่ติ๊ก (ไล่ย้อนหลายชั้นได้ Chaka → จดหมาย Noote → ฆ่าสายลับ)
+	-- เควสที่เป็นแค่ขั้นก่อนหน้าทำรอบเดียวพอ ครบเงื่อนไขแล้วเลิกวน ส่วนที่ผู้ใช้ติ๊กเองวนตามปกติ
+	local byKey, picked = {}, {}
+	for _, d in ipairs(Game.quests()) do
+		byKey[d.key] = d
+	end
 	for _, d in ipairs(list) do
+		picked[d.key] = true
+	end
+	local queue, seen = {}, {}
+	local function add(d, cond)
+		if seen[d.key] then
+			return
+		end
+		seen[d.key] = true
+		local needs = Runner.Prereqs[d.key]
+		for _, c in ipairs(needs or {}) do
+			local pd = not Runner.prereqMet(c) and byKey[c.quest or c.via]
+			if pd then
+				add(pd, c)
+			end
+		end
 		local steps = questPlan(d)
 		if steps and questProgress(d.key) ~= "completed" then
-			queue[#queue + 1] = { data = d, steps = steps }
+			queue[#queue + 1] = {
+				data = d,
+				steps = steps,
+				needs = needs,
+				prereq = not picked[d.key] and cond or nil,
+			}
 		end
+	end
+	for _, d in ipairs(list) do
+		add(d)
 	end
 	if #queue == 0 then
 		report("เควสที่เลือกยังไม่รองรับ หรือทำจบไปแล้วทั้งหมด", Theme.Warn)
@@ -2036,7 +2087,7 @@ function Runner.start(list)
 	local held = holder and holder:GetChildren()[1]
 	if held then
 		for i, q in ipairs(queue) do
-			if q.data.title == held.Name and q.steps[2] and q.steps[2].hunt then
+			if q.data.title == held.Name and q.steps[2] then
 				resumeAt, firstStep = i, 2
 			end
 		end
@@ -2085,6 +2136,18 @@ function Runner.start(list)
 		Runner.hasAlternative = canSkip
 		q.notOffered, q.bossSkipped = nil, nil
 
+		-- ขั้นก่อนหน้าอยู่หน้าคิวอยู่แล้ว ถ้ามาถึงตรงนี้ยังไม่ครบ แปลว่าขั้นนั้นทำไม่สำเร็จรอบนี้
+		for _, c in ipairs(q.needs or {}) do
+			if not Runner.prereqMet(c) then
+				q.notOffered = d.title .. ": ต้องทำ " .. tostring(c.quest or c.via) .. " ก่อน"
+				return false
+			end
+		end
+		if q.prereq then
+			report(string.format("รอบ %d · ทำ %s ก่อน (ต้องใช้ปลดล็อกเควสถัดไป)", round, d.title), Theme.Accent)
+			task.wait(0.8)
+		end
+
 		-- เช็กก่อนรับ จะได้ไม่ต้องรับแล้วยกเลิก (รับเควสทีกินคูลดาวน์ 30 วิ)
 		if boss and canSkip and firstStep == 1 and Runner.bossAlive and not Runner.bossAlive(boss) then
 			report(string.format("รอบ %d · %s ยังไม่เกิด ข้ามไปทำเควสอื่นก่อน", round, boss.hunt), Theme.Warn)
@@ -2123,7 +2186,17 @@ function Runner.start(list)
 			task.wait(1.5)
 		end
 
-		if questProgress(d.key) == "completed" then
+		-- ขั้นก่อนหน้าได้ของ/จบเควสที่ต้องใช้แล้ว ไม่ต้องวนทำซ้ำ (ฆ่าสายลับได้โน้ตแล้วพอ)
+		-- รางวัลเข้ากระเป๋าช้ากว่าตัวนับเควสนิดหน่อย รอดูได้ถึง 3 วิ ไม่งั้นรอบหน้าทำซ้ำเปล่า ๆ
+		if q.prereq then
+			local untilT = os.clock() + 3
+			while not Runner.prereqMet(q.prereq) and os.clock() < untilT and not Runner.cancel do
+				task.wait(0.25)
+			end
+		end
+		if q.prereq and Runner.prereqMet(q.prereq) then
+			q.finished = true
+		elseif questProgress(d.key) == "completed" then
 			q.dropped = d.title .. " ทำได้ครั้งเดียว จบแล้ว"
 		end
 		return true
@@ -2143,10 +2216,10 @@ function Runner.start(list)
 				if Runner.cancel then
 					break
 				end
-				if not q.dropped then
+				if not q.dropped and not q.finished then
 					local others = 0
 					for _, o in ipairs(queue) do
-						if o ~= q and not o.dropped then
+						if o ~= q and not o.dropped and not o.finished then
 							others += 1
 						end
 					end
@@ -2168,7 +2241,7 @@ function Runner.start(list)
 			if not ranAny and not Runner.cancel then
 				local waitingBoss, reason = false, nil
 				for _, q in ipairs(queue) do
-					if not q.dropped then
+					if not q.dropped and not q.finished then
 						waitingBoss = waitingBoss or q.bossSkipped == true
 						reason = reason or q.notOffered
 					end
@@ -2184,7 +2257,7 @@ function Runner.start(list)
 			end
 			local left = 0
 			for _, q in ipairs(queue) do
-				if not q.dropped then
+				if not q.dropped and not q.finished then
 					left += 1
 				end
 			end
@@ -2637,6 +2710,555 @@ end))
 track(mobUI.closeButton.MouseButton1Click:Connect(function()
 	mobFeature.setOpen(false)
 end))
+
+-- Auto-Breathing: เลือกปราณแล้วทำให้จนได้ ------------------------------------
+-- แยกจาก Auto-Quest ทั้งแผงและรายการ แต่ใช้ตัวรันชุดเดียวกัน (runStep / Runner.hunt / Runner.pickup)
+-- เลยห้ามรันพร้อมกัน ใช้ Runner.active ตัวเดียวกันกันชน
+do
+	local breathUI = makePanel("Auto-Breathing", true)
+	breathUI.search.PlaceholderText = "ค้นหาปราณ…"
+
+	-- งานฝึกแต่ละแบบ: Code ใน Tasks -> ชื่อโฟลเดอร์ใต้ workspace.Training
+	-- ทุกด่านเริ่มด้วย ProximityPrompt "Train" บนแท่นฝึก แล้วเซิร์ฟเวอร์สร้าง Training (Type = ชื่อด่าน)
+	-- ในโฟลเดอร์ค่าของผู้เล่น มินิเกมจบด้วย SignalEvent "training_signaler", "Stop", ผ่านไหม
+	-- โค้ดเซิร์ฟเวอร์ของด่าน (CAM.Global.Training.<ด่าน>.Server) ไม่ได้ตรวจผลเอง Stop คืน true เสมอ
+	-- ลองแล้ว: กด Train ที่เสื่อสมาธิ เซิร์ฟเวอร์สร้าง Training Type=Meditation ส่ง Stop true แล้วปิดให้ทันที
+	local Stations = {
+		Meditation = "Meditation",
+		Pushups = "Pushups",
+		["Boulder Split"] = "Boulder Split",
+		["Target Shooting"] = "Aim Training",
+		["Cup Game"] = "Cup Game",
+		["Boulder Push"] = "Boulder Push",
+		Squat = "Squat Rack",
+	}
+
+	local Breath = {
+		-- แท่นฝึกโผล่ในแมพเฉพาะตอน stream ถึง ยืนข้าง ๆ แล้วยังต้องขอให้โหลดเอง (RequestStreamAroundAsync)
+		PromptWait = 5,
+		-- รอให้มินิเกมเปิดก่อนส่งผล ส่งเร็วเกินไปเซิร์ฟเวอร์อาจยังไม่ผูกตัวเรากับแท่น
+		MinigameWait = 1.5,
+		SettleWait = 0.8,
+		Attempts = 3,
+	}
+
+	local breathList
+	local function loadBreathing()
+		if breathList then
+			return breathList
+		end
+		breathList = {}
+		local folder = ReplicatedStorage.Ouwland.Content.Misc.NpcContents.Dialogues.Quests
+		for _, m in ipairs(folder:GetChildren()) do
+			if m:IsA("ModuleScript") and m.Name:find("Trainer") then
+				local ok, def = pcall(require, m)
+				for key, q in pairs(ok and def or {}) do
+					local power = q.Rewards and q.Rewards.Power
+					local inst = q.QuestInstance
+					if type(power) == "string" and typeof(inst) == "Instance" then
+						-- เรียงงานตาม Need (งานถัดไปเปิดเมื่องานก่อนหน้าครบ) ไม่ใช่ตามลำดับลูกใน Tasks
+						local tasks, byNeed = {}, {}
+						for _, t in ipairs(inst.Tasks:GetChildren()) do
+							local need = t:FindFirstChild("Need")
+							local spec = q.TaskSpecs and q.TaskSpecs[t.Name]
+							local entry = {
+								name = t.Name,
+								code = t.Code.Value,
+								max = t.Max.Value,
+								kind = spec and spec.Type,
+								anchor = spec and type(spec.Positions) == "table" and spec.Positions[1] or nil,
+							}
+							byNeed[need and need.Value or ""] = entry
+						end
+						local prev = ""
+						while byNeed[prev] do
+							tasks[#tasks + 1] = byNeed[prev]
+							prev = byNeed[prev].name
+						end
+						local items = {}
+						for name, n in pairs(q.ItemCostOnAccept or {}) do
+							items[#items + 1] = { name = name, need = n }
+						end
+						table.sort(items, function(a, b)
+							return a.name < b.name
+						end)
+						breathList[#breathList + 1] = {
+							key = key,
+							answer = key:gsub("%(Lv %d+%)", ""),
+							title = inst.Name,
+							power = power,
+							npc = q.OfferNpc,
+							level = q.Requirements and q.Requirements.Level or 0,
+							wen = q.WenCostOnAccept or 0,
+							items = items,
+							-- Stone ต้องมีอาวุธ Axe and Mace ชิ้นใดชิ้นหนึ่งในกระเป๋าก่อน
+							anyOf = q.Requirements and q.Requirements.Items or nil,
+							tasks = tasks,
+						}
+					end
+				end
+			end
+		end
+		table.sort(breathList, function(a, b)
+			return a.power < b.power
+		end)
+		return breathList
+	end
+
+	local function currentBreathing()
+		local slot = equippedSlot()
+		local powers = slot and slot:FindFirstChild("Powers")
+		local b = powers and powers:FindFirstChild("Breathing")
+		return b and b.Value ~= "" and tostring(b.Value) or nil
+	end
+
+	-- คืน รายการของที่ขาด (ว่าง = พร้อมรับเควส)
+	local function missingFor(b)
+		local wallet = Game.wallet()
+		local missing = {}
+		if (wallet.Wen or 0) < b.wen then
+			missing[#missing + 1] = string.format("Wen %s/%s", comma(wallet.Wen or 0), comma(b.wen))
+		end
+		for _, it in ipairs(b.items) do
+			local have = wallet[it.name] or 0
+			if have < it.need then
+				missing[#missing + 1] = string.format("%s %d/%d", it.name, have, it.need)
+			end
+		end
+		if b.anyOf then
+			local ok = false
+			for _, name in ipairs(b.anyOf) do
+				ok = ok or (wallet[name] or 0) > 0
+			end
+			if not ok then
+				missing[#missing + 1] = "อาวุธ " .. table.concat(b.anyOf, " / ")
+			end
+		end
+		return missing
+	end
+
+	local unsupported = { Dungeon = "ด่าน Parkour Dungeon ยังไม่รองรับ" }
+	local function supportNote(b)
+		for _, t in ipairs(b.tasks) do
+			if t.kind and unsupported[t.kind] then
+				return unsupported[t.kind]
+			end
+		end
+		return nil
+	end
+
+	-- ด่านฝึก --------------------------------------------------------------------
+
+	-- ค่าชั่วคราวของผู้เล่น (Training ถูกสร้างที่นี่ตอนเริ่มฝึก) อยู่ที่ Player_Service.Values.<ชื่อ>
+	-- เรียก Utility.getvaluesfolder ของเกมตรง ๆ ไม่ได้ พังด้วย "lacking capability Plugin" ตอนโหลดสคริปต์
+	local function valuesFolder()
+		local values = ReplicatedStorage:FindFirstChild("Player_Service")
+		values = values and values:FindFirstChild("Values")
+		return values and values:FindFirstChild(LocalPlayer.Name)
+	end
+
+	local function trainingPrompt(station)
+		for _, d in ipairs(station:GetDescendants()) do
+			if d:IsA("ProximityPrompt") and d.ActionText == "Train" then
+				return d
+			end
+		end
+		return nil
+	end
+
+	local function doTraining(task_)
+		local folder = workspace:FindFirstChild("Training")
+		folder = folder and folder:FindFirstChild(Stations[task_.code])
+		if not folder then
+			return false, "ไม่เจอแท่นฝึก " .. task_.code
+		end
+		local stations = {}
+		for _, s in ipairs(folder:GetChildren()) do
+			if s:IsA("Model") and s.Name ~= "Sign" then
+				stations[#stations + 1] = s
+			end
+		end
+
+		for attempt = 1, Breath.Attempts do
+			for _, station in ipairs(stations) do
+				if Runner.cancel then
+					return false, "ยกเลิกแล้ว"
+				end
+				local before = taskProgress(task_.name) or 0
+				if before >= task_.max then
+					return true
+				end
+				local char = LocalPlayer.Character
+				local hrp = char and char:FindFirstChild("HumanoidRootPart")
+				if not hrp then
+					return false, "ไม่พบตัวละคร"
+				end
+				local pos = station:GetPivot().Position
+				report(string.format("ไปแท่น %s (%s) รอบ %d", task_.name, station.Name, attempt), Theme.Accent)
+				hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 3), pos)
+				hrp.AssemblyLinearVelocity = Vector3.zero
+				pcall(function()
+					LocalPlayer:RequestStreamAroundAsync(pos, 5)
+				end)
+				local prompt
+				local untilT = os.clock() + Breath.PromptWait
+				repeat
+					prompt = trainingPrompt(station)
+					if not prompt then
+						task.wait(0.25)
+					end
+				until prompt or os.clock() > untilT
+
+				if prompt and prompt.Enabled then
+					-- กดทันทีหลังวาร์ป เซิร์ฟเวอร์ยังเห็นตัวเราอยู่ที่เดิม ไกลเกินระยะปุ่ม (10 stud) ด่านเลยไม่เริ่ม
+					-- ทุกแท่นถูกข้ามรอบละ 4 วิจนหมด รอ 0.8 วิก่อนกดแล้วเริ่มทุกครั้ง
+					task.wait(Breath.SettleWait)
+					fireproximityprompt(prompt)
+					local started
+					untilT = os.clock() + 4
+					repeat
+						task.wait(0.1)
+						local vf = valuesFolder()
+						started = vf and vf:FindFirstChild("Training")
+					until started or os.clock() > untilT
+					if started then
+						report(string.format("ฝึก %s …", task_.name), Theme.Accent)
+						task.wait(Breath.MinigameWait)
+						pcall(SignalEvent.ToServer, "training_signaler", "Stop", true)
+						untilT = os.clock() + 5
+						while started.Parent and os.clock() < untilT do
+							task.wait(0.1)
+						end
+						-- ตัวนับเควสอัปเดตหลังปิดด่านนิดหน่อย
+						untilT = os.clock() + 3
+						while (taskProgress(task_.name) or 0) <= before and os.clock() < untilT do
+							task.wait(0.2)
+						end
+						if (taskProgress(task_.name) or 0) > before then
+							return true
+						end
+					end
+				end
+			end
+		end
+		return false, "ฝึก " .. task_.name .. " แล้วตัวนับไม่ขยับ (แท่นไม่ว่าง หรือเกมไม่นับ)"
+	end
+
+	-- ตัวรัน ----------------------------------------------------------------------
+
+	local refreshBreathButton
+
+	local function runBreathing(b)
+		local auraWasOn = Runner.auraOn and Runner.auraOn()
+		local function finish(text, color)
+			report(text, color)
+			if Runner.setAura and not auraWasOn then
+				Runner.setAura(false)
+			end
+			Runner.active = false
+			Runner.statusSink = nil
+			refreshBreathButton()
+		end
+
+		if currentBreathing() == b.power then
+			finish("มีปราณ " .. b.power .. " อยู่แล้ว", Theme.Accent)
+			return
+		end
+
+		local quests = questFolder()
+		local holder = quests and quests:FindFirstChild("Holder")
+		local held = holder and holder:GetChildren()[1]
+		local accepted = held ~= nil and held.Name == b.title
+
+		if not accepted then
+			-- ไอเทมที่ฟาร์มจากม็อบได้ (Demon Horns / Beast Core) ไปหามาเองก่อน
+			-- Wen กับอาวุธของ Stone ฟาร์มให้ไม่ได้ ปล่อยให้ missingFor บอกว่าขาด
+			if (Game.wallet().Wen or 0) >= b.wen then
+				for _, it in ipairs(b.items) do
+					if Runner.cancel then
+						break
+					end
+					if (Game.wallet()[it.name] or 0) < it.need and Runner.farm and Runner.FarmSources[it.name] then
+						if Runner.setAura and not auraWasOn then
+							Runner.setAura(true)
+						end
+						local ok, err = Runner.farm(it.name, it.need)
+						if not ok then
+							finish("ฟาร์ม " .. it.name .. " ไม่สำเร็จ: " .. tostring(err), Theme.Danger)
+							return
+						end
+					end
+				end
+			end
+			local missing = missingFor(b)
+			if #missing > 0 then
+				finish("ของไม่พอรับเควส: " .. table.concat(missing, ", "), Theme.Danger)
+				return
+			end
+			-- ฟาร์มของได้แม้ถือเควสอื่นอยู่ แต่รับเควสปราณต้องมือว่าง (เกมให้ถือได้ทีละ 1)
+			local nowHeld = holder and holder:GetChildren()[1]
+			if nowHeld then
+				finish("ของครบแล้ว แต่มีเควสอื่นค้างอยู่: " .. nowHeld.Name .. " (ทำให้จบหรือยกเลิกก่อน)", Theme.Warn)
+				return
+			end
+			while questCooldown() > 0 and not Runner.cancel do
+				report("คูลดาวน์รับเควส " .. clockText(questCooldown()), Theme.Warn)
+				task.wait(1)
+			end
+			if Runner.cancel then
+				finish("ยกเลิกแล้ว", Theme.Warn)
+				return
+			end
+			local ok, err = runStep({ npc = b.npc, answer = b.answer }, 1, #b.tasks + 1)
+			if not ok then
+				finish("รับเควสไม่สำเร็จ: " .. tostring(err), Theme.Danger)
+				return
+			end
+			task.wait(1.5)
+		end
+
+		if Runner.setAura and not auraWasOn then
+			Runner.setAura(true)
+		end
+
+		for i, t in ipairs(b.tasks) do
+			if Runner.cancel then
+				finish("ยกเลิกแล้ว", Theme.Warn)
+				return
+			end
+			local count = taskProgress(t.name)
+			if count == nil then
+				break
+			end
+			if count < t.max then
+				local ok, err
+				if Stations[t.code] then
+					ok, err = doTraining(t)
+				elseif t.kind == "Pickup" then
+					ok, err = Runner.pickup({ pickup = t.name, anchor = t.anchor, max = t.max }, i + 1, #b.tasks + 1)
+				elseif t.kind and unsupported[t.kind] then
+					ok, err = false, unsupported[t.kind]
+				else
+					-- ขั้นสุดท้ายคือสู้ Trainee (Code = FlameTrainee ...)
+					local mob
+					for _, m in ipairs(Game.mobs()) do
+						if m.code == t.code then
+							mob = m
+						end
+					end
+					if not mob then
+						ok, err = false, "ไม่รู้จักงาน " .. t.name
+					else
+						Runner.hasAlternative = false
+						ok, err = Runner.hunt({ hunt = mob.name, center = mob.center, task = t.name, max = t.max }, i + 1, #b.tasks + 1)
+					end
+				end
+				if not ok then
+					finish("หยุดที่ " .. t.name .. ": " .. tostring(err), Theme.Danger)
+					return
+				end
+			end
+		end
+
+		local untilT = os.clock() + 6
+		while currentBreathing() ~= b.power and os.clock() < untilT do
+			task.wait(0.3)
+		end
+		if currentBreathing() == b.power then
+			finish("ได้ปราณ " .. b.power .. " แล้ว!", Theme.Accent)
+		else
+			finish("ทำครบทุกขั้นแล้ว แต่ยังไม่เห็นปราณ " .. b.power .. " ขึ้น ลองเช็กในเกม", Theme.Warn)
+		end
+	end
+
+	-- หน้าจอ ---------------------------------------------------------------------
+
+	local rows = {}
+	local selected
+
+	local startLabel = new("TextLabel", {
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundTransparency = 1,
+		Text = "START",
+		TextColor3 = Theme.Dim,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.SemiBold),
+	})
+	local startBtn = new("TextButton", {
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.fromScale(0, 1),
+		Size = UDim2.new(1, 0, 0, 34),
+		BackgroundColor3 = Theme.Raised,
+		AutoButtonColor = false,
+		Text = "",
+		Parent = breathUI.panel,
+	}, { corner(8), startLabel })
+
+	refreshBreathButton = function()
+		local text, ready
+		if Runner.active and Runner.statusSink == breathUI.setStatus then
+			text, ready = "STOP", nil
+		elseif Runner.active then
+			text, ready = "Auto-Quest กำลังทำงาน", false
+		elseif not selected then
+			text, ready = "START", false
+		elseif currentBreathing() == selected.power then
+			text, ready = "มีปราณนี้แล้ว", false
+		elseif supportNote(selected) then
+			text, ready = "ยังไม่รองรับ · " .. supportNote(selected), false
+		else
+			text, ready = "START · " .. selected.power .. " Breathing", true
+		end
+		startLabel.Text = text
+		if ready == nil then
+			tween(startBtn, { BackgroundColor3 = Theme.Danger }, FAST)
+			tween(startLabel, { TextColor3 = Theme.Text }, FAST)
+		else
+			tween(startBtn, { BackgroundColor3 = ready and Theme.Accent or Theme.Raised }, FAST)
+			tween(startLabel, { TextColor3 = ready and Theme.Base or Theme.Dim }, FAST)
+		end
+	end
+
+	local function paintRows()
+		for _, r in ipairs(rows) do
+			local on = r.data == selected
+			tween(r.tickFill, { BackgroundTransparency = on and 0 or 1 }, FAST)
+			r.tickStroke.Color = on and Theme.Accent or Theme.Stroke
+			tween(r.frame, { BackgroundColor3 = on and Theme.Raised or Theme.Row }, FAST)
+			local missing = missingFor(r.data)
+			local note = supportNote(r.data)
+			r.right.Text = note and "ยังไม่รองรับ" or (#missing == 0 and "พร้อมรับเควส" or ("ขาด " .. #missing .. " อย่าง"))
+			r.right.TextColor3 = note and Theme.Dim or (#missing == 0 and Theme.Accent or Theme.Warn)
+			local costs = { comma(r.data.wen) .. " Wen" }
+			for _, it in ipairs(r.data.items) do
+				costs[#costs + 1] = string.format("%s %d", it.name, it.need)
+			end
+			r.sub.Text = r.data.npc .. "  ·  " .. table.concat(costs, " · ")
+		end
+	end
+
+	local function rebuildBreathing()
+		local current = currentBreathing()
+		breathUI.subtitle.Text = current and ('<font color="#8f8f9e">ปราณตอนนี้</font> ' .. current)
+			or '<font color="#8f8f9e">ยังไม่มีปราณ</font>'
+		if #rows == 0 then
+			for i, b in ipairs(loadBreathing()) do
+				local frame = new("Frame", {
+					Size = UDim2.new(1, -6, 0, 40),
+					BackgroundColor3 = Theme.Row,
+					BorderSizePixel = 0,
+					LayoutOrder = i,
+					Parent = breathUI.list,
+				}, { corner(7) })
+				local tickFill, tickStroke = tickBox(frame)
+				new("TextLabel", {
+					Position = UDim2.fromOffset(34, 5),
+					Size = UDim2.new(1, -140, 0, 14),
+					BackgroundTransparency = 1,
+					Text = b.power .. " Breathing",
+					TextColor3 = Theme.Text,
+					TextSize = 12,
+					FontFace = font(Enum.FontWeight.Medium),
+					TextXAlignment = Enum.TextXAlignment.Left,
+					Parent = frame,
+				})
+				local sub = new("TextLabel", {
+					Position = UDim2.fromOffset(34, 20),
+					Size = UDim2.new(1, -140, 0, 13),
+					BackgroundTransparency = 1,
+					TextColor3 = Theme.Dim,
+					TextSize = 11,
+					FontFace = font(Enum.FontWeight.Regular),
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextTruncate = Enum.TextTruncate.AtEnd,
+					Parent = frame,
+				})
+				local right = new("TextLabel", {
+					AnchorPoint = Vector2.new(1, 0.5),
+					Position = UDim2.new(1, -12, 0.5, 0),
+					Size = UDim2.fromOffset(100, 14),
+					BackgroundTransparency = 1,
+					TextSize = 11,
+					FontFace = font(Enum.FontWeight.Medium),
+					TextXAlignment = Enum.TextXAlignment.Right,
+					Parent = frame,
+				})
+				local row = { frame = frame, tickFill = tickFill, tickStroke = tickStroke, sub = sub, right = right, data = b }
+				rows[#rows + 1] = row
+				local hit = new("TextButton", {
+					Size = UDim2.new(1, 0, 1, 0),
+					BackgroundTransparency = 1,
+					Text = "",
+					Parent = frame,
+				})
+				track(hit.MouseButton1Click:Connect(function()
+					if Runner.active then
+						return
+					end
+					selected = selected ~= b and b or nil
+					paintRows()
+					if selected then
+						local steps = {}
+						for _, t in ipairs(b.tasks) do
+							steps[#steps + 1] = t.name
+						end
+						breathUI.setStatus(table.concat(steps, " → "), Theme.Muted)
+					end
+					refreshBreathButton()
+				end))
+			end
+		end
+		local query = breathUI.search.Text:lower()
+		for _, r in ipairs(rows) do
+			r.frame.Visible = query == "" or r.data.power:lower():find(query, 1, true) ~= nil
+		end
+		paintRows()
+		refreshBreathButton()
+	end
+
+	track(breathUI.search:GetPropertyChangedSignal("Text"):Connect(rebuildBreathing))
+
+	track(startBtn.MouseButton1Click:Connect(function()
+		if Runner.active then
+			if Runner.statusSink == breathUI.setStatus then
+				Runner.stop()
+				breathUI.setStatus("กำลังยกเลิก…", Theme.Warn)
+			end
+			return
+		end
+		if not selected or supportNote(selected) or currentBreathing() == selected.power then
+			return
+		end
+		Runner.active = true
+		Runner.cancel = false
+		Runner.statusSink = breathUI.setStatus
+		refreshBreathButton()
+		local target = selected
+		task.spawn(function()
+			local ok, err = pcall(runBreathing, target)
+			if not ok then
+				breathUI.setStatus("พัง: " .. tostring(err), Theme.Danger)
+				Runner.active = false
+				Runner.statusSink = nil
+				refreshBreathButton()
+			end
+		end)
+	end))
+
+	local breathFeature = featureRow(
+		"Auto-Breathing",
+		"เลือกปราณ แล้วทำเควสฝึกให้จนได้ปราณ",
+		4,
+		function()
+			rebuildBreathing()
+			breathUI.show()
+		end,
+		breathUI.hide
+	)
+	track(breathUI.closeButton.MouseButton1Click:Connect(function()
+		breathFeature.setOpen(false)
+	end))
+end
 
 closeShopPanel = function()
 	for _, f in ipairs(features) do
@@ -3644,6 +4266,96 @@ function Runner.pickup(step, index, total)
 		end
 	end
 	return false, "ยกเลิกแล้ว"
+end
+
+-- ฟาร์มไอเทมที่ต้องจ่ายตอนรับเควสปราณ ------------------------------------------
+-- ข้อมูลเกมไม่มีตารางดรอป (อยู่ฝั่งเซิร์ฟเวอร์) ใช้จากคู่มือผู้เล่น:
+--   Demon Horns  Hoyuzo Subordinate ในถ้ำหลังน้ำตก Bamboo Grove ดรอป 30% ต่อตัว (บอส Hoyuzo x3 ที่ 50%)
+--   Beast Core   Beast Born Demon ที่ Mistfall Harbor ราว 1 ใน 3 ตัว
+-- ที่มา: allthings.how / nerdschalk.com (ค้นเมื่อ 23 ก.ย. 2026)
+Runner.FarmSources = {
+	["Demon Horns"] = "HoyuzoSub",
+	["Beast Core"] = "BeastBornDemon_MistfallHarbor",
+}
+
+local function itemCount(name)
+	return Game.wallet()[name] or 0
+end
+
+-- ฆ่าม็อบแหล่งดรอปไปเรื่อย ๆ แล้วเก็บของที่ตกเป็นระยะ จนมีไอเทมครบ need ชิ้น
+-- ของดรอปเป็น LootDrop ที่ต้องกด Claim เอง เลยหยุดลูปสู้ชั่วคราวตอนเก็บ ไม่งั้นมันดึงตัวกลับไปหาม็อบ
+function Runner.farm(item, need)
+	local code = Runner.FarmSources[item]
+	local mob
+	for _, m in ipairs(Game.mobs()) do
+		if m.code == code then
+			mob = m
+		end
+	end
+	if not mob then
+		return false, "ไม่รู้ว่า " .. item .. " ดรอปจากตัวไหน"
+	end
+
+	attackRow.set(false)
+	mobOnlyRow.set(false)
+	local function startAttack()
+		autoAttack.target = mob.name
+		autoAttack.onlySelected = false
+		if not autoAttack.on then
+			autoAttack.on = true
+			task.spawn(attackLoop)
+		end
+	end
+	local function stopAttack()
+		autoAttack.on = false
+		local untilT = os.clock() + 3
+		while autoAttack.running and os.clock() < untilT do
+			task.wait(0.05)
+		end
+	end
+
+	goToSpawn(mob.center)
+	startAttack()
+	local emptySince
+	while not Runner.cancel do
+		local have = itemCount(item)
+		if have >= need then
+			break
+		end
+		report(string.format("ฟาร์ม %s จาก %s  %d/%d", item, mob.name, have, need), Theme.Accent)
+
+		if #myDrops() > 0 then
+			stopAttack()
+			local got = collectLoot({
+				stop = function()
+					return Runner.cancel
+				end,
+				say = function(text)
+					report(string.format("ฟาร์ม %s · %s  %d/%d", item, text, itemCount(item), need), Theme.Accent)
+				end,
+			})
+			if #got > 0 then
+				report("เก็บได้: " .. table.concat(got, ", "), Theme.Accent)
+			end
+			startAttack()
+		end
+
+		if liveMobCount(mob.name) == 0 then
+			emptySince = emptySince or os.clock()
+			if os.clock() - emptySince > 3 then
+				goToSpawn(mob.center)
+			end
+		else
+			emptySince = nil
+		end
+		task.wait(1)
+	end
+	stopAttack()
+	autoAttack.target = nil
+	if Runner.cancel then
+		return false, "ยกเลิกแล้ว"
+	end
+	return true
 end
 
 -- Auto-Dodge: อ่านท่าโจมตีของม็อบแล้วหลบก่อนดาเมจเข้า ------------------------
