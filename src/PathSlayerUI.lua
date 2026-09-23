@@ -246,6 +246,107 @@ local function priceParts(price)
 	return parts
 end
 
+-- ตารางดรอปจริงของเกม: LiveConfig "NpcDataTable" (ม็อบ/บอสแต่ละตัวดรอปอะไร โอกาสเท่าไร หีบแบบไหน)
+-- กับ "ChestsLootTable" (หีบแต่ละแบบมีอะไร) เกมใช้สองตารางนี้สร้างหน้าต่าง "ได้จากไหน" ของตัวเอง
+-- (CAM.Client.Modules.ItemSources) เลยแม่นกว่าคู่มือในเว็บ เช่น Flame Katana = Rengu 5%, Spear = Rare Chest 7%
+local liveTables
+local function lootTables()
+	if not liveTables then
+		local ok, LiveConfig = pcall(require, ReplicatedStorage.CAM.Global.LiveConfig)
+		local npc = ok and LiveConfig.get("NpcDataTable")
+		local chests = ok and LiveConfig.get("ChestsLootTable")
+		liveTables = {
+			npc = type(npc) == "table" and npc or {},
+			chests = type(chests) == "table" and chests or {},
+		}
+	end
+	return liveTables
+end
+
+-- ทางที่ได้ของชิ้นนี้เร็วสุดจากการฟาร์มม็อบ: ดรอปตรงจากม็อบก่อน ไม่มีค่อยดูว่าหีบไหนมี แล้วใครดรอปหีบนั้น
+-- เลือกโอกาสสูงสุด ถ้าเท่ากันเอาตัวเลือดน้อยกว่า (ฆ่าเร็วกว่า)
+-- คืน { kind = "drop"|"chest", code = รหัสม็อบ (ตรงกับ NpcCode), npc, chance, level, night, chest }
+function Game.weaponRoute(itemName)
+	local t = lootTables()
+	local function better(a, b)
+		if not b then
+			return true
+		end
+		if a.chance ~= b.chance then
+			return a.chance > b.chance
+		end
+		return (a.hp or math.huge) < (b.hp or math.huge)
+	end
+
+	local best
+	for code, npc in pairs(t.npc) do
+		local r = type(npc) == "table" and npc.Rewards and npc.Rewards[itemName]
+		local chance = type(r) == "table" and r.Chance or (type(r) == "number" and r) or nil
+		if chance then
+			local cand = {
+				kind = "drop",
+				code = code,
+				npc = npc.Name or code,
+				chance = chance,
+				level = type(r) == "table" and r.Level or nil,
+				night = npc.OnlyAtNight == true,
+				hp = npc.Stats and npc.Stats.MaxHealth,
+			}
+			if better(cand, best) then
+				best = cand
+			end
+		end
+	end
+	if best then
+		return best
+	end
+
+	for chestId, chest in pairs(t.chests) do
+		local chance
+		for _, e in ipairs(type(chest) == "table" and chest.loot or {}) do
+			if e.itemId == itemName then
+				chance = e.chance or 1
+			end
+		end
+		if chance then
+			for code, npc in pairs(t.npc) do
+				local drops = type(npc) == "table" and npc.Chest == chestId
+				for _, extra in ipairs(type(npc) == "table" and npc.ExtraChests or {}) do
+					drops = drops or extra == chestId
+				end
+				if drops then
+					local cand = {
+						kind = "chest",
+						chest = chestId,
+						code = code,
+						npc = npc.Name or code,
+						chance = chance,
+						night = npc.OnlyAtNight == true,
+						hp = npc.Stats and npc.Stats.MaxHealth,
+					}
+					if better(cand, best) then
+						best = cand
+					end
+				end
+			end
+		end
+	end
+	return best
+end
+
+function Game.routeText(route)
+	local pct = string.format("%g%%", math.floor(route.chance * 1000 + 0.5) / 10)
+	local text = route.kind == "drop" and string.format("ดรอป %s %s", route.npc, pct)
+		or string.format("%s %s จาก %s", route.chest, pct, route.npc)
+	if route.night then
+		text ..= " · กลางคืน"
+	end
+	if route.level then
+		text ..= " · Lv " .. route.level
+	end
+	return text
+end
+
 function Game.listings()
 	local wallet = Game.wallet()
 	local level = Game.level()
@@ -270,8 +371,16 @@ function Game.listings()
 
 		local listing = forSale[item.name]
 		local recipe = craftingFor(item.name)
+		local route = not listing and Game.weaponRoute(item.name) or nil
+		row.have = wallet[item.name] or 0
 
-		if listing then
+		if route then
+			-- ฟาร์มม็อบ/บอสจนดรอป ไม่ต้องใช้เงิน เลยข้ามการเช็กราคาข้างล่าง (cost ว่าง)
+			row.source = route.kind
+			row.route = route
+			row.farmable = true
+			row.reason = Game.routeText(route)
+		elseif listing then
 			row.source = "shop"
 			row.buyable = true
 			row.cost = priceParts(listing.Price)
@@ -295,10 +404,10 @@ function Game.listings()
 				row.cost[#row.cost + 1] = { currency = mat.name, amount = mat.amount }
 			end
 			row.locked = true
-			row.reason = "ตีที่ช่าง " .. tostring(recipe.station)
+			row.reason = "ตีที่ช่าง " .. tostring(recipe.station) .. " (ยังไม่รองรับ)"
 		else
 			row.locked = true
-			row.reason = "ไม่มีขาย (ดรอป/แลกเท่านั้น)"
+			row.reason = "ยังไม่รู้แหล่งได้ / ยังไม่รองรับ"
 		end
 
 		-- เงินไม่พอ: เช็กทุกสกุลในราคา ขาดตัวไหนบอกตัวนั้น
@@ -1002,6 +1111,10 @@ end
 
 -- ร้านอาวุธ -----------------------------------------------------------------
 
+-- ตัวรัน (คุยกับ NPC / ฆ่าม็อบ / เก็บของ) นิยามอยู่ล่างกว่า แต่ Get Weapons, Auto-Quest, Auto-Breathing ใช้ร่วมกัน
+-- ประกาศไว้ก่อนแผงพวกนี้ ไม่งั้นโค้ดแผงอ้างถึงแล้วได้ global ว่าง ๆ
+local Runner
+
 local shopUI = makePanel("Get Weapons", true)
 shopUI.search.PlaceholderText = "ค้นหาอาวุธ…"
 
@@ -1029,8 +1142,21 @@ local shopSelected
 local shopRows = {}
 
 local function refreshBuyButton()
-	local enabled = shopSelected ~= nil and not shopSelected.locked and shopSelected.buyable
-	buyLabel.Text = shopSelected and ("GET  ·  " .. shopSelected.name) or "GET"
+	if Runner and Runner.active and Runner.statusSink == shopUI.setStatus then
+		buyLabel.Text = "STOP"
+		tween(buyBtn, { BackgroundColor3 = Theme.Danger }, FAST)
+		tween(buyLabel, { TextColor3 = Theme.Text }, FAST)
+		return
+	end
+	local enabled = shopSelected ~= nil
+		and not shopSelected.locked
+		and (shopSelected.buyable or shopSelected.farmable)
+		and not (Runner and Runner.active)
+	if Runner and Runner.active then
+		buyLabel.Text = "มีระบบอื่นกำลังรันอยู่"
+	else
+		buyLabel.Text = shopSelected and ("GET  ·  " .. shopSelected.name) or "GET"
+	end
 	tween(buyBtn, { BackgroundColor3 = enabled and Theme.Accent or Theme.Raised }, FAST)
 	tween(buyLabel, { TextColor3 = enabled and Theme.Base or Theme.Dim }, FAST)
 end
@@ -1111,9 +1237,12 @@ local function buildShopRow(data, order)
 	for _, p in ipairs(data.cost) do
 		costText[#costText + 1] = comma(p.amount) .. " " .. p.currency
 	end
-	local right = data.locked and (data.reason or "ล็อก") or table.concat(costText, " + ")
+	local right = (data.locked or data.farmable) and (data.reason or "ล็อก") or table.concat(costText, " + ")
 	if #right == 0 then
 		right = "-"
+	end
+	if (data.have or 0) > 0 then
+		right = "มีแล้ว " .. data.have .. "  ·  " .. right
 	end
 
 	new("TextLabel", {
@@ -1215,7 +1344,49 @@ track(shopUI.search:GetPropertyChangedSignal("Text"):Connect(applyShopFilter))
 
 -- Game.buy รอดูเงินลดได้ถึง 4 วิ กดซ้ำระหว่างนั้นจะส่งคำสั่งซื้อซ้อน
 local buying = false
+-- ของที่ต้องฟาร์ม: ฆ่าม็อบ/บอสตามเส้นทางจากตารางดรอป เปิดหีบ เก็บของ จนมีเพิ่มอีก 1 ชิ้น
+local function startFarmWeapon(target)
+	Runner.active = true
+	Runner.cancel = false
+	Runner.statusSink = shopUI.setStatus
+	refreshBuyButton()
+	local auraWasOn = Runner.auraOn and Runner.auraOn()
+	if Runner.setAura and not auraWasOn then
+		Runner.setAura(true)
+	end
+	task.spawn(function()
+		local want = (Game.wallet()[target.name] or 0) + 1
+		local done, ok, err = pcall(Runner.farm, target.name, want, target.route.code)
+		if not done then
+			ok, err = false, ok
+		end
+		if Runner.setAura and not auraWasOn then
+			Runner.setAura(false)
+		end
+		Runner.active = false
+		Runner.statusSink = nil
+		if ok then
+			shopUI.setStatus("ได้ " .. target.name .. " แล้ว!", Theme.Accent)
+			task.delay(1, rebuildShop)
+		else
+			shopUI.setStatus("หยุด: " .. tostring(err), err == "ยกเลิกแล้ว" and Theme.Warn or Theme.Danger)
+		end
+		refreshBuyButton()
+	end)
+end
+
 track(buyBtn.MouseButton1Click:Connect(function()
+	if Runner.active then
+		if Runner.statusSink == shopUI.setStatus then
+			Runner.stop()
+			shopUI.setStatus("กำลังยกเลิก…", Theme.Warn)
+		end
+		return
+	end
+	if shopSelected and not shopSelected.locked and shopSelected.farmable then
+		startFarmWeapon(shopSelected)
+		return
+	end
 	if buying or not shopSelected or shopSelected.locked or not shopSelected.buyable then
 		return
 	end
@@ -1407,8 +1578,6 @@ local function pickedQuests(row)
 end
 
 local applyQuestFilter
--- ตัวรันเควสนิยามอยู่ล่างกว่า แต่ชิปตัวเลือกต้องเช็กว่ากำลังรันอยู่ไหม
-local Runner
 local refreshStartButton
 
 -- force = true ใช้ตอนกดชิปตัวเลือก ต้องเลือกแถวนั้นเสมอ ไม่ใช่สลับเปิด/ปิดแบบคลิกแถว
@@ -4284,8 +4453,9 @@ end
 
 -- ฆ่าม็อบแหล่งดรอปไปเรื่อย ๆ แล้วเก็บของที่ตกเป็นระยะ จนมีไอเทมครบ need ชิ้น
 -- ของดรอปเป็น LootDrop ที่ต้องกด Claim เอง เลยหยุดลูปสู้ชั่วคราวตอนเก็บ ไม่งั้นมันดึงตัวกลับไปหาม็อบ
-function Runner.farm(item, need)
-	local code = Runner.FarmSources[item]
+-- code = รหัสม็อบ (NpcCode) ถ้าไม่ส่งมาใช้ FarmSources (ไอเทมรับเควสปราณ)
+function Runner.farm(item, need, code)
+	code = code or Runner.FarmSources[item]
 	local mob
 	for _, m in ipairs(Game.mobs()) do
 		if m.code == code then
@@ -4324,7 +4494,9 @@ function Runner.farm(item, need)
 		end
 		report(string.format("ฟาร์ม %s จาก %s  %d/%d", item, mob.name, have, need), Theme.Accent)
 
-		if #myDrops() > 0 then
+		-- บอสใหญ่ไม่ได้ดรอปของตรง แต่ทิ้งหีบไว้ (Rengu = World Events Chest, Hoyuzo = Rare Chest) เปิดด้วย
+		local _, me = selfParts()
+		if #myDrops() > 0 or (me and #closedChests(me.Position) > 0) then
 			stopAttack()
 			local got = collectLoot({
 				stop = function()
@@ -4344,6 +4516,9 @@ function Runner.farm(item, need)
 			emptySince = emptySince or os.clock()
 			if os.clock() - emptySince > 3 then
 				goToSpawn(mob.center)
+				-- บอสใหญ่เกิดใหม่ทุก 300 วิ บางตัวออกเฉพาะกลางคืน (OnlyAtNight) บอกให้รู้ว่ารออะไรอยู่
+				report(string.format("รอ %s เกิดใหม่ (%d วิแล้ว) · %s %d/%d", mob.name,
+					math.floor(os.clock() - emptySince), item, itemCount(item), need), Theme.Warn)
 			end
 		else
 			emptySince = nil
