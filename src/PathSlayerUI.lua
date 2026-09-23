@@ -1922,6 +1922,10 @@ function Game.quests()
 								anchor = typeof(anchor) == "Vector3" and anchor or nil,
 								-- มีเฉพาะงานที่ของเกิดเป็นวงรอบจุดเดียว (เหรียญ Liv: Anchor + Radius 15)
 								sweepAt = spec and typeof(spec.Anchor) == "Vector3" and spec.Anchor or nil,
+								-- Deposit: เอาของชื่อนี้ไปใส่ลังที่ Position / Deliver: กลับไปคุยกับ TargetNpc
+								item = spec and spec.RequiredItem,
+								position = spec and typeof(spec.Position) == "Vector3" and spec.Position or nil,
+								target = spec and spec.TargetNpc,
 							}
 						end
 
@@ -2321,18 +2325,77 @@ local function questPlan(data)
 
 	-- ตัดวงเล็บเลเวลออก ปุ่มในเกมอาจโชว์หรือไม่โชว์ "(Lv 7)" ก็ได้ ส่วนที่เหลือจับเจอทั้งสองแบบ
 	local steps = { { npc = data.offerNpc, answer = data.quest } }
+	-- งานส่งของทำทีหลังสุดเสมอ ลำดับลูกใน Tasks ไม่แน่นอน "Return to Runo" มาก่อนงานใส่ลังได้
+	-- ส่งให้ NPC คนอื่นก่อน แล้วค่อยกลับไปรายงานคนให้เควส (Niko: ส่งกล่องให้ Shiori -> กลับไปหา Niko)
+	local delivers, deposit = {}, nil
 	for _, t in ipairs(data.tasks) do
 		local mob = t.code and byCode[t.code]
 		if t.kind == "Pickup" then
 			-- งานเก็บของ: เกมวางของไว้เองตอนรับเควส (PickupState) ไปกดเก็บจนตัวนับครบ
 			steps[#steps + 1] = { pickup = t.name, anchor = t.anchor, sweepAt = t.sweepAt, max = t.max }
+		elseif t.kind == "Deposit" and t.item and t.position then
+			-- ลังของ Runo มีงานละชนิดปลาแต่ใส่ที่จุดเดียวกัน รวมเป็นขั้นเดียว หาของให้ครบก่อนแล้ววางรวดเดียว
+			if not deposit then
+				deposit = { deposit = data.key, position = t.position, rows = {} }
+				steps[#steps + 1] = deposit
+			end
+			deposit.rows[#deposit.rows + 1] = { task = t.name, item = t.item, max = t.max }
+		elseif t.kind == "Deliver" and t.target then
+			local answer = Game.deliverAnswer(t.target)
+			if not answer then
+				return nil
+			end
+			local step = { npc = t.target, answer = answer }
+			if t.target == data.offerNpc then
+				delivers[#delivers + 1] = step
+			else
+				table.insert(delivers, 1, step)
+			end
 		elseif mob then
 			steps[#steps + 1] = { hunt = mob.name, center = mob.center, task = t.name, max = t.max }
 		else
 			return nil
 		end
 	end
+	table.move(delivers, 1, #delivers, #steps + 1, steps)
 	return steps
+end
+
+-- ปุ่มส่งของ/รายงานตัวกับ NPC หาจากบทพูดของเกม (Dialogues.Yap): ปุ่มที่ชี้ไป action ขึ้นต้น Deliver
+--   Runo "The crate is loaded" -> DeliverHaulToRuno, Sofen "Hand over the permit stamp" -> DeliverPermitStampToSofen
+-- ชื่อโมดูลไม่ตรงชื่อ NPC เสมอ (Dock Master Sofen อยู่ในโมดูล Sofen) เลยดูว่าโมดูลไหนมีโหนดชื่อ NPC คนนั้น
+-- คืนทุกปุ่มที่เจอ NPC ที่รับของหลายเควสมีปุ่มส่งหลายอัน หน้าคุยจะโชว์เฉพาะอันของเควสที่ถืออยู่
+-- (Shiori: "The infirmary is stocked" ของอีกเควส ส่วนกล่องของ Niko เป็นอีกปุ่ม)
+Game.deliverAnswers = {}
+function Game.deliverAnswer(npcName)
+	if Game.deliverAnswers[npcName] then
+		return #Game.deliverAnswers[npcName] > 0 and Game.deliverAnswers[npcName] or nil
+	end
+	local found = {}
+	Game.deliverAnswers[npcName] = found
+	for _, region in ipairs(ReplicatedStorage.Ouwland.Content:GetChildren()) do
+		local dialogues = region:FindFirstChild("NpcContents")
+		dialogues = dialogues and dialogues:FindFirstChild("Dialogues")
+		local yap = dialogues and dialogues:FindFirstChild("Yap")
+		for _, m in ipairs(yap and yap:GetChildren() or {}) do
+			-- บทพูดบางตัว require component ฝั่ง UI ตอนโหลด เคยพังจาก executor ("Cannot require a non-RobloxScript module")
+			-- ตัวที่พังข้ามไป ถือว่า NPC นั้นไม่มีปุ่มส่งของ
+			local ok, nodes = false, nil
+			if m:IsA("ModuleScript") then
+				ok, nodes = pcall(require, m)
+			end
+			if ok and type(nodes) == "table" and nodes[npcName] then
+				for _, node in pairs(nodes) do
+					for text, action in pairs(type(node) == "table" and type(node.Answers) == "table" and node.Answers or {}) do
+						if type(action) == "string" and action:find("^Deliver") and not table.find(found, text) then
+							found[#found + 1] = text
+						end
+					end
+				end
+			end
+		end
+	end
+	return #found > 0 and found or nil
 end
 
 local QuestRules = require(ReplicatedStorage.CAM.Global.Subsets.Gameplay.Quests)
@@ -2527,7 +2590,12 @@ local function walkDialogue(answer, deadline)
 		local opts = dialogueOptions(actual)
 		if #opts > 0 then
 			for _, o in ipairs(opts) do
-				if o.text:lower():find(answer:lower(), 1, true) then
+				-- answer เป็นรายการได้: งานส่งของที่ NPC มีปุ่มส่งหลายอัน (Shiori รับของจากหลายเควส)
+				local wanted = false
+				for _, a in ipairs(type(answer) == "table" and answer or { answer }) do
+					wanted = wanted or o.text:lower():find(a:lower(), 1, true) ~= nil
+				end
+				if wanted then
 					clickGui(o.button)
 					return true
 				end
@@ -2542,7 +2610,8 @@ local function walkDialogue(answer, deadline)
 			for _, o in ipairs(opts) do
 				names[#names + 1] = o.text
 			end
-			return false, 'ไม่มีตัวเลือก "' .. answer .. '" (มี: ' .. table.concat(names, " / ") .. ")", "not-offered"
+			local asked = type(answer) == "table" and table.concat(answer, '" หรือ "') or answer
+			return false, 'ไม่มีตัวเลือก "' .. asked .. '" (มี: ' .. table.concat(names, " / ") .. ")", "not-offered"
 		end
 
 		lastLine = dialogueText(actual)
@@ -2565,6 +2634,9 @@ local function runStep(step, index, total)
 	end
 	if step.pickup then
 		return Runner.pickup(step, index, total)
+	end
+	if step.deposit then
+		return Runner.deposit(step, index, total)
 	end
 
 	local char = LocalPlayer.Character
@@ -2631,6 +2703,10 @@ Runner.Prereqs = {
 	["Ill deal with Kaiden(Lv 34)"] = { { quest = "Ill get this letter delivered" } },
 	["Ill get this letter delivered"] = { { item = "Suspicious Note", via = "Ill help clear them out" } },
 	["Ill find the coins(Lv 21)"] = { { quest = "Ill look for the penny(Lv 14)" } },
+	-- Runo ไม่ให้เควสลังปลาจนกว่าจะได้ใบอนุญาตจาก Sofen (BeforeRun -> Runo_NoPermit)
+	-- และร้านเบ็ดของ Jeso ก็ล็อกด้วยเควสเดียวกัน (RequiresQuestDone ในโมดูล NPC)
+	["Ill fill your crates(Lv 45)"] = { { quest = "Ill find the permit stamp(Lv 45)" } },
+	["Ill land the good catch(Lv 60)"] = { { quest = "Ill find the permit stamp(Lv 45)" } },
 }
 
 function Runner.prereqMet(cond)
@@ -4297,7 +4373,9 @@ local function placeAt(hrp, cf, tag)
 end
 
 local autoAttack = { on = false, onlySelected = false }
-local killAura = { on = false, far = false, lastFire = 0, fires = 0, slotIndex = 0, comboBySlot = {}, lastBySlot = {} }
+-- fastKill: Insta Kill โหมดได้ของกำลังยิงหมัดเองตามจังหวะคอมโบของเซิร์ฟ ลูปอื่นห้ามยิงแทรก
+-- หมัดแทรกหนึ่งครั้งทำให้เลขคอมโบที่เซิร์ฟจำไว้ไม่ตรงกับที่ Insta Kill ส่ง แล้วเซิร์ฟทิ้งหมัดถัดไปทั้งชุด
+local killAura = { on = false, far = false, fastKill = false, lastFire = 0, fires = 0, slotIndex = 0, comboBySlot = {}, lastBySlot = {} }
 local autoDodge = { on = false, holdUntil = 0, dodges = 0, hitsTaken = 0, learned = 0 }
 
 local function selfParts()
@@ -4455,7 +4533,7 @@ local function attackLoop()
 					-- แบ่ง SwingInterval เป็นช่วงสั้น ๆ เพื่อปักตำแหน่งใหม่ระหว่างรอหมัดถัดไป
 					pinAbove(hrp, mobRoot)
 					-- Kill Aura เปิดอยู่ให้มันยิงแทน คลิกซ้อนด้วยจะส่งถี่เกินจนเซิร์ฟเวอร์ทิ้ง
-					if not killAura.on then
+					if not killAura.on and not killAura.fastKill then
 						swingAt(target)
 					end
 					combatStatus(string.format(
@@ -4804,14 +4882,19 @@ end
 -- ของเควสเก็บของ: PickupState ของเกมสร้าง Part ไว้ตรง ๆ ใต้ workspace
 -- ใส่ ProximityPrompt ActionText = "Pick Up" (ObjectText = "Coin" / "Lost Page" / "Lucky Penny")
 -- กดแล้วเกมส่ง SignalEvent "QuestProgress" ให้เอง บาง TaskSpec มี MaxDistance = 25 เลยต้องวาร์ปไปข้างของ
+-- ของเควสวางตรงใต้ workspace ได้สองแบบ: Part เปล่า (เหรียญ Liv) กับ Model ที่ prompt อยู่ในพาร์ตลูก
+-- (ตราประทับของ Sofen = Workspace."Permit Stamp1".Plane) เดิมหาแต่แบบแรก ตัวละครเลยยืนรอข้างของเฉย ๆ
 local function questPickups()
 	local list = {}
-	for _, part in ipairs(workspace:GetChildren()) do
-		if part:IsA("BasePart") then
-			local prompt = part:FindFirstChildWhichIsA("ProximityPrompt")
-			if prompt and prompt.ActionText == "Pick Up" and prompt.Enabled then
-				list[#list + 1] = { part = part, prompt = prompt }
-			end
+	for _, child in ipairs(workspace:GetChildren()) do
+		local prompt
+		if child:IsA("BasePart") then
+			prompt = child:FindFirstChildWhichIsA("ProximityPrompt")
+		elseif child:IsA("Model") then
+			prompt = child:FindFirstChildWhichIsA("ProximityPrompt", true)
+		end
+		if prompt and prompt.ActionText == "Pick Up" and prompt.Enabled and prompt.Parent:IsA("BasePart") then
+			list[#list + 1] = { part = prompt.Parent, prompt = prompt }
 		end
 	end
 	return list
@@ -5099,6 +5182,408 @@ function Runner.obtain(name, need)
 	end
 	return false, "ยกเลิกแล้ว"
 end
+
+-- ตกปลากับงานใส่ลัง (เควสของ Angler Runo) -----------------------------------------
+
+-- ฟังก์ชันที่เรียกทันทีแยกโควตา register จาก chunk หลัก เหตุผลเดียวกับแท็บ Settings
+-- ข้างนอกใช้แค่ Runner.deposit (runStep) กับ Runner.fish
+;(function()
+local Fishing = {
+	-- เรียงจากดีสุด มีตัวไหนใช้ตัวนั้น ไม่มีเลยซื้อ Basic (3,500 Wen ที่ Jeso ต้องจบเควสใบอนุญาตก่อน)
+	Rods = { "Legendary Fishing Rod", "Rare Fishing Rod", "Basic Fishing Rod" },
+	-- ระยะโยนจริงคือ CastRadius ของ FishingHandler ฝั่งเซิร์ฟ มองไม่เห็นจาก client
+	-- เลือกจุดยืนที่น้ำห่างไม่เกินนี้ 8 เป็นค่าเผื่อ ยังไม่ได้วัดว่าเบ็ดโยนได้ไกลสุดเท่าไร
+	CastReach = 8,
+	-- เซิร์ฟสุ่มรอปลากิน 4-9 วิ / BiteSpeedMultiplier (Rare Fishing RodServer) 30 วิครอบเบ็ดที่ช้าสุด
+	BiteTimeout = 30,
+	-- รอก่อนบอกเซิร์ฟว่าชนะมินิเกม เซิร์ฟไม่ได้จับเวลา (รับ verdict ทันทีที่ token ตรง)
+	-- แต่คนเล่นจริงใช้เวลาดันแถบจาก 50% ไป 100% ไม่ส่งทันทีจะได้ไม่ผิดสังเกต ค่าเดา ไม่ได้วัดเวลาคนเล่น
+	-- ชนะแล้วยังได้ของไม่ทุกครั้ง เซิร์ฟสุ่ม CatchChance อีกชั้น เบ็ด Basic ไม่ใส่เหยื่อ ลอง 6 ครั้งได้ 2
+	-- (OuwFwesh 1, Silk Thread 1) ที่เหลือ "slipped" ไม่มีตัวปลาโผล่
+	WinDelay = 2,
+	-- สแกนหาริมน้ำรอบจุดตั้งต้น น้ำเปิดที่ใกล้ลังของ Runo สุดอยู่ห่าง ~64 stud (วัดจากจุด -574,800,681)
+	ScanRadius = 90,
+	ScanStep = 3,
+}
+
+local ToolbarSlots = { "One", "Two", "Three", "Four", "Five" }
+local FishFolder = ReplicatedStorage.Items:FindFirstChild("Fishing")
+
+-- ปลา = ของในโฟลเดอร์ Fishing ที่ถือไม่ได้ (เบ็ดกับเหยื่อมี EquipType)
+local function isFish(itemName)
+	local m = FishFolder and FishFolder:FindFirstChild(itemName)
+	return m ~= nil and require(m).EquipType == nil
+end
+
+-- มินิเกมตอนปลากิน (BarKeepup) ให้ชนะเองระหว่างตกปลาอัตโนมัติ นอกนั้นเล่นตามปกติ
+-- rod script ถือตัวฟังก์ชันไว้เป็น upvalue แทนฟิลด์ไม่ได้ ต้อง hookfunction ตัวฟังก์ชันเลย
+-- รันสคริปต์ใหม่แล้ว hook ซ้อนทับกันเรื่อย ๆ เก็บตัวจริงไว้ใน _G ทำครั้งเดียวต่อรอบเกม
+if not _G.PathSlayerBarKeepup and typeof(hookfunction) == "function" then
+	local BarKeepup = require(ReplicatedStorage.CAM.Client.Components.NonePackagedMisc.Minigames.BarKeepup)
+	local real
+	real = hookfunction(BarKeepup, newcclosure(function(gui, opts)
+		local delay = _G.PathSlayerAutoFish
+		if delay and type(opts) == "table" and opts.Stop then
+			task.delay(delay, function()
+				-- Stop ส่ง verdict ผ่าน portal ของเกม รันจาก thread ที่ executor สร้างอาจเจอปัญหา require
+				-- แบบเดียวกับ Auto Skill เลยลด identity เป็นของ LocalScript ก่อน
+				if setthreadidentity then
+					setthreadidentity(2)
+				end
+				opts.Stop(true)
+			end)
+			return
+		end
+		return real(gui, opts)
+	end))
+	_G.PathSlayerBarKeepup = real
+end
+track({
+	Disconnect = function()
+		_G.PathSlayerAutoFish = nil
+	end,
+})
+
+local function inventoryItem(name)
+	local slot = equippedSlot()
+	local bag = slot and slot.Inventory:FindFirstChild("Inventory")
+	return bag and bag:FindFirstChild(name)
+end
+
+-- ใส่เบ็ดขึ้น toolbar ถ้ายังไม่มี แบบเดียวกับปุ่มในหน้ากระเป๋า: Toolbar_Equip(ชื่อช่อง, Id ของ)
+-- ใช้แต่ช่องว่าง ไม่เอาของที่ผู้เล่นวางไว้ออก คืนเลขช่อง
+local function rodSlot(rodName)
+	local rod = inventoryItem(rodName)
+	local id = rod and rod:FindFirstChild("Id")
+	if not id then
+		return nil, "ไม่พบ " .. rodName .. " ในกระเป๋า"
+	end
+	local bar = equippedSlot().Inventory.Toolbar
+	for i, slotName in ipairs(ToolbarSlots) do
+		if bar[slotName].Value == id.Value then
+			return i
+		end
+	end
+	for i, slotName in ipairs(ToolbarSlots) do
+		if bar[slotName].Value == 0 then
+			SignalEvent.ToServer("Toolbar_Equip", slotName, id.Value)
+			local untilT = os.clock() + 3
+			while bar[slotName].Value ~= id.Value and os.clock() < untilT do
+				task.wait(0.1)
+			end
+			if bar[slotName].Value == id.Value then
+				return i
+			end
+			return nil, "ใส่เบ็ดขึ้น toolbar ไม่ติด"
+		end
+	end
+	return nil, "toolbar เต็มทั้ง 5 ช่อง เอาของออกหนึ่งช่องให้เบ็ดก่อน"
+end
+
+-- หาจุดยืนบนบกที่มีน้ำเปิดอยู่ในระยะโยน ใกล้ near ที่สุด
+-- น้ำคือพาร์ตที่เกมแท็ก SwimParts (ตัวเดียวกับที่เซิร์ฟใช้เช็กว่าโยนลงน้ำไหม) ต้อง stream มาก่อนถึงจะเห็น
+-- น้ำเปิด = ไม่มีอะไรบังข้างบน เซิร์ฟตัดทิ้งถ้ามีพื้นทับผิวน้ำ (findWater ใน Rare Fishing RodServer)
+local spotCache = {}
+local function fishingSpot(near)
+	local key = tostring(near)
+	if spotCache[key] then
+		return spotCache[key].stand, spotCache[key].water
+	end
+	local waterParents = {}
+	for _, v in ipairs(game:GetService("CollectionService"):GetTagged("SwimParts")) do
+		waterParents[#waterParents + 1] = v.Parent or v
+	end
+	if #waterParents == 0 then
+		return nil
+	end
+	local onlyWater = RaycastParams.new()
+	onlyWater.FilterType = Enum.RaycastFilterType.Include
+	onlyWater.FilterDescendantsInstances = waterParents
+	onlyWater.BruteForceAllSlow = true
+	local solid = RaycastParams.new()
+	solid.FilterType = Enum.RaycastFilterType.Exclude
+	solid.FilterDescendantsInstances = { LocalPlayer.Character, workspace:FindFirstChild("Debree"), workspace:FindFirstChild("Humanoids") }
+
+	local waters, lands = {}, {}
+	local r, s = Fishing.ScanRadius, Fishing.ScanStep
+	for dx = -r, r, s do
+		for dz = -r, r, s do
+			local top = near + Vector3.new(dx, 80, dz)
+			local w = workspace:Raycast(top, Vector3.new(0, -160, 0), onlyWater)
+			local g = workspace:Raycast(top, Vector3.new(0, -160, 0), solid)
+			local groundIsWater = g and w and g.Instance:IsDescendantOf(w.Instance.Parent)
+			if w and (not g or groundIsWater or g.Position.Y <= w.Position.Y + 0.1) then
+				waters[#waters + 1] = w.Position
+			elseif g and not groundIsWater and (not w or g.Position.Y > w.Position.Y + 0.5) then
+				lands[#lands + 1] = g.Position
+			end
+		end
+	end
+	table.sort(lands, function(a, b)
+		return (a - near).Magnitude < (b - near).Magnitude
+	end)
+	for _, land in ipairs(lands) do
+		for _, water in ipairs(waters) do
+			local flat = Vector3.new(water.X - land.X, 0, water.Z - land.Z).Magnitude
+			if flat >= 3 and flat <= Fishing.CastReach then
+				spotCache[key] = { stand = land + Vector3.new(0, 3, 0), water = water }
+				return spotCache[key].stand, water
+			end
+		end
+	end
+	return nil
+end
+
+local function click(pos)
+	SignalEvent.ToServer("Tool_Mouse", "Down", pos)
+	SignalEvent.ToServer("Tool_Mouse", "Up", pos)
+end
+
+local function waitFor(check, seconds)
+	local untilT = os.clock() + seconds
+	while not check() and os.clock() < untilT and not Runner.cancel do
+		task.wait(0.1)
+	end
+	return check()
+end
+
+-- targets = { [ชื่อปลา] = จำนวนที่ต้องมีในกระเป๋า } ตกจนครบทุกชนิด near = จุดตั้งต้นหาริมน้ำ
+-- ปลาหายาก (Clown / Zebra Fish) Runo บอกเองว่า "come up rare" ไม่มีวิธีเลือก ตกไปเรื่อย ๆ จนได้
+function Runner.fish(targets, near, prefix)
+	prefix = prefix or ""
+	local rodName
+	for _, name in ipairs(Fishing.Rods) do
+		rodName = rodName or ((Game.wallet()[name] or 0) > 0 and name or nil)
+	end
+	if not rodName then
+		rodName = Fishing.Rods[#Fishing.Rods]
+		report(prefix .. "ยังไม่มีเบ็ด ไปซื้อ " .. rodName, Theme.Accent)
+		local ok, err = Runner.obtain(rodName, 1)
+		if not ok then
+			return false, "ซื้อเบ็ดไม่ได้: " .. tostring(err)
+		end
+	end
+	local slotIndex, err = rodSlot(rodName)
+	if not slotIndex then
+		return false, err
+	end
+
+	-- ลูปสู้กับ Kill Aura สลับไปถืออาวุธเองทุกรอบ ต้องหยุดก่อน ไม่งั้นเบ็ดหลุดมือกลางคัน
+	attackRow.set(false)
+	mobOnlyRow.set(false)
+	autoAttack.on = false
+	local auraWasOn = Runner.auraOn()
+	if auraWasOn then
+		Runner.setAura(false)
+	end
+
+	local _, hrp = selfParts()
+	placeAt(hrp, CFrame.new(near + Vector3.new(0, 4, 0)), "fishing-scan")
+	task.wait(2)
+	local stand, water = fishingSpot(near)
+	if not stand then
+		if auraWasOn then
+			Runner.setAura(true)
+		end
+		return false, "หาริมน้ำที่โยนเบ็ดได้ไม่เจอในระยะ " .. Fishing.ScanRadius .. " stud"
+	end
+
+	_G.PathSlayerAutoFish = Fishing.WinDelay
+	local caught = 0
+	local function done()
+		for name, need in pairs(targets) do
+			if (Game.wallet()[name] or 0) < need then
+				return false
+			end
+		end
+		return true
+	end
+	local function progress()
+		local parts = {}
+		for name, need in pairs(targets) do
+			parts[#parts + 1] = string.format("%s %d/%d", name, math.min(Game.wallet()[name] or 0, need), need)
+		end
+		table.sort(parts)
+		return table.concat(parts, " · ")
+	end
+
+	-- ปลาที่ติดเบ็ดไม่เข้ากระเป๋าเอง เซิร์ฟแขวนไว้เป็นโมเดล Debree.FishingCatch_N (attribute CatchItem)
+	-- มี prompt "Collect" กดค้าง 2 วิ ของเข้ากระเป๋าตอนกด prompt นี้เท่านั้น
+	local catchModel
+	local watch = workspace.Debree.ChildAdded:Connect(function(child)
+		if child.Name:find("^FishingCatch_") then
+			catchModel = child
+		end
+	end)
+
+	local result, why = true, nil
+	local misses = 0
+	while not done() do
+		if Runner.cancel then
+			result, why = false, "ยกเลิกแล้ว"
+			break
+		end
+		_, hrp = selfParts()
+		if not hrp then
+			task.wait(1)
+		else
+			if (hrp.Position - stand).Magnitude > 4 then
+				placeAt(hrp, CFrame.lookAt(stand, Vector3.new(water.X, stand.Y, water.Z)), "fishing")
+				hrp.AssemblyLinearVelocity = Vector3.zero
+				task.wait(0.5)
+			end
+			-- เช็กของในมือจริงทุกรอบ ไม่ใช่แค่เลขช่อง: ระหว่างทดสอบช่องที่ใส่เบ็ดไว้กลายเป็น Spear
+			-- ช่องยังเป็นเลขเดิม แต่ในมือถือหอก โยนไป 5 ครั้งไม่มีอะไรเกิดขึ้นเลย
+			local accessories = LocalPlayer.Character:FindFirstChild("Tool_Accessories")
+			if not (accessories and accessories:FindFirstChild(rodName)) then
+				local newSlot, slotErr = rodSlot(rodName)
+				if not newSlot then
+					result, why = false, slotErr
+					break
+				end
+				slotIndex = newSlot
+				-- เลขช่องเดิมซ้ำไม่ทำให้ .Changed ยิง เกมเลยไม่สลับของ ปลดก่อนแล้วค่อยถือใหม่
+				if heldSlot() == slotIndex then
+					equipSlot(0)
+					task.wait(0.3)
+				end
+				equipSlot(slotIndex)
+				task.wait(1)
+			end
+
+			report(string.format("%sโยนเบ็ด · ได้แล้ว %d ตัว · %s", prefix, caught, progress()), Theme.Accent)
+			catchModel = nil
+			-- สถานะสายดูจากเสียงที่เซิร์ฟเล่นใต้ HumanoidRootPart ไม่เดาจากเวลา
+			-- PS2fishingCAST* = โยนออกแล้ว, PS2fishingRECALL = ดึงกลับ
+			-- เคยเดาเอง: สายค้างอยู่ตอนเริ่ม (หยุดกลางคันแล้วรันใหม่) คลิกแรกเลยกลายเป็นดึงกลับ
+			-- แล้วลูปเพี้ยนจังหวะไปตลอด โยนแล้วดึงกลับทุก 2.5 วิ ไม่มีปลากินเลย
+			local heard
+			local ear = hrp.ChildAdded:Connect(function(child)
+				if child.Name:find("^PS2fishingCAST") then
+					heard = "cast"
+				elseif child.Name == "PS2fishingRECALL" then
+					heard = "recall"
+				end
+			end)
+			click(water)
+			waitFor(function()
+				return heard ~= nil
+			end, 1.5)
+			local cast = heard == "cast"
+			if cast then
+				heard = nil
+				-- จบรอเมื่อปลากิน หรือเซิร์ฟดึงสายกลับเอง (โยนไม่ลงน้ำ เซิร์ฟ uncast ภายใน ~1 วิ)
+				waitFor(function()
+					return LocalPlayer:GetAttribute("FishingBite") == true or heard == "recall"
+				end, Fishing.BiteTimeout)
+			end
+			ear:Disconnect()
+			if not cast or LocalPlayer:GetAttribute("FishingBite") ~= true then
+				if cast and heard ~= "recall" then
+					-- ไม่มีปลากินในเวลาที่ควร (วัดได้ 7-12 วิทุกครั้ง) ดึงสายกลับก่อนโยนใหม่
+					click(water)
+				end
+				misses += 1
+				if misses >= 5 then
+					result, why = false, "โยนเบ็ดแล้วไม่มีปลากิน 5 ครั้งติด (จุดนี้อาจโยนไม่ถึงน้ำ)"
+					break
+				end
+				task.wait(2.5)
+			else
+				misses = 0
+				report(string.format("%sปลากิน! · %s", prefix, progress()), Theme.Accent)
+				waitFor(function()
+					return LocalPlayer:GetAttribute("FishingBite") == nil
+				end, Fishing.WinDelay + 5)
+				-- ห้ามคลิกดึงสายเอง เซิร์ฟดึงให้ทันทีที่รับผลมินิเกม (uncast ใน startBiteLoop)
+				-- เคยคลิกตรงนี้ กลายเป็นโยนสายใหม่ แล้วคลิกถัดไปดึงกลับ วนโยน-ดึงไม่รู้จบ ได้ปลา 0 ตัว
+				waitFor(function()
+					return catchModel ~= nil
+				end, 3)
+				local model = catchModel
+				if model then
+					-- ตัวปลาถูกดึงมาแขวนที่ปลายเบ็ดก่อน (finishCatchPull สูงสุด 4 วิ) รอ 2.2 วิแล้วกดเก็บทุกครั้งที่ลอง
+					task.wait(2.2)
+					local item = model:GetAttribute("CatchItem")
+					local prompt = model:FindFirstChildWhichIsA("ProximityPrompt", true)
+					local before = item and (Game.wallet()[item] or 0) or 0
+					if prompt then
+						fireproximityprompt(prompt)
+					end
+					if item and waitFor(function()
+						return (Game.wallet()[item] or 0) > before
+					end, 4) then
+						caught += 1
+						report(string.format("%sได้ %s · %s", prefix, item, progress()), Theme.Accent)
+					end
+				end
+				-- เซิร์ฟรีเซ็ตสายหลังดึง 1.4 วิ โยนก่อนนั้นไม่ติด
+				task.wait(2)
+			end
+		end
+	end
+	watch:Disconnect()
+	_G.PathSlayerAutoFish = nil
+	if auraWasOn then
+		Runner.setAura(true)
+	end
+	return result, why
+end
+
+-- งานใส่ลัง (DepositState): หาของให้ครบ แล้วยืนที่ลังยิง QuestProgress ทีละชิ้น
+-- เกมยิงแบบเดียวกันตอนกดค้างที่ลัง (ทุก 0.15 วิ) เซิร์ฟเช็กว่ายืนอยู่ที่ Position ของงาน
+function Runner.deposit(step, index, total)
+	local prefix = string.format("[%d/%d] ", index, total)
+	local need, fish = {}, {}
+	for _, row in ipairs(step.rows) do
+		local left = row.max - (taskProgress(row.task) or 0)
+		if left > 0 then
+			need[row.item] = (need[row.item] or 0) + left
+		end
+	end
+	for item, n in pairs(need) do
+		if isFish(item) then
+			fish[item] = n
+		else
+			local ok, err = Runner.obtain(item, n)
+			if not ok then
+				return false, err
+			end
+		end
+	end
+	if next(fish) then
+		local ok, err = Runner.fish(fish, step.position, prefix)
+		if not ok then
+			return false, err
+		end
+	end
+
+	local _, hrp = selfParts()
+	placeAt(hrp, CFrame.new(step.position + Vector3.new(0, 3, 3), step.position), "deposit")
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	task.wait(0.8)
+	for _, row in ipairs(step.rows) do
+		while (taskProgress(row.task) or row.max) < row.max do
+			if Runner.cancel then
+				return false, "ยกเลิกแล้ว"
+			end
+			if itemCount(row.item) == 0 then
+				return false, "ของไม่พอใส่ลัง: " .. row.item
+			end
+			local before = taskProgress(row.task)
+			report(string.format("%sใส่ลัง %s  %d/%d", prefix, row.item, before, row.max), Theme.Accent)
+			SignalEvent.ToServer("QuestProgress", step.deposit, row.task)
+			if not waitFor(function()
+				return (taskProgress(row.task) or row.max) > before
+			end, 3) then
+				return false, "ลังไม่รับ " .. row.item .. " (ยืนไม่ถึงจุดวาง หรือเซิร์ฟปฏิเสธ)"
+			end
+			task.wait(0.15)
+		end
+	end
+	return true
+end
+end)()
 
 -- Auto-Dodge: อ่านท่าโจมตีของม็อบแล้วหลบก่อนดาเมจเข้า ------------------------
 
@@ -5544,8 +6029,11 @@ end
 local function auraLoop()
 	while killAura.on do
 		local _, hrp, hum = selfParts()
+		if killAura.fastKill then
+			auraRow.setDesc("Insta Kill ยิงหมัดแทนอยู่")
+			task.wait(Aura.Interval)
 		-- ระหว่างหลบ ตัวอยู่ไกลเป้า ยิงไปก็ไม่เข้า ได้แต่เผาโควตาความถี่ของเซิร์ฟเวอร์
-		if hrp and hum and hum.Health > 0 and not isKnockedDown(hum) and os.clock() >= autoDodge.holdUntil then
+		elseif hrp and hum and hum.Health > 0 and not isKnockedDown(hum) and os.clock() >= autoDodge.holdUntil then
 			local mob, down = mobInReach(hrp.Position)
 			local far = false
 			-- ระยะไกลใช้ตอนไม่ได้เปิด Auto-Attack เท่านั้น Auto-Attack ลอยติดม็อบให้อยู่แล้ว
@@ -5635,7 +6123,8 @@ local SkillCast = {
 	HoldTime = 0.15,
 	-- เว้นหลังออกท่าก่อนสั่งท่าถัดไป ให้แอนิเมชันเล่นจบ ค่าเดา ยังไม่ได้วัด
 	Gap = 0.6,
-	Idle = 0.3,
+	-- รอบเช็กตอนไม่มีท่าพร้อม ถี่พอให้กดได้ภายใน 0.1 วิหลังคูลดาวน์หมด การเช็กแค่อ่านลูกของ SHCS ไม่ได้ยิงอะไร
+	Idle = 0.1,
 }
 
 local SkillController = require(ReplicatedStorage.CAM.Client.Controllers.Skill_Controller)
@@ -5676,42 +6165,172 @@ local choices = {}
 for slot = 2, #SlotActions do
 	choices[#choices + 1] = keyOf(slot)
 end
-local autoSkill = { on = false, picked = {} }
+local autoSkill = { on = false, picked = {}, casts = 0 }
 for i = 1, #choices do
 	autoSkill.picked[i] = true
 end
 
 local skillRow
+-- เรียกฟังก์ชันของ Skill_Controller ในฐานะ LocalScript ของเกม (identity 2) แล้วคืนกลับทันที
+-- Attempt_Hold require โมดูลเพิ่มกลางทาง จาก thread ของ executor (identity 8) พังด้วย
+-- "Cannot require a non-RobloxScript module from a RobloxScript"
+-- เคยลดทั้งลูปเป็น 2: ใช้สกิลได้ครั้งเดียวแล้วลูปตายเงียบ เพราะ identity 2 แตะ GUI ของเรา (อยู่ใน gethui) ไม่ได้
+-- skillRow.setDesc หลังใช้สกิลครั้งแรกเลย error ทิ้งทั้ง thread
+-- ลองแบบลดเป็น 2 แล้วตั้งกลับ 8 หลังเรียกเสร็จ ก็ยังพัง: Attempt_Hold yield ข้างใน (~0.46 วิ)
+-- หลัง resume thread กลับไปเป็น 2 อีก setDesc ถัดมาเจอ "lacking capability Plugin"
+-- เลยแยกไปเรียกใน thread ลูกที่ตั้ง 2 ครั้งเดียวแล้วทิ้ง thread ลูปไม่เคยถูกเปลี่ยน identity
+local function asGame(fn, ...)
+	local args = table.pack(...)
+	local result
+	task.spawn(function()
+		if setthreadidentity then
+			setthreadidentity(2)
+		end
+		result = table.pack(pcall(fn, table.unpack(args, 1, args.n)))
+	end)
+	while not result do
+		task.wait()
+	end
+	return table.unpack(result, 1, result.n)
+end
+
+-- คูลดาวน์อยู่ที่เซิร์ฟ: SHCS.<ชื่อ> ใต้ตัวละคร (replicate มาให้เห็น) ลบเลขฝั่ง client (SHC) แล้วกดซ้ำ
+-- ท่าเล่นบนจอแต่ไม่มีดาเมจ วัดกับ Hoyuzo: ใช้จริง 374 -> 279, ลบคูลดาวน์แล้วกดซ้ำ 279 -> 264 (แค่ Kill Aura)
+-- สแปมไม่ติดคูลดาวน์จึงทำไม่ได้ ทำได้แค่กดทันทีที่เซิร์ฟปลดคูลดาวน์ ท่าไหนใช้ชื่อคูลดาวน์ร่วม (CoolDownName) ดูชื่อนั้น
+local function onCooldown(skill)
+	local ch = LocalPlayer.Character
+	local cdName = skill.CoolDownName or skill.Name
+	for _, holder in ipairs({ "SHCS", "SHC" }) do
+		local v = ch and ch:FindFirstChild(holder)
+		if v and v:FindFirstChild(cdName) then
+			return true
+		end
+	end
+	return false
+end
+
+-- เวลาคูลดาวน์ที่เหลือ อ่านจาก SHC ฝั่ง client (Value = ทั้งหมด, attribute Started = os.clock ตอนเริ่ม)
+-- SHCS ของเซิร์ฟใช้นาฬิกาเซิร์ฟ เทียบกับ os.clock ฝั่งเราไม่ได้
+local function cooldownLeft(skill)
+	local shc = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("SHC")
+	local v = shc and shc:FindFirstChild(skill.CoolDownName or skill.Name)
+	local started = v and v:GetAttribute("Started")
+	return started and math.max(0, v.Value - (os.clock() - started)) or nil
+end
+
+-- สกิลมาจากของในมือ (get_current_keys ดูจาก tool ที่ถือ) Auto-Attack ถือช่องแรกที่ติ๊กใน Auto-Equip-Weapon
+-- ทดสอบจริง: ช่อง 1 เป็น Axe and Mace มีแค่ Blocking ลูปเลยไม่มีสกิลให้กดเลยทั้งที่ม็อบอยู่ห่าง 3 stud
+-- ส่วน Kill Aura ตอนนั้นถือช่อง 2 (Regular Katana ใช้ท่าปราณไฟได้) เลยเหมือนทำงานแค่บางที
+-- หาช่องที่ติ๊กไว้ซึ่งมีสกิลจริง (ดาบที่ใช้ปราณเราได้ หรือมีท่าอื่นนอกจาก Blocking) เลือกในช่องที่ติ๊กเท่านั้น
+-- Auto-Attack ยอมรับทุกช่องที่ติ๊ก (weaponReady) จะได้ไม่สลับแย่งกันไปมา
+local ItemDefs = require(ReplicatedStorage.CAM.Global.Collectibles.Items)
+local ToolbarSlotNames = { "One", "Two", "Three", "Four", "Five" }
+
+-- อาวุธใช้ท่าปราณของเราได้ไหม เงื่อนไขเดียวกับ Skills_Provider.get_current_keys:
+-- Breathing ของอาวุธเป็น "All" หรือมีชื่อปราณเรา และไม่มี "except<ชื่อปราณเรา>"
+-- ห้ามดูแค่ว่ามีฟิลด์ Breathing: Axe and Mace ช่อง 1 เป็นอาวุธปราณหิน (Stone Breathing Weapon)
+-- ตัวละครปราณไฟถือแล้วได้แค่ Blocking ลูปเลยเลือกช่องนี้แล้วไม่มีท่าให้กดตลอด
+local function breathingFits(def)
+	local weapon = type(def.Breathing) == "string" and def.Breathing:lower()
+	local slot = equippedSlot()
+	local mine = slot and slot:FindFirstChild("Powers") and slot.Powers:FindFirstChild("Breathing")
+	mine = mine and mine.Value:lower() or ""
+	return weapon and mine ~= ""
+		and (weapon:find("all", 1, true) or weapon:find(mine, 1, true))
+		and not weapon:find("except" .. mine, 1, true)
+end
+
+local function skillWeaponSlot()
+	local slot = equippedSlot()
+	local bar = slot and slot.Inventory:FindFirstChild("Toolbar")
+	for i, slotName in ipairs(ToolbarSlotNames) do
+		local id = weaponSlots[i] and bar and bar:FindFirstChild(slotName) and bar[slotName].Value or 0
+		for _, item in ipairs(id ~= 0 and slot.Inventory.Inventory:GetChildren() or {}) do
+			local itemId = item:FindFirstChild("Id")
+			local def = itemId and itemId.Value == id and ItemDefs[item.Name]
+			if def and (breathingFits(def) or (def.Skills and #def.Skills > 1)) then
+				return i, item.Name
+			end
+		end
+	end
+	return nil
+end
+
 local function skillLoop()
-	-- Attempt_Hold require โมดูลเพิ่มกลางทาง จาก thread ของ executor (identity 8) พังด้วย
-	-- "Cannot require a non-RobloxScript module from a RobloxScript" ลดเป็น 2 เท่า LocalScript ของเกมแล้วผ่าน
-	if setthreadidentity then
-		setthreadidentity(2)
+	-- ท่าที่ยังล็อก (ไม่ได้ปลดใน Skill Tree) Attempt_Hold คืน nil ทั้งที่ไม่ติดคูลดาวน์ พักไว้ 5 วิ ไม่ต้องลองทุกรอบ
+	local lockedUntil = {}
+	local lastText, lastCast = nil, nil
+	-- ย้ายการเรียกเกมไปไว้ thread ลูก (asGame) แล้วลูปยังพังเหมือนเดิม: หลังใช้สกิลแล้ว yield
+	-- thread ลูปเองกลายเป็น identity ต่ำด้วย (executor ตัวนี้ identity ของลูกรั่วกลับมาที่แม่)
+	-- จำ identity ตอนเริ่มไว้ แล้วตั้งคืนก่อนแตะ GUI ทุกครั้ง
+	local myIdentity = getthreadidentity and getthreadidentity()
+	-- แถวสถานะต้องขยับตลอด เดิมค้างข้อความใช้สกิลครั้งล่าสุด ม็อบหลุดระยะแล้วดูเหมือนลูปหยุด ทั้งที่ยังรออยู่
+	local function show(text)
+		if text ~= lastText then
+			lastText = text
+			if setthreadidentity and myIdentity then
+				setthreadidentity(myIdentity)
+			end
+			skillRow.setDesc(text)
+		end
 	end
 	while autoSkill.on do
 		local _, hrp, hum = selfParts()
 		local mob = hrp and hum and hum.Health > 0 and not isKnockedDown(hum) and mobInReach(hrp.Position, SkillCast.Range)
 		local used = false
-		if mob then
+		local blocked
+		if mob and #(SkillsProvider.get_current_keys() or {}) < 2 then
+			local weaponSlot = skillWeaponSlot()
+			if not weaponSlot then
+				blocked = "อาวุธในมือไม่มีสกิล · ติ๊กช่องดาบที่ใช้ปราณได้ใน Auto-Equip-Weapon"
+			elseif heldSlot() ~= weaponSlot then
+				equipSlot(weaponSlot)
+				task.wait(0.4)
+			end
+		end
+		if blocked then
+			show(blocked)
+		elseif hum and isKnockedDown(hum) then
+			-- ใช้สกิลตอนล้มไม่ติด (ทดสอบกับ Zuko: โดนตีล้มเป็นระยะ ป้ายเคยขึ้น "ไม่มีม็อบ" ทั้งที่ยืนห่าง 7 stud)
+			show("โดนตีล้ม รอลุกก่อนใช้สกิล · ใช้ไป " .. autoSkill.casts .. " ครั้ง")
+		elseif not mob then
+			show(string.format("ไม่มีม็อบในระยะ %d stud · ใช้ไป %d ครั้ง", SkillCast.Range, autoSkill.casts))
+		else
+			local soonest
+			for slot, skill in ipairs(SkillsProvider.get_current_keys() or {}) do
+				local left = slot > 1 and autoSkill.picked[slot - 1] and cooldownLeft(skill)
+				if left and (not soonest or left < soonest.left) then
+					soonest = { left = left, key = keyOf(slot) }
+				end
+			end
+			if soonest then
+				show(string.format("%s · %s พร้อมใน %d วิ · ใช้ไป %d ครั้ง", lastCast or mob.Name, soonest.key,
+					math.ceil(soonest.left), autoSkill.casts))
+			end
 			local keys = SkillsProvider.get_current_keys() or {}
 			for slot = 2, math.min(#keys, #SlotActions) do
 				local skill = keys[slot]
 				local root = mob:FindFirstChild("HumanoidRootPart")
-				if autoSkill.on and autoSkill.picked[slot - 1] and skill.Name ~= "Blocking" and root and mob.Parent then
+				local ready = skill.Name ~= "Blocking" and not onCooldown(skill)
+					and os.clock() >= (lockedUntil[skill.Name] or 0)
+				if autoSkill.on and autoSkill.picked[slot - 1] and ready and root and mob.Parent then
 					aim.pos = root.Position
-					-- สกิลที่ยังล็อก (ไม่ได้ปลดใน Skill Tree) หรือติดคูลดาวน์ คืน nil เงียบ ๆ ไม่ส่งอะไรไปเซิร์ฟ
-					local ok, started = pcall(SkillController.Attempt_Hold, skill.Name, keyOf(slot))
+					local ok, started = asGame(SkillController.Attempt_Hold, skill.Name, keyOf(slot))
 					if ok and started then
 						-- สองค่านี้คือสิ่งที่ปุ่มบน HUD ตั้งหลังกดติด ลูปของเกมใช้ปล่อยท่าเองถ้าค้างเกิน Max_Hold
 						SkillController.CurrentMax = skill.Max_Hold
 						SkillController.HeldSkill = skill.Name
 						task.wait(SkillCast.HoldTime)
 						aim.pos = root.Position
-						pcall(SkillController.StopHold, skill.Name)
+						asGame(SkillController.StopHold, skill.Name)
 						SkillController.HeldSkill, SkillController.CurrentMax = nil, nil
-						skillRow.setDesc(string.format("ใช้ %s [%s] ใส่ %s", skill.Name, keyOf(slot), mob.Name))
+						autoSkill.casts += 1
+						lastCast = string.format("ใช้ %s [%s] ใส่ %s", skill.Name, keyOf(slot), mob.Name)
+						show(lastCast .. " · ใช้ไป " .. autoSkill.casts .. " ครั้ง")
 						used = true
 						task.wait(SkillCast.Gap)
+					elseif not onCooldown(skill) then
+						lockedUntil[skill.Name] = os.clock() + 5
 					end
 					aim.pos = nil
 				end
@@ -5720,7 +6339,7 @@ local function skillLoop()
 		task.wait(used and 0.05 or SkillCast.Idle)
 	end
 	aim.pos = nil
-	skillRow.setDesc("ปิดอยู่")
+	show("ปิดอยู่")
 end
 
 skillRow = switchRow("Auto Skill", "ปิดอยู่", 7, function(on)
@@ -5750,6 +6369,278 @@ switchRow("สกิลที่ใช้", "ติ๊กปุ่มสกิ�
 track({
 	Disconnect = function()
 		autoSkill.on = false
+	end,
+})
+end)()
+
+-- Insta Kill: ฆ่าเร็วแบบได้ของ (โหมด 1) หรือฆ่าทันทีแบบไม่ได้ของ (โหมด 2) -------------
+
+-- เซิร์ฟจ่ายของ/เงิน/EXP จากระบบดาเมจของมันเท่านั้น ม็อบเก็บดาเมจของแต่ละคนไว้ใน StringValue "DMG"
+-- (ลูก NumberValue ชื่อผู้เล่น) แล้วจ่ายตอนดาเมจของเซิร์ฟทำให้เลือดถึง 0 วัดแล้ว:
+--   ตีคอมโบ 1-5 ห่างกัน 0.28 วิ ใส่ Bandit 45 HP   ตายใน 1.2 วิ Wen +17
+--   สั่ง Humanoid เป็น Dead จากฝั่งเรา (โหมด 2)   เซิร์ฟลบ Humanoid ทิ้งทันที ไม่ได้อะไร ตีศพต่อก็ไม่ได้
+--   ยกม็อบสูง 120 stud แล้วปล่อย                ม็อบไม่มีดาเมจตกที่สูง เลือดเท่าเดิม
+--   พาลงน้ำ                                   เกมวาร์ปม็อบกลับจุดเกิด (NpcConfig.Signals.TouchedWater)
+-- ทางที่ได้ของจึงมีทางเดียวคือตีให้ถี่ที่สุดที่เซิร์ฟยอมรับ
+--
+-- เซิร์ฟคุมความถี่หมัดด้วย Combat_presets.Check_can_do_combat_server (โมดูลอยู่ใน ReplicatedStorage อ่านได้)
+--   หมัด n ต่อจาก n-1 ต้องห่าง Presets.Combat.default = 0.26 วิ
+--   หมัด 1 ต่อจากหมัดปิด 5 ต้องห่าง final = 1.65 วิ   หมัด 1 ต่อจาก 1-4 ต้องห่าง combo_duration = 1.35 วิ
+--   เร็วเกินเซิร์ฟรอให้ไม่เกิน 1 วิ แล้วเช็กใหม่ ถ้ายังไม่ถึง 95% ของเวลาที่ต้องรอ หมัดนั้นทิ้ง
+--   เลขคอมโบไม่ต่อกัน (เช่นส่ง 1 ซ้ำตอนเพิ่งตี 3) รอ 10000 วิ = ทิ้งทุกครั้ง
+-- Kill Aura ยิงทุก 0.2 วิแล้วรีเซ็ตคอมโบเองหลังเว้น 1.2 วิ สั้นกว่า 1.65 ที่เซิร์ฟต้องการ
+-- หมัดหลังคอมโบปิดจึงโดนทิ้งเป็นชุด เหลือเข้าจริง ~1.2-2.2 ครั้ง/วิ ลูปนี้ยิงตามตารางด้านบนเป๊ะ
+--
+-- ห้ามส่งเลขคอมโบนอก 1-5 ที่ตัวเกมส่งเอง: ลองส่ง 6-20 ใส่ Zuko แล้วโดนเตะ "Exploiting (267)"
+-- ฟังก์ชันที่เรียกทันทีแยกโควตา register จาก chunk หลัก เหตุผลเดียวกับแท็บ Settings
+;(function()
+local InstaKill = {
+	-- โหมด 1 ตอนไม่ได้เปิด Auto-Attack: วาร์ปไปลอยเหนือม็อบที่ใกล้สุดในระยะนี้ (เท่ากับ Kill Aura ระยะไกล)
+	-- เกิน 250 ม็อบหายจากแมพเอง (DespawnDistance) ตอนเปิด Auto-Attack ใช้ระยะหมัด Aura.Range แทน
+	Range = 150,
+	-- โหมด 2 สแกนทุกเท่านี้ ม็อบในแมพมีหลักสิบตัว วนทั้ง Humanoids ทุก 0.15 วิไม่หนัก
+	Tick = 0.15,
+	-- เผื่อจากเวลาที่เซิร์ฟต้องการ ส่ง 0.28 (เผื่อ 0.02) เข้าครบ 5/5 หมัด ปิงที่แกว่งทำให้หมัดถึงเซิร์ฟชิดกันได้
+	Margin = 0.03,
+	FinalCombo = 5,
+}
+local Presets = require(ReplicatedStorage.CAM.Global.Combat_presets)
+-- ส่ง "Combat" เป็นชื่อท่าเหมือน Kill Aura เซิร์ฟเลยคิดเวลาจาก Presets.Combat
+local ComboTiming = Presets.Presets.Combat
+
+-- ตัวเลือกเปอร์เซ็นต์เลือดที่เหลือ ปุ่มกว้าง 24px ใส่ได้สองหลัก "–" = ไม่ยุ่งกับบอส
+local MobChoices = { "95", "80", "60", "40", "20" }
+local BossChoices = { "–", "95", "80", "60", "40", "20" }
+-- บอสเริ่มที่ "–": โหมด 1 วาร์ปหาตัวใกล้สุด แถว Windy Peak มี Gyutai/Datai 3000 HP ห่างแค่ ~200 stud
+local insta = { on = false, mode = 1, mobPct = 95, bossPct = nil, kills = 0, hits = 0 }
+
+-- Attack Speed Factor ของผู้เล่นหารเวลารอทุกช่วง (Combat_presets.attackSpeedMult) เซิร์ฟใช้สูตรเดียวกัน
+local function speedMult()
+	local ok, mult = pcall(Presets.attackSpeedMult, LocalPlayer)
+	return ok and type(mult) == "number" and mult > 0 and mult or 1
+end
+
+-- เลขคอมโบถัดไปกับเวลาที่ต้องรอนับจากหมัดก่อน ตามกติกา Check_can_do_combat_server
+local chain = { last = 0, at = 0 }
+local function nextCombo()
+	local mult = speedMult()
+	local since = os.clock() - chain.at
+	if chain.last == InstaKill.FinalCombo then
+		return 1, ComboTiming.final / mult + InstaKill.Margin
+	end
+	-- หยุดไปนานพอให้เริ่มคอมโบใหม่ได้แล้ว เริ่มที่ 1 เหมือนตัวเกม ต่อเลขเดิมก็ผ่าน แต่ 1 คือค่าที่เกมส่งจริง
+	if chain.last == 0 or since >= Presets.combo_duration / mult + InstaKill.Margin then
+		return 1, 0
+	end
+	local n = chain.last + 1
+	local delay = ComboTiming.customDelay and ComboTiming.customDelay[n] or ComboTiming.default
+	return n, delay / mult + InstaKill.Margin
+end
+
+local function isBoss(hum)
+	-- บอส = ทุกตัวที่เลือดเกินเกณฑ์ม็อบธรรมดา (MobTier.Normal) Zuko 300 ก็นับเป็นบอสเควส
+	return hum.MaxHealth > MobTier.Normal.max
+end
+
+-- ม็อบที่ใกล้สุดในระยะ ข้ามบอสถ้าตั้ง "–" ไว้ เควส Kazu ต้องตีสายลับ *Civilian* ที่ Auto-Quest ล็อกไว้
+local function nearestMob(origin, range)
+	local folder = workspace:FindFirstChild("Humanoids")
+	local best, bestD
+	for _, m in ipairs(folder and folder:GetDescendants() or {}) do
+		local wanted = m.Name == autoAttack.target
+		local hum = m:IsA("Model") and m:GetAttribute("IsMob") and (wanted or not Combat.NeverTarget[m.Name])
+			and m:FindFirstChildOfClass("Humanoid")
+		local root = hum and m:FindFirstChild("HumanoidRootPart")
+		if root and hum.Health > 0 and root.Position.Y > Combat.WorldFloorY
+			and (wanted or insta.bossPct or not isBoss(hum)) then
+			local d = (root.Position - origin).Magnitude
+			if d <= range and (not bestD or d < bestD) then
+				best, bestD = m, d
+			end
+		end
+	end
+	return best
+end
+
+local killRow
+local function show(text)
+	killRow.setDesc(text)
+end
+
+-- โหมด 1 --------------------------------------------------------------------
+local function fastLoop()
+	killAura.fastKill = true
+	chain.last = 0
+	while insta.on and insta.mode == 1 do
+		local _, hrp, hum = selfParts()
+		-- Auto-Attack / Auto-Quest ลอยติดเป้าให้อยู่แล้ว ลูปนี้ยิงอย่างเดียว ห้ามย้ายตัวแย่งกัน
+		local positioned = autoAttack.on or Runner.active
+		local mob = hrp and hum and hum.Health > 0 and not isKnockedDown(hum) and os.clock() >= autoDodge.holdUntil
+			and nearestMob(hrp.Position, positioned and Aura.Range or InstaKill.Range)
+		local mobHum = mob and mob:FindFirstChildOfClass("Humanoid")
+		local root = mob and mob:FindFirstChild("HumanoidRootPart")
+		if not (mobHum and root) then
+			show(string.format("รอม็อบในระยะ %d stud · ฆ่าไป %d ตัว",
+				positioned and Aura.Range or InstaKill.Range, insta.kills))
+			task.wait(0.1)
+		elseif not positioned and airborneFor(hum) > Combat.MaxAirTime then
+			-- เกมฆ่าตัวละครที่ค้าง Freefall ~9 วิ ลอยต่อหลายตัวติดกันต้องลงแตะพื้นก่อน (แบบเดียวกับ Auto-Attack)
+			show("แตะพื้นรีเซ็ตเวลาลอย")
+			touchGround(hrp, hum, root.Position)
+		else
+			Runner.hook("engage", mob)
+			if not weaponReady() then
+				equipSlot(primarySlot())
+			end
+			local combo, gap = nextCombo()
+			-- รอจนถึงเวลาหมัดถัดไป ระหว่างนั้นลอยเหนือหัวเป้าทุกเฟรม (ม็อบเดิน วาร์ปครั้งเดียวตำแหน่งเพี้ยน)
+			local fireAt = chain.at + gap
+			-- เพิ่งวาร์ปมาถึง ต้องค้างให้เซิร์ฟเห็นตำแหน่งก่อน ยิงเฟรมเดียวกับที่วาร์ปเข้า 0 หมัด (ดู Aura.BlinkBefore)
+			if not positioned and (hrp.Position - root.Position).Magnitude > Aura.Range then
+				fireAt = math.max(fireAt, os.clock() + Aura.BlinkBefore)
+			end
+			repeat
+				if not positioned and not pinAbove(hrp, root) then
+					break
+				end
+				if os.clock() < fireAt then
+					game:GetService("RunService").Heartbeat:Wait()
+				end
+			until os.clock() >= fireAt or not insta.on
+			if insta.on and mob.Parent and mobHum.Health > 0 then
+				if not positioned then
+					pinAbove(hrp, root)
+				end
+				combatSignal:FireServer("Combat_Service", "Combat", combo, false, 0, false, nil)
+				chain.last, chain.at = combo, os.clock()
+				insta.hits += 1
+				show(string.format("ตี %s หมัด %d · HP %d/%d · ฆ่าไป %d ตัว", mob.Name, combo,
+					math.max(0, math.floor(mobHum.Health)), math.floor(mobHum.MaxHealth), insta.kills))
+				-- นับตัวที่ตายจากดาเมจเซิร์ฟ (เลือดจริงลงถึง 0) ไว้โชว์เท่านั้น เควส/Webhook นับเองจาก HealthChanged
+				if not mob:GetAttribute("PathSlayerCounted") then
+					mob:SetAttribute("PathSlayerCounted", true)
+					mobHum.HealthChanged:Connect(function(hp)
+						if hp <= 0 and mob:GetAttribute("PathSlayerCounted") then
+							mob:SetAttribute("PathSlayerCounted", nil)
+							insta.kills += 1
+						end
+					end)
+				end
+			end
+		end
+	end
+	killAura.fastKill = false
+end
+
+-- โหมด 2 --------------------------------------------------------------------
+-- ตีโดนหนึ่งหมัด เซิร์ฟยกการคุมฟิสิกส์ของม็อบให้เครื่องเราช่วงที่ม็อบโดนสตัน (isnetworkowner เป็น true)
+-- เจ้าของฟิสิกส์สั่ง Humanoid เข้าสถานะ Dead ได้ แล้วเซิร์ฟตามด้วย: Zuko ตายตอน 289/300 ไม่เกิดกลับ
+-- แต่เซิร์ฟไม่นับว่ามีคนฆ่า ไม่ได้อะไรเลยไม่ว่าเลือดเหลือเท่าไร:
+--   Bandit (45)              ฆ่าที่ 77% 22%        EXP +0 Wen +0 ตัวนับเควส Krue ไม่ขยับ (ตีปกติ EXP +22 Wen +5 นับ 1)
+--   Hoyuzo Subordinate (190) ฆ่าที่ 58% 26%        EXP +0 ไม่มีของตก (ตีปกติ EXP +145 Wen +30)
+--   Zuko (300 บอสเควส)       ฆ่าที่ 96% 78%        ไม่มีหีบ Common Chest ที่ปกติได้
+-- ผู้ใช้รู้ผลนี้แล้ว ยังอยากได้ไว้ใช้เอง
+local function forceLoop()
+	if typeof(isnetworkowner) ~= "function" then
+		show("executor นี้ไม่มี isnetworkowner ใช้โหมด 2 ไม่ได้")
+		return
+	end
+	local shown
+	while insta.on and insta.mode == 2 do
+		local _, hrp = selfParts()
+		local folder = workspace:FindFirstChild("Humanoids")
+		for _, m in ipairs(hrp and folder and folder:GetDescendants() or {}) do
+			local hum = m:IsA("Model") and m:GetAttribute("IsMob") and not Combat.NeverTarget[m.Name]
+				and m:FindFirstChildOfClass("Humanoid")
+			local root = hum and m:FindFirstChild("HumanoidRootPart")
+			if root and hum.Health > 0 and hum.MaxHealth > 0 and (root.Position - hrp.Position).Magnitude <= InstaKill.Range
+				and isnetworkowner(root) then
+				-- เขียนแบบ a and b or c ไม่ได้: บอสตั้ง "–" (nil) จะหล่นไปใช้เกณฑ์ม็อบธรรมดาแล้วฆ่าบอส
+				local pct
+				if isBoss(hum) then
+					pct = insta.bossPct
+				else
+					pct = insta.mobPct
+				end
+				local hpPct = hum.Health / hum.MaxHealth * 100
+				if pct and hpPct <= pct then
+					-- บอก Webhook ก่อนว่าตัวนี้ไม่นับเป็นการฆ่า ไม่งั้นสรุปขึ้นว่าฆ่าได้ทั้งที่ไม่ได้รางวัล
+					Runner.hook("forced", m)
+					hum:ChangeState(Enum.HumanoidStateType.Dead)
+					hum.Health = 0
+					insta.kills += 1
+					local text = string.format("ฆ่า %s ตอนเลือด %d%% · รวม %d ตัว (ไม่ได้ EXP/ของ)", m.Name,
+						math.floor(hpPct), insta.kills)
+					if text ~= shown then
+						shown = text
+						show(text)
+					end
+				end
+			end
+		end
+		task.wait(InstaKill.Tick)
+	end
+end
+
+local function runInsta()
+	-- สลับโหมดระหว่างเปิดอยู่: ลูปเก่าเห็น mode เปลี่ยนแล้วจบเอง รอบนี้เริ่มลูปของโหมดใหม่ต่อ
+	while insta.on do
+		local mode = insta.mode
+		if mode == 1 then
+			fastLoop()
+		else
+			forceLoop()
+		end
+		if insta.mode == mode then
+			break
+		end
+	end
+	killAura.fastKill = false
+	show("ปิดอยู่")
+end
+
+killRow = switchRow("Insta Kill", "ปิดอยู่", 10, function(on)
+	if on and not combatSignal then
+		show("หา SignalEvent ของเกมไม่เจอ")
+		killRow.set(false)
+		return
+	end
+	local wasOn = insta.on
+	insta.on = on
+	if on and not wasOn then
+		show("กำลังหาเป้า…")
+		task.spawn(runInsta)
+	end
+end)
+
+switchRow("โหมด Insta Kill", "1 = ฆ่าเร็ว ได้ของ/เงิน/EXP · 2 = ฆ่าทันที ไม่ได้อะไร", 11, function() end, {
+	choices = { "1", "2" },
+	selected = 1,
+	onChoice = function(i)
+		insta.mode = i
+	end,
+})
+
+switchRow("เลือดม็อบเหลือ ≤ %", "โหมด 2: ม็อบธรรมดาเลือดเหลือเท่านี้แล้วฆ่าทันที", 12, function() end, {
+	choices = MobChoices,
+	selected = 1,
+	onChoice = function(i)
+		insta.mobPct = tonumber(MobChoices[i])
+	end,
+})
+
+switchRow("บอส", "– = ไม่ยุ่งกับบอส (เลือดเกิน 100) · โหมด 2 ฆ่าเมื่อเลือดเหลือ ≤ %", 13, function() end, {
+	choices = BossChoices,
+	selected = 1,
+	onChoice = function(i)
+		insta.bossPct = tonumber(BossChoices[i])
+	end,
+})
+
+track({
+	Disconnect = function()
+		insta.on = false
+		killAura.fastKill = false
 	end,
 })
 end)()
@@ -5805,6 +6696,7 @@ end
 -- ข้างนอกคุยกับตรงนี้ผ่าน Runner.hook(ชนิด, ค่า) อย่างเดียว:
 --   "engage" ม็อบที่ Auto-Attack / Kill Aura เพิ่งล็อกเป้า -> ดูต่อว่าตายไหม
 --   "loot"   ชื่อของที่ collectLoot เก็บได้ / "quest" ชื่อเควสที่ Auto-Quest ทำครบทุกขั้น
+--   "forced" ม็อบที่ Insta Kill กำลังจะฆ่า (ไม่ได้รางวัล ไม่นับในสรุป)
 ;(function()
 local HttpService = game:GetService("HttpService")
 
@@ -6074,6 +6966,9 @@ function Runner.hook(kind, value)
 				onKill(model, hum)
 			end
 		end))
+	elseif kind == "forced" then
+		-- Insta Kill กำลังจะฆ่าตัวนี้ ตายแบบนี้ไม่ได้รางวัล ลบออกจากรายการล็อกเป้า HealthChanged จะไม่นับ
+		engaged[value] = nil
 	elseif kind == "loot" then
 		local bucket = pendingBoss and pendingBoss.drops or batch.drops
 		bucket[value] = (bucket[value] or 0) + 1
