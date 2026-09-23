@@ -1002,13 +1002,13 @@ end
 
 -- ร้านอาวุธ -----------------------------------------------------------------
 
-local shopUI = makePanel("Buy Weapons", true)
+local shopUI = makePanel("Get Weapons", true)
 shopUI.search.PlaceholderText = "ค้นหาอาวุธ…"
 
 local buyLabel = new("TextLabel", {
 	Size = UDim2.new(1, 0, 1, 0),
 	BackgroundTransparency = 1,
-	Text = "BUY",
+	Text = "GET",
 	TextColor3 = Theme.Dim,
 	TextSize = 13,
 	FontFace = font(Enum.FontWeight.SemiBold),
@@ -1030,7 +1030,7 @@ local shopRows = {}
 
 local function refreshBuyButton()
 	local enabled = shopSelected ~= nil and not shopSelected.locked and shopSelected.buyable
-	buyLabel.Text = shopSelected and ("BUY  ·  " .. shopSelected.name) or "BUY"
+	buyLabel.Text = shopSelected and ("GET  ·  " .. shopSelected.name) or "GET"
 	tween(buyBtn, { BackgroundColor3 = enabled and Theme.Accent or Theme.Raised }, FAST)
 	tween(buyLabel, { TextColor3 = enabled and Theme.Base or Theme.Dim }, FAST)
 end
@@ -2668,8 +2668,8 @@ track(mobUI.search:GetPropertyChangedSignal("Text"):Connect(applyMobFilter))
 -- ผูกฟังก์ชันเข้าหน้า Main ---------------------------------------------------
 
 local shopFeature = featureRow(
-	"Buy Weapons",
-	"เลือกซื้ออาวุธทุกชิ้นในเกม เทียบราคากับเงินที่มีจริง",
+	"Get Weapons",
+	"หาอาวุธทุกชิ้นในเกม ดูวิธีได้ แล้วกด GET",
 	1,
 	function()
 		-- อ่านเงินกับคลังใหม่ทุกครั้งที่เปิด ไม่งั้นซื้อของที่อื่นแล้วตัวเลขในแผงค้าง
