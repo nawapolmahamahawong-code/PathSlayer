@@ -6463,7 +6463,18 @@ local function nearestMob(origin, range)
 end
 
 local killRow
+-- identity ของ thread ลูปหล่นเองกลางทาง (executor ตัวนี้ เหมือนที่ Auto Skill เจอ) วัดได้สองรอบ:
+-- ฆ่าได้ 2-3 ตัวแล้ว setDesc เจอ "lacking capability Plugin" ลูปตายเงียบ ป้ายค้าง "แตะพื้นรีเซ็ตเวลาลอย"
+-- จำ identity ตอนเริ่มไว้ ตั้งคืนทุกรอบลูปและก่อนแตะ GUI ทุกครั้ง
+local startIdentity
+local function keepIdentity()
+	if startIdentity and setthreadidentity then
+		setthreadidentity(startIdentity)
+	end
+end
+
 local function show(text)
+	keepIdentity()
 	killRow.setDesc(text)
 end
 
@@ -6472,6 +6483,7 @@ local function fastLoop()
 	killAura.fastKill = true
 	chain.last = 0
 	while insta.on and insta.mode == 1 do
+		keepIdentity()
 		local _, hrp, hum = selfParts()
 		-- Auto-Attack / Auto-Quest ลอยติดเป้าให้อยู่แล้ว ลูปนี้ยิงอย่างเดียว ห้ามย้ายตัวแย่งกัน
 		local positioned = autoAttack.on or Runner.active
@@ -6547,6 +6559,7 @@ local function forceLoop()
 	end
 	local shown
 	while insta.on and insta.mode == 2 do
+		keepIdentity()
 		local _, hrp = selfParts()
 		local folder = workspace:FindFirstChild("Humanoids")
 		for _, m in ipairs(hrp and folder and folder:GetDescendants() or {}) do
@@ -6583,6 +6596,7 @@ local function forceLoop()
 end
 
 local function runInsta()
+	startIdentity = getthreadidentity and getthreadidentity()
 	-- สลับโหมดระหว่างเปิดอยู่: ลูปเก่าเห็น mode เปลี่ยนแล้วจบเอง รอบนี้เริ่มลูปของโหมดใหม่ต่อ
 	while insta.on do
 		local mode = insta.mode
