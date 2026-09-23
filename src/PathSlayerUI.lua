@@ -24,6 +24,8 @@ local Theme = {
 	Muted = Color3.fromRGB(150, 153, 168),
 	Dim = Color3.fromRGB(120, 123, 140),
 	Accent = Color3.fromRGB(116, 156, 255),
+	-- ปลายสีไล่ของโลโก้
+	Accent2 = Color3.fromRGB(168, 118, 255),
 	Good = Color3.fromRGB(96, 206, 150),
 	Warn = Color3.fromRGB(226, 176, 96),
 	Danger = Color3.fromRGB(232, 98, 104),
@@ -916,36 +918,40 @@ local titleBar = new("Frame", {
 	BackgroundTransparency = 1,
 	Parent = root,
 }, {
-	-- โลโก้ตัวอักษรในกล่องสี แทนไอคอนรูป ไม่ต้องพึ่ง asset id ที่อาจโดนลบ
+	-- โลโก้ตัวอักษรในกล่องไล่สี แทนไอคอนรูป ไม่ต้องพึ่ง asset id ที่อาจโดนลบ
 	new("Frame", {
 		AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(0, 16, 0.5, 0),
-		Size = UDim2.fromOffset(26, 26),
-		BackgroundColor3 = Theme.Accent,
+		Size = UDim2.fromOffset(28, 28),
+		BackgroundColor3 = Color3.new(1, 1, 1),
 		BorderSizePixel = 0,
 	}, {
 		corner(8),
+		new("UIGradient", {
+			Color = ColorSequence.new(Theme.Accent, Theme.Accent2),
+			Rotation = 45,
+		}),
 		new("TextLabel", {
 			Size = UDim2.fromScale(1, 1),
 			BackgroundTransparency = 1,
-			Text = "P",
+			Text = "X",
 			TextColor3 = Theme.Base,
-			TextSize = 14,
-			FontFace = font(Enum.FontWeight.Bold),
+			TextSize = 16,
+			FontFace = font(Enum.FontWeight.Heavy),
 		}),
 	}),
 	new("TextLabel", {
-		Position = UDim2.fromOffset(52, 11),
-		Size = UDim2.fromOffset(200, 16),
+		Position = UDim2.fromOffset(54, 10),
+		Size = UDim2.fromOffset(200, 18),
 		BackgroundTransparency = 1,
-		Text = "PathSlayer",
-		TextColor3 = Theme.Text,
-		TextSize = 14,
-		FontFace = font(Enum.FontWeight.SemiBold),
+		Text = "XIIIN",
+		TextColor3 = Color3.new(1, 1, 1),
+		TextSize = 16,
+		FontFace = font(Enum.FontWeight.Bold),
 		TextXAlignment = Enum.TextXAlignment.Left,
-	}),
+	}, { new("UIGradient", { Color = ColorSequence.new(Theme.Text, Theme.Accent) }) }),
 	new("TextLabel", {
-		Position = UDim2.fromOffset(52, 28),
+		Position = UDim2.fromOffset(54, 30),
 		Size = UDim2.fromOffset(200, 13),
 		BackgroundTransparency = 1,
 		Text = "v0.3 · RightShift ซ่อน/แสดง",
@@ -994,7 +1000,8 @@ local minBtn = iconButton("-", -44, Theme.Text)
 
 -- ป้ายบอกว่ามีอะไรทำงานอยู่กี่อย่าง + ปุ่มหยุดทั้งหมด (ต่อสายไว้ท้ายไฟล์ หลังทุกสวิตช์ถูกสร้าง)
 -- เดิมต้องไล่เปิดทีละแท็บเพื่อดูว่าเปิดอะไรค้างไว้ สวิตช์อยู่คนละหน้าแล้วลืมปิด
-local runChip = new("Frame", {
+local Chip = {}
+Chip.frame = new("Frame", {
 	AnchorPoint = Vector2.new(1, 0.5),
 	Position = UDim2.new(1, -84, 0, Config.TitleH / 2),
 	Size = UDim2.fromOffset(0, 28),
@@ -1012,14 +1019,14 @@ local runChip = new("Frame", {
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}),
 })
-local runDot = new("Frame", {
+Chip.dot = new("Frame", {
 	Size = UDim2.fromOffset(8, 8),
 	BackgroundColor3 = Theme.Dim,
 	BorderSizePixel = 0,
 	LayoutOrder = 1,
-	Parent = runChip,
+	Parent = Chip.frame,
 }, { corner(4) })
-local runLabel = new("TextLabel", {
+Chip.label = new("TextLabel", {
 	Size = UDim2.fromOffset(0, 28),
 	AutomaticSize = Enum.AutomaticSize.X,
 	BackgroundTransparency = 1,
@@ -1028,9 +1035,9 @@ local runLabel = new("TextLabel", {
 	TextSize = 11,
 	FontFace = font(Enum.FontWeight.Medium),
 	LayoutOrder = 2,
-	Parent = runChip,
+	Parent = Chip.frame,
 })
-local stopAllBtn = new("TextButton", {
+Chip.stop = new("TextButton", {
 	Size = UDim2.fromOffset(0, 20),
 	AutomaticSize = Enum.AutomaticSize.X,
 	BackgroundColor3 = Theme.Danger,
@@ -1041,7 +1048,7 @@ local stopAllBtn = new("TextButton", {
 	FontFace = font(Enum.FontWeight.SemiBold),
 	LayoutOrder = 3,
 	Visible = false,
-	Parent = runChip,
+	Parent = Chip.frame,
 }, { corner(10), new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }) })
 
 local sidebar = new("Frame", {
@@ -1229,138 +1236,85 @@ end
 -- ปนกับสวิตช์หลักจนไม่รู้ว่าแถวไหนเป็นของอะไร และตัวเปิดแผงเลือกม็อบอยู่คนละแท็บกับสวิตช์ของมัน
 -- ตอนนี้: หมวด (แถบซ้าย) > หัวข้อ > การ์ดต่อหนึ่งฟีเจอร์ ตัวเลือกย่อยอยู่ในการ์ดของมันเอง
 local Pages = {}
-local function makePage(key, name, sub)
-	local tab = addTab(name, sub)
-	local scroll = new("ScrollingFrame", {
-		Size = UDim2.new(1, 0, 1, 0),
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		ScrollBarThickness = 3,
-		ScrollBarImageColor3 = Theme.Stroke,
-		VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
-		CanvasSize = UDim2.new(),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		Parent = tab.page,
-	}, {
-		new("UIListLayout", { Padding = UDim.new(0, 20), SortOrder = Enum.SortOrder.LayoutOrder }),
-		-- เว้นบน 4px: สระบนของไทย (ติ ที่) ล้นกล่องข้อความ หัวข้อแรกโดนขอบ ScrollingFrame ตัด
-		new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingRight = UDim.new(0, 6), PaddingBottom = UDim.new(0, 8) }),
-	})
-	Pages[key] = { tab = tab, scroll = scroll, sections = {}, cards = {} }
-	return Pages[key]
-end
+do
+	local function makePage(key, name, sub)
+		local tab = addTab(name, sub)
+		local scroll = new("ScrollingFrame", {
+			Size = UDim2.new(1, 0, 1, 0),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ScrollBarThickness = 3,
+			ScrollBarImageColor3 = Theme.Stroke,
+			VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
+			CanvasSize = UDim2.new(),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			Parent = tab.page,
+		}, {
+			new("UIListLayout", { Padding = UDim.new(0, 20), SortOrder = Enum.SortOrder.LayoutOrder }),
+			-- เว้นบน 4px: สระบนของไทย (ติ ที่) ล้นกล่องข้อความ หัวข้อแรกโดนขอบ ScrollingFrame ตัด
+			new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingRight = UDim.new(0, 6), PaddingBottom = UDim.new(0, 8) }),
+		})
+		Pages[key] = { tab = tab, scroll = scroll, sections = {}, cards = {} }
+		return Pages[key]
+	end
 
-makePage("combat", "ต่อสู้", "โจมตี · สกิล · หลบ")
-makePage("quest", "เควส", "เควส · ฝึกปราณ")
-makePage("items", "ไอเทม", "อาวุธ · หีบ · ของดรอป")
-makePage("settings", "ตั้งค่า", "Discord · ปุ่มลัด")
+	makePage("combat", "ต่อสู้", "โจมตี · สกิล · หลบ")
+	makePage("quest", "เควส", "เควส · ฝึกปราณ")
+	makePage("items", "ไอเทม", "อาวุธ · หีบ · ของดรอป")
+	makePage("settings", "ตั้งค่า", "Discord · ปุ่มลัด")
 
--- ลำดับหัวข้อในแต่ละหมวดตามลำดับในตารางนี้ ไม่ใช่ตามลำดับที่โค้ดฟีเจอร์สร้างแถว
-local Sections = {
-	{ page = "combat", key = "attack", title = "โจมตี",
-		hint = "Auto-Attack พาตัวไปหาม็อบ · Kill Aura หรือ Insta Kill เป็นตัวตี เปิดคู่กันได้" },
-	{ page = "combat", key = "gear", title = "อาวุธและสกิล" },
-	{ page = "combat", key = "defense", title = "ป้องกันตัว" },
-	{ page = "quest", key = "quest", title = "ทำเควสอัตโนมัติ",
-		hint = "กด เปิด เพื่อเลือกเควสหรือปราณ แล้วกดเริ่มในหน้านั้น" },
-	{ page = "items", key = "gear", title = "อาวุธและของสวมใส่" },
-	{ page = "items", key = "loot", title = "เก็บของ" },
-	{ page = "settings", key = "webhook", title = "แจ้งเตือน Discord",
-		hint = "ส่งสรุปการฆ่า ของหายาก และเควสที่จบเข้าห้อง Discord" },
-	{ page = "settings", key = "keys", title = "ปุ่มลัด" },
-}
+	-- ลำดับหัวข้อในแต่ละหมวดตามลำดับในตารางนี้ ไม่ใช่ตามลำดับที่โค้ดฟีเจอร์สร้างแถว
+	local Sections = {
+		{ page = "combat", key = "attack", title = "โจมตี",
+			hint = "Auto-Attack พาตัวไปหาม็อบ · Kill Aura หรือ Insta Kill เป็นตัวตี เปิดคู่กันได้" },
+		{ page = "combat", key = "gear", title = "อาวุธและสกิล" },
+		{ page = "combat", key = "defense", title = "ป้องกันตัว" },
+		{ page = "quest", key = "quest", title = "ทำเควสอัตโนมัติ",
+			hint = "กด เปิด เพื่อเลือกเควสหรือปราณ แล้วกดเริ่มในหน้านั้น" },
+		{ page = "items", key = "gear", title = "อาวุธและของสวมใส่" },
+		{ page = "items", key = "loot", title = "เก็บของ" },
+		{ page = "settings", key = "webhook", title = "แจ้งเตือน Discord",
+			hint = "ส่งสรุปการฆ่า ของหายาก และเควสที่จบเข้าห้อง Discord" },
+		{ page = "settings", key = "keys", title = "ปุ่มลัด" },
+	}
 
-for i, s in ipairs(Sections) do
-	local pg = Pages[s.page]
-	local box = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundTransparency = 1,
-		LayoutOrder = i,
-		Parent = pg.scroll,
-	}, { new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }) })
-	new("TextLabel", {
-		Size = UDim2.new(1, 0, 0, 20),
-		BackgroundTransparency = 1,
-		Text = s.title,
-		TextColor3 = Theme.Text,
-		TextSize = 15,
-		FontFace = font(Enum.FontWeight.SemiBold),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		LayoutOrder = -2,
-		Parent = box,
-	})
-	if s.hint then
-		new("TextLabel", {
+	for i, s in ipairs(Sections) do
+		local pg = Pages[s.page]
+		local box = new("Frame", {
 			Size = UDim2.new(1, 0, 0, 0),
 			AutomaticSize = Enum.AutomaticSize.Y,
 			BackgroundTransparency = 1,
-			Text = s.hint,
-			TextColor3 = Theme.Dim,
-			TextSize = 12,
-			FontFace = font(Enum.FontWeight.Regular),
+			LayoutOrder = i,
+			Parent = pg.scroll,
+		}, { new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }) })
+		new("TextLabel", {
+			Size = UDim2.new(1, 0, 0, 20),
+			BackgroundTransparency = 1,
+			Text = s.title,
+			TextColor3 = Theme.Text,
+			TextSize = 15,
+			FontFace = font(Enum.FontWeight.SemiBold),
 			TextXAlignment = Enum.TextXAlignment.Left,
-			TextWrapped = true,
-			LayoutOrder = -1,
+			LayoutOrder = -2,
 			Parent = box,
 		})
+		if s.hint then
+			new("TextLabel", {
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				Text = s.hint,
+				TextColor3 = Theme.Dim,
+				TextSize = 12,
+				FontFace = font(Enum.FontWeight.Regular),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextWrapped = true,
+				LayoutOrder = -1,
+				Parent = box,
+			})
+		end
+		pg.sections[s.key] = box
 	end
-	pg.sections[s.key] = box
-end
-
--- การ์ดหนึ่งใบ = หนึ่งฟีเจอร์ แถวหลักอยู่บนสุด ตัวเลือกย่อยอยู่ในกล่องเข้มด้านล่าง
--- สร้างตอนแถวแรกของกลุ่มมาถึง แถวไหนมาก่อนก็ได้ (ตัวเปิดแผงเลือกม็อบถูกสร้างก่อนสวิตช์ของมัน)
-local function cardFor(where)
-	local pg = Pages[where.page]
-	local key = where.section .. "/" .. where.card
-	local c = pg.cards[key]
-	if c then
-		return c
-	end
-	local frame = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundColor3 = Theme.Row,
-		BorderSizePixel = 0,
-		LayoutOrder = where.order or 99,
-		Parent = pg.sections[where.section],
-	}, {
-		corner(10),
-		stroke(Theme.Stroke, 1),
-		new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
-	})
-	c = { frame = frame }
-	pg.cards[key] = c
-	return c
-end
-
-local function subBoxOf(c)
-	if c.sub then
-		return c.sub
-	end
-	local holder = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundTransparency = 1,
-		LayoutOrder = 10,
-		Parent = c.frame,
-	}, { new("UIPadding", {
-		PaddingLeft = UDim.new(0, 10),
-		PaddingRight = UDim.new(0, 10),
-		PaddingBottom = UDim.new(0, 10),
-	}) })
-	c.sub = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundColor3 = Theme.Base,
-		BorderSizePixel = 0,
-		Parent = holder,
-	}, {
-		corner(8),
-		new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
-		new("UIPadding", { PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 2) }),
-	})
-	return c.sub
 end
 
 -- ที่อยู่ของทุกแถว ค้นจากชื่อที่โค้ดฟีเจอร์ส่งมา ย้ายหมวด เปลี่ยนชื่อที่โชว์ หรือคำอธิบาย แก้ที่นี่ที่เดียว
@@ -1368,10 +1322,11 @@ end
 -- help = คำอธิบายตอนปิดอยู่ ตอนเปิดแถวนั้นโชว์สถานะสดที่ฟีเจอร์ส่งมาแทน
 local Layout = {
 	switch = {
-		["Auto-Attack"] = { page = "combat", section = "attack", card = "attack", order = 1,
-			help = "บินไปลอยเหนือม็อบที่ใกล้ที่สุดทั้งแมพแล้วตี" },
-		["Auto-Attack-Mob"] = { page = "combat", section = "attack", card = "attackMob", order = 2,
-			title = "Auto-Attack เฉพาะม็อบที่เลือก", help = "เหมือน Auto-Attack แต่ไล่ตีเฉพาะชื่อที่เลือกไว้" },
+		-- ผู้ใช้สั่งเอาออก: ตีทุกตัวทั้งแมพไม่มีใครใช้ Auto-Quest ก็พาตัวไปตีเองอยู่แล้ว
+		-- สวิตช์ยังต้องมีอยู่ (ลูป attackLoop กับ Runner.farm สั่ง attackRow.set) แค่ไม่โชว์
+		["Auto-Attack"] = { page = "combat", section = "attack", card = "attack", hidden = true },
+		["Auto-Attack-Mob"] = { page = "combat", section = "attack", card = "attackMob", order = 1,
+			title = "Auto-Attack", help = "บินไปลอยเหนือม็อบที่เลือกไว้แล้วตี (Auto-Quest ตีให้เองอยู่แล้ว)" },
 		["Kill Aura"] = { page = "combat", section = "attack", card = "aura", order = 3,
 			help = "ยิงหมัดใส่ม็อบในระยะ 6 stud เองโดยไม่ต้องคลิก" },
 		["Kill Aura ระยะไกล"] = { page = "combat", section = "attack", card = "aura", child = 1,
@@ -1405,73 +1360,133 @@ local Layout = {
 	},
 }
 
--- แถวในการ์ด: หัวการ์ดสูงกว่าและตัวหนังสือใหญ่กว่า แถวย่อยเตี้ยและเยื้องเข้าใน
--- standalone = แถวที่ผู้เรียกระบุ parent เอง (หน้า ตั้งค่า) ได้กรอบการ์ดของตัวเอง
-local function rowShell(kind, name, where, parent, order)
-	local sizes = { head = 60, child = 48, standalone = 56 }
-	local frame = new("Frame", {
-		Size = UDim2.new(1, 0, 0, sizes[kind]),
-		BackgroundColor3 = Theme.Row,
-		BackgroundTransparency = kind == "standalone" and 0 or 1,
-		BorderSizePixel = 0,
-		LayoutOrder = order,
-		Parent = parent,
-	})
-	if kind == "standalone" then
-		corner(10).Parent = frame
-		stroke(Theme.Stroke, 1).Parent = frame
+local placeRow
+do
+	-- การ์ดหนึ่งใบ = หนึ่งฟีเจอร์ แถวหลักอยู่บนสุด ตัวเลือกย่อยอยู่ในกล่องเข้มด้านล่าง
+	-- สร้างตอนแถวแรกของกลุ่มมาถึง แถวไหนมาก่อนก็ได้ (ตัวเปิดแผงเลือกม็อบถูกสร้างก่อนสวิตช์ของมัน)
+	local function cardFor(where)
+		local pg = Pages[where.page]
+		local key = where.section .. "/" .. where.card
+		local c = pg.cards[key]
+		if c then
+			return c
+		end
+		local frame = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundColor3 = Theme.Row,
+			BorderSizePixel = 0,
+			LayoutOrder = where.order or 99,
+			Parent = pg.sections[where.section],
+		}, {
+			corner(10),
+			stroke(Theme.Stroke, 1),
+			new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
+		})
+		c = { frame = frame }
+		pg.cards[key] = c
+		return c
 	end
-	local indent = kind == "child" and 14 or 16
-	local title = new("TextLabel", {
-		Position = UDim2.fromOffset(indent, kind == "child" and 8 or 11),
-		Size = UDim2.new(1, -indent, 0, 18),
-		BackgroundTransparency = 1,
-		Text = where and where.title or name,
-		TextColor3 = kind == "child" and Theme.Muted or Theme.Text,
-		TextSize = kind == "child" and 13 or 14,
-		FontFace = font(kind == "child" and Enum.FontWeight.Medium or Enum.FontWeight.SemiBold),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		Parent = frame,
-	})
-	local desc = new("TextLabel", {
-		Position = UDim2.fromOffset(indent, kind == "child" and 26 or 32),
-		Size = UDim2.new(1, -indent, 0, 15),
-		BackgroundTransparency = 1,
-		Text = "",
-		TextColor3 = Theme.Dim,
-		TextSize = 12,
-		FontFace = font(Enum.FontWeight.Regular),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		Parent = frame,
-	})
-	return frame, title, desc
-end
 
--- วางแถวตามตาราง Layout คืน frame, title, desc ของแถว
-local function placeRow(kind, name, order, parentOverride)
-	if parentOverride then
-		return rowShell("standalone", name, nil, parentOverride, order)
+	local function subBoxOf(c)
+		if c.sub then
+			return c.sub
+		end
+		local holder = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = 10,
+			Parent = c.frame,
+		}, { new("UIPadding", {
+			PaddingLeft = UDim.new(0, 10),
+			PaddingRight = UDim.new(0, 10),
+			PaddingBottom = UDim.new(0, 10),
+		}) })
+		c.sub = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundColor3 = Theme.Base,
+			BorderSizePixel = 0,
+			Parent = holder,
+		}, {
+			corner(8),
+			new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
+			new("UIPadding", { PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 2) }),
+		})
+		return c.sub
 	end
-	local where = Layout[kind][name]
-	if not where then
-		-- ชื่อที่ยังไม่ได้จัดหมวด โผล่ท้ายหน้าต่อสู้ ดีกว่าหายไปเงียบ ๆ
-		where = { page = "combat", section = "defense", card = name, order = 99 }
+
+	-- แถวในการ์ด: หัวการ์ดสูงกว่าและตัวหนังสือใหญ่กว่า แถวย่อยเตี้ยและเยื้องเข้าใน
+	-- standalone = แถวที่ผู้เรียกระบุ parent เอง (หน้า ตั้งค่า) ได้กรอบการ์ดของตัวเอง
+	local function rowShell(kind, name, where, parent, order)
+		local sizes = { head = 60, child = 48, standalone = 56 }
+		local frame = new("Frame", {
+			Size = UDim2.new(1, 0, 0, sizes[kind]),
+			BackgroundColor3 = Theme.Row,
+			BackgroundTransparency = kind == "standalone" and 0 or 1,
+			BorderSizePixel = 0,
+			LayoutOrder = order,
+			Parent = parent,
+		})
+		if kind == "standalone" then
+			corner(10).Parent = frame
+			stroke(Theme.Stroke, 1).Parent = frame
+		end
+		local indent = kind == "child" and 14 or 16
+		local title = new("TextLabel", {
+			Position = UDim2.fromOffset(indent, kind == "child" and 8 or 11),
+			Size = UDim2.new(1, -indent, 0, 18),
+			BackgroundTransparency = 1,
+			Text = where and where.title or name,
+			TextColor3 = kind == "child" and Theme.Muted or Theme.Text,
+			TextSize = kind == "child" and 13 or 14,
+			FontFace = font(kind == "child" and Enum.FontWeight.Medium or Enum.FontWeight.SemiBold),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Parent = frame,
+		})
+		local desc = new("TextLabel", {
+			Position = UDim2.fromOffset(indent, kind == "child" and 26 or 32),
+			Size = UDim2.new(1, -indent, 0, 15),
+			BackgroundTransparency = 1,
+			Text = "",
+			TextColor3 = Theme.Dim,
+			TextSize = 12,
+			FontFace = font(Enum.FontWeight.Regular),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Parent = frame,
+		})
+		return frame, title, desc
 	end
-	local c = cardFor(where)
-	if where.child then
-		return rowShell("child", name, where, subBoxOf(c), where.child)
+
+	-- วางแถวตามตาราง Layout คืน frame, title, desc ของแถว
+	function placeRow(kind, name, order, parentOverride)
+		if parentOverride then
+			return rowShell("standalone", name, nil, parentOverride, order)
+		end
+		local where = Layout[kind][name]
+		if not where then
+			-- ชื่อที่ยังไม่ได้จัดหมวด โผล่ท้ายหน้าต่อสู้ ดีกว่าหายไปเงียบ ๆ
+			where = { page = "combat", section = "defense", card = name, order = 99 }
+		end
+		if where.hidden then
+			return rowShell("head", name, where, nil, 0)
+		end
+		local c = cardFor(where)
+		if where.child then
+			return rowShell("child", name, where, subBoxOf(c), where.child)
+		end
+		-- การ์ดอาจถูกสร้างไว้ก่อนโดยแถวย่อยที่ไม่มีลำดับ หัวการ์ดเป็นคนกำหนดลำดับจริง
+		c.frame.LayoutOrder = where.order or c.frame.LayoutOrder
+		return rowShell("head", name, where, c.frame, 0)
 	end
-	-- การ์ดอาจถูกสร้างไว้ก่อนโดยแถวย่อยที่ไม่มีลำดับ หัวการ์ดเป็นคนกำหนดลำดับจริง
-	c.frame.LayoutOrder = where.order or c.frame.LayoutOrder
-	return rowShell("head", name, where, c.frame, 0)
 end
 
 -- วัดความกว้างข้อความไว้ทำปุ่มเลือกที่กว้างพอดีคำ (เดิมปุ่มกว้าง 24px ตายตัว ใส่ได้แค่ "1" "2")
-local TextService = game:GetService("TextService")
 local function textWidth(text, size)
-	return TextService:GetTextSize(text, size, Enum.Font.GothamMedium, Vector2.new(1000, 40)).X
+	return game:GetService("TextService"):GetTextSize(text, size, Enum.Font.GothamMedium, Vector2.new(1000, 40)).X
 end
 
 local features = {}
@@ -1814,11 +1829,10 @@ end
 local function paintShopTicks(hovered)
 	for _, r in ipairs(shopRows) do
 		local order = table.find(shopQueue, r.data.name)
-		tween(r.tickFill, {
-			BackgroundTransparency = order and 0 or 1,
-			Size = order and UDim2.fromOffset(14, 14) or UDim2.fromOffset(8, 8),
-		}, FAST)
+		tween(r.tickFill, { BackgroundTransparency = order and 0 or 1 }, FAST)
+		-- เลขคิวโชว์เฉพาะตอนติ๊กหลายชิ้น ชิ้นเดียวไม่ต้องบอกลำดับ
 		r.tickNum.Text = order and tostring(order) or ""
+		r.tickNum.Visible = order ~= nil and #shopQueue > 1
 		tween(r.frame, { BackgroundColor3 = (order or r == hovered) and Theme.Raised or Theme.Row }, FAST)
 		r.tickStroke.Color = order and Theme.Accent or Theme.Muted
 	end
@@ -1842,12 +1856,11 @@ end
 -- กล่องติ๊กซ้ายสุด คืน fill กับ stroke ให้ผู้เรียกเปลี่ยนสีตอนเลือก
 -- ช่องติ๊ก 18px เต็มช่องสีฟ้า + เครื่องหมายถูก เดิมเป็นจุด 8px ในกรอบ 14px คนใช้บอกว่ามองไม่ออกว่าติ๊กแล้ว
 -- ผู้เรียก tween แค่ BackgroundTransparency ของ fill เครื่องหมายถูกตามค่านั้นเอง
-local function tickBox(parent, noMark)
+local function tickBox(parent)
 	local mark = new("TextLabel", {
 		Size = UDim2.fromScale(1, 1),
 		BackgroundTransparency = 1,
-		-- แผง Get Weapons ใส่เลขคิวในช่องแทน ไม่เอาเครื่องหมายถูกซ้อน
-		Text = noMark and "" or "✓",
+		Text = "✓",
 		TextColor3 = Theme.Base,
 		TextTransparency = 1,
 		TextSize = 13,
@@ -1873,6 +1886,123 @@ local function tickBox(parent, noMark)
 	return fill, outline
 end
 
+-- กล่องรายละเอียดใต้แถว (เควส / ปราณ): หัวข้อเล็ก แล้วตามด้วยป้าย (ชิป) ที่ขึ้นบรรทัดใหม่เองเมื่อเต็ม
+-- chips = { { ข้อความ, สี }, ... } สีบอกความหมาย: ฟ้า = EXP/ปราณ ทอง = Wen เขียว = มีพอ แดง = ขาด
+local Detail = {}
+function Detail.box(parent, order)
+	local box = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = order,
+		Visible = false,
+		Parent = parent,
+	}, { new("UIPadding", {
+		PaddingLeft = UDim.new(0, 10),
+		PaddingRight = UDim.new(0, 10),
+		PaddingBottom = UDim.new(0, 6),
+	}) })
+	local inner = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Theme.Base,
+		BorderSizePixel = 0,
+		Parent = box,
+	}, {
+		corner(8),
+		new("UIPadding", {
+			PaddingTop = UDim.new(0, 10),
+			PaddingBottom = UDim.new(0, 10),
+			PaddingLeft = UDim.new(0, 12),
+			PaddingRight = UDim.new(0, 12),
+		}),
+		new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }),
+	})
+
+	local api = { frame = box, count = 0 }
+	function api.section(title, chips)
+		if #chips == 0 then
+			return
+		end
+		api.count += 1
+		local sec = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = api.count,
+			Parent = inner,
+		}, { new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
+		new("TextLabel", {
+			Size = UDim2.new(1, 0, 0, 14),
+			BackgroundTransparency = 1,
+			Text = title,
+			TextColor3 = Theme.Dim,
+			TextSize = 11,
+			FontFace = font(Enum.FontWeight.SemiBold),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			LayoutOrder = 1,
+			Parent = sec,
+		})
+		local wrap = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = 2,
+			Parent = sec,
+		}, { new("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			Wraps = true,
+			Padding = UDim.new(0, 4),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}) })
+		for i, chip in ipairs(chips) do
+			new("TextLabel", {
+				Size = UDim2.fromOffset(0, 22),
+				AutomaticSize = Enum.AutomaticSize.X,
+				BackgroundColor3 = Theme.Raised,
+				Text = chip[1],
+				TextColor3 = chip[2] or Theme.Text,
+				TextSize = 11,
+				FontFace = font(Enum.FontWeight.Medium),
+				LayoutOrder = i,
+				Parent = wrap,
+			}, { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+		end
+	end
+	-- ข้อความยาว (คำใบ้ / วิธีหาของ) ตัดบรรทัดเอง ชิปยืดตามคำจะล้นกล่อง
+	function api.note(title, text, color)
+		api.count += 1
+		new("TextLabel", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			RichText = true,
+			Text = string.format('<font color="#787b8c">%s</font>\n%s', title, text),
+			TextColor3 = color or Theme.Muted,
+			TextSize = 11,
+			FontFace = font(Enum.FontWeight.Regular),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextWrapped = true,
+			LayoutOrder = api.count,
+			Parent = inner,
+		})
+	end
+	function api.clear()
+		for _, c in ipairs(inner:GetChildren()) do
+			if c:IsA("GuiObject") then
+				c:Destroy()
+			end
+		end
+		api.count = 0
+	end
+	return api
+end
+
+-- ป้ายของมี/ต้องใช้: "Demon Horns 3/10" เขียวถ้าพอ แดงถ้าขาด
+function Detail.have(name, have, need)
+	return { string.format("%s %s/%s", name, comma(have), comma(need)), have >= need and Theme.Good or Theme.Danger }
+end
+
 local function buildShopRow(data, order)
 	local frame = new("Frame", {
 		Size = UDim2.new(1, -6, 0, Config.RowH),
@@ -1882,18 +2012,22 @@ local function buildShopRow(data, order)
 		Parent = shopUI.list,
 	}, { corner(7) })
 
-	local tickFill, tickStroke = tickBox(frame, true)
+	local tickFill, tickStroke = tickBox(frame)
+	-- ลำดับคิวเป็นป้ายกลมมุมขวาบนของช่องติ๊ก ในช่องเป็นเครื่องหมายถูกเหมือนแผงอื่น
+	-- เดิมเลขอยู่ในช่องที่หดเป็น 8px ตอนไม่ติ๊ก คนใช้บอกว่าดูแปลก
 	local tickNum = new("TextLabel", {
-		Size = UDim2.fromScale(1, 1),
-		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(1, 0, 0, 0),
+		Size = UDim2.fromOffset(15, 15),
+		BackgroundColor3 = Theme.Accent2,
 		Text = "",
-		TextColor3 = Theme.Base,
-		TextSize = 10,
+		TextColor3 = Theme.Text,
+		TextSize = 9,
 		FontFace = font(Enum.FontWeight.Bold),
-		ZIndex = 2,
+		Visible = false,
+		ZIndex = 3,
 		Parent = tickFill.Parent,
-	})
-
+	}, { corner(8) })
 	new("Frame", {
 		AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(0, 40, 0.5, 0),
@@ -2300,6 +2434,8 @@ function Game.quests()
 							kind = kind,
 							race = races,
 							exp = q.Rewards and q.Rewards.Exp or 0,
+							-- นิยามดิบจากเกม ใช้โชว์รายละเอียด (รางวัล ค่ารับเควส เงื่อนไข เวลาจำกัด)
+							raw = q,
 						}
 					end
 				end
@@ -2406,7 +2542,8 @@ end
 
 -- สถานะที่รู้ได้ก่อนกด: จบแล้ว / ยังไม่รองรับ (ไม่มีแผนเดิน) ไม่มีอะไร = กดรันได้
 -- questPlan / questProgress นิยามอยู่ล่างกว่านี้ อ่านผ่าน Runner.questStatus ตอนเปิดแผง (ทุกอย่างโหลดครบแล้ว)
-local function questBadge(d)
+local QuestInfo = {}
+function QuestInfo.badge(d)
 	local status = Runner.questStatus(d)
 	if status == "completed" then
 		return "จบแล้ว", Theme.Good
@@ -2414,6 +2551,99 @@ local function questBadge(d)
 		return "ยังไม่รองรับ", Theme.Dim
 	end
 	return nil
+end
+
+-- รายละเอียดเควส: ต้องทำอะไร ได้อะไร ต้องจ่ายอะไรตอนรับ เงื่อนไข และทำได้กี่รอบ
+-- สร้างตอนกด ข้อมูล ครั้งแรก (83 เควส สร้างล่วงหน้าหมดเปลือง instance เป็นพัน)
+-- ค่าที่ขึ้นกับตัวเรา (เงิน ของ เลเวล) อ่านใหม่ทุกครั้งที่เปิด
+function QuestInfo.fill(box, d)
+	box.clear()
+	local q = d.raw or {}
+	local wallet = Game.wallet()
+
+	local todo = {}
+	for _, t in ipairs(d.tasks) do
+		todo[#todo + 1] = { t.max > 1 and (t.name .. "  ×" .. t.max) or t.name }
+	end
+	if #todo == 0 then
+		todo[1] = { "คุยกับ " .. d.npc }
+	end
+	box.section("ต้องทำ", todo)
+
+	local rewards = q.Rewards or {}
+	local gain = {}
+	if rewards.Exp then
+		gain[#gain + 1] = { "+" .. comma(rewards.Exp) .. " EXP", Theme.Accent }
+	end
+	if rewards.Wen then
+		gain[#gain + 1] = { "+" .. comma(rewards.Wen) .. " Wen", Theme.Warn }
+	end
+	if rewards.Power then
+		gain[#gain + 1] = { "ปราณ " .. tostring(rewards.Power), Theme.Accent2 }
+	end
+	local items = {}
+	for name, v in pairs(rewards) do
+		if name ~= "Exp" and name ~= "Wen" and name ~= "Power" then
+			local n = type(v) == "table" and (v.Quantity or 1) or tonumber(v) or 1
+			items[#items + 1] = { name .. "  ×" .. n, Theme.Good }
+		end
+	end
+	table.sort(items, function(a, b)
+		return a[1] < b[1]
+	end)
+	for _, c in ipairs(items) do
+		gain[#gain + 1] = c
+	end
+	box.section("ได้รับ", gain)
+
+	local cost = {}
+	if q.WenCostOnAccept then
+		cost[#cost + 1] = Detail.have("Wen", wallet.Wen or 0, q.WenCostOnAccept)
+	end
+	for name, n in pairs(q.ItemCostOnAccept or {}) do
+		cost[#cost + 1] = Detail.have(name, wallet[name] or 0, n)
+	end
+	box.section("ต้องจ่ายตอนรับเควส", cost)
+
+	local req = q.Requirements or {}
+	local lvl = Game.level()
+	local cond = {}
+	if req.Level then
+		cond[#cond + 1] = { "Lv " .. req.Level .. " ขึ้นไป", (not lvl or lvl >= req.Level) and Theme.Good or Theme.Danger }
+	end
+	if req.MaxLevel then
+		cond[#cond + 1] = { "ไม่เกิน Lv " .. req.MaxLevel, (not lvl or lvl <= req.MaxLevel) and Theme.Good or Theme.Danger }
+	end
+	if d.race then
+		cond[#cond + 1] = { "เผ่า " .. d.race }
+	end
+	box.section("เงื่อนไข", cond)
+
+	-- LogCompletion = เกมจดว่าจบแล้ว (Completed) รับซ้ำไม่ได้ ที่เหลือ (ฆ่าม็อบ / Boss Hunts) รับใหม่ได้เรื่อย ๆ
+	-- เกมให้ถือได้ทีละเควส และพักระหว่างเควสตาม QuestCD
+	local times = {}
+	if q.LogCompletion then
+		times[#times + 1] = { "ทำได้ครั้งเดียว" }
+	elseif rewards.Power then
+		times[#times + 1] = { "ทำจนได้ปราณ (ทำครั้งเดียวพอ)" }
+	else
+		times[#times + 1] = { "ทำซ้ำได้ไม่จำกัด", Theme.Good }
+	end
+	times[#times + 1] = { "พักระหว่างเควส " .. Runner.questCD() .. " วิ", Theme.Muted }
+	if q.Timer then
+		times[#times + 1] = { "จำกัดเวลา " .. math.floor(q.Timer / 60) .. " นาที", Theme.Warn }
+	end
+	local status = Runner.questStatus(d)
+	if status == "completed" then
+		times[#times + 1] = { "จบไปแล้ว", Theme.Good }
+	elseif status == "unsupported" then
+		times[#times + 1] = { "สคริปต์ยังทำเควสนี้ให้ไม่ได้", Theme.Danger }
+	end
+	box.section("ทำได้กี่รอบ", times)
+
+	if type(q.Hint) == "string" then
+		box.note("คำใบ้จากเกม", q.Hint)
+	end
 end
 
 -- กล่องหนึ่ง = NPC หนึ่งตัว หัวกล่องชื่อ NPC + โซน แถวข้างในคือเควสแต่ละอัน กดตรงไหนของแถวก็ติ๊ก
@@ -2461,7 +2691,7 @@ local function buildQuestRow(group, order)
 			BackgroundTransparency = 1,
 			AutoButtonColor = false,
 			Text = "",
-			LayoutOrder = i,
+			LayoutOrder = i * 2,
 			Parent = block,
 		})
 		-- พื้นหลังไฮไลต์เยื้องจากขอบกล่อง ไม่งั้นมุมเหลี่ยมทับมุมโค้งของกล่อง
@@ -2477,7 +2707,7 @@ local function buildQuestRow(group, order)
 
 		new("TextLabel", {
 			Position = UDim2.fromOffset(38, 5),
-			Size = UDim2.new(1, -150, 0, 16),
+			Size = UDim2.new(1, -240, 0, 16),
 			BackgroundTransparency = 1,
 			Text = d.quest,
 			TextColor3 = Theme.Text,
@@ -2489,7 +2719,7 @@ local function buildQuestRow(group, order)
 		})
 		new("TextLabel", {
 			Position = UDim2.fromOffset(38, 22),
-			Size = UDim2.new(1, -150, 0, 14),
+			Size = UDim2.new(1, -240, 0, 14),
 			BackgroundTransparency = 1,
 			Text = d.title,
 			TextColor3 = Theme.Dim,
@@ -2515,7 +2745,7 @@ local function buildQuestRow(group, order)
 			Padding = UDim.new(0, 6),
 			SortOrder = Enum.SortOrder.LayoutOrder,
 		}) })
-		local badgeText, badgeColor = questBadge(d)
+		local badgeText, badgeColor = QuestInfo.badge(d)
 		if badgeText then
 			new("TextLabel", {
 				Size = UDim2.fromOffset(0, 20),
@@ -2540,6 +2770,38 @@ local function buildQuestRow(group, order)
 			LayoutOrder = 2,
 			Parent = tags,
 		}, { corner(6), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+
+		-- ปุ่ม ข้อมูล: กางรายละเอียดใต้แถว แยกจากการติ๊ก (กดแถว = ติ๊ก, กดปุ่มนี้ = ดูข้อมูล)
+		local detail
+		local infoBtn = new("TextButton", {
+			Size = UDim2.fromOffset(0, 20),
+			AutomaticSize = Enum.AutomaticSize.X,
+			BackgroundColor3 = Theme.Raised,
+			AutoButtonColor = false,
+			Text = "ข้อมูล ▾",
+			TextColor3 = Theme.Muted,
+			TextSize = 11,
+			FontFace = font(Enum.FontWeight.Medium),
+			LayoutOrder = 3,
+			ZIndex = 2,
+			Parent = tags,
+		}, {
+			corner(6),
+			stroke(Theme.Stroke, 1),
+			new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
+		})
+		track(infoBtn.MouseButton1Click:Connect(function()
+			if not detail then
+				detail = Detail.box(block, i * 2 + 1)
+			end
+			local open = not detail.frame.Visible
+			if open then
+				QuestInfo.fill(detail, d)
+			end
+			detail.frame.Visible = open
+			infoBtn.Text = open and "ข้อมูล ▴" or "ข้อมูล ▾"
+			infoBtn.TextColor3 = open and Theme.Accent or Theme.Muted
+		end))
 
 		local function paint()
 			local on = row.picked[i] == true
@@ -2948,6 +3210,11 @@ end
 Runner = { active = false, cancel = false, lastStart = 0, hasAlternative = false }
 
 -- ป้ายสถานะในแผง Auto-Quest (แผงสร้างก่อน questPlan / questProgress เลยอ่านผ่านตรงนี้)
+-- วินาทีที่เกมบังคับพักระหว่างจบเควสกับรับเควสถัดไป (QuestRules.QuestCD)
+function Runner.questCD()
+	return QuestRules.QuestCD or 30
+end
+
 function Runner.questStatus(d)
 	if questProgress(d.key) == "completed" then
 		return "completed"
@@ -3376,19 +3643,21 @@ local startBtn = new("TextButton", {
 }, { corner(8), startLabel })
 
 -- ติ๊กได้หลายเควสแล้ว ต้องมีทางเอาออกทีเดียว ไม่ต้องไล่กดทีละแถว
-local clearBtn = new("TextButton", {
-	AnchorPoint = Vector2.new(1, 1),
-	Position = UDim2.fromScale(1, 1),
-	Size = UDim2.fromOffset(76, 34),
-	BackgroundColor3 = Theme.Raised,
-	AutoButtonColor = false,
-	Text = "ล้าง",
-	TextColor3 = Theme.Muted,
-	TextSize = 13,
-	FontFace = font(Enum.FontWeight.SemiBold),
-	Parent = questUI.panel,
-}, { corner(8), stroke(Theme.Stroke, 1) })
-track(clearBtn.MouseButton1Click:Connect(clearQuestPicks))
+do
+	local clearBtn = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 1),
+		Position = UDim2.fromScale(1, 1),
+		Size = UDim2.fromOffset(76, 34),
+		BackgroundColor3 = Theme.Raised,
+		AutoButtonColor = false,
+		Text = "ล้าง",
+		TextColor3 = Theme.Muted,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		Parent = questUI.panel,
+	}, { corner(8), stroke(Theme.Stroke, 1) })
+	track(clearBtn.MouseButton1Click:Connect(clearQuestPicks))
+end
 
 refreshStartButton = function()
 	if Runner.active then
@@ -3891,6 +4160,8 @@ do
 							-- Stone ต้องมีอาวุธ Axe and Mace ชิ้นใดชิ้นหนึ่งในกระเป๋าก่อน
 							anyOf = q.Requirements and q.Requirements.Items or nil,
 							tasks = tasks,
+							rewardExp = q.Rewards.Exp,
+							rewardWen = q.Rewards.Wen,
 						}
 					end
 				end
@@ -4216,21 +4487,108 @@ do
 		end
 	end
 
+	-- ของที่ฟาร์มให้ได้ บอกชื่อม็อบกับที่อยู่ให้คนอ่านรู้เรื่อง (รหัสใน Runner.FarmSources อ่านไม่ออก)
+	local FarmWhere = {
+		["Demon Horns"] = "Hoyuzo Subordinate ในถ้ำหลังน้ำตก Bamboo Grove",
+		["Beast Core"] = "Beast Born Demon ที่ Mistfall Harbor",
+	}
+
+	-- รายละเอียดปราณที่เลือก: ต้องมีอะไร มีแล้วเท่าไร ของที่ขาดหาได้ยังไง ขั้นตอนฝึก และรางวัล
+	local function fillBreathDetail(box, b)
+		box.clear()
+		local wallet = Game.wallet()
+		local lvl = Game.level()
+
+		local need = {}
+		if b.level > 0 then
+			need[#need + 1] = { "Lv " .. b.level .. " ขึ้นไป", (not lvl or lvl >= b.level) and Theme.Good or Theme.Danger }
+		end
+		need[#need + 1] = Detail.have("Wen", wallet.Wen or 0, b.wen)
+		for _, it in ipairs(b.items) do
+			need[#need + 1] = Detail.have(it.name, wallet[it.name] or 0, it.need)
+		end
+		local weaponOk = true
+		if b.anyOf then
+			weaponOk = false
+			for _, name in ipairs(b.anyOf) do
+				weaponOk = weaponOk or (wallet[name] or 0) > 0
+			end
+			need[#need + 1] = { "อาวุธ " .. table.concat(b.anyOf, " / "), weaponOk and Theme.Good or Theme.Danger }
+		end
+		box.section("ต้องมีก่อนรับเควส (มี/ต้องใช้)", need)
+
+		-- ตัวรันฟาร์มของให้เฉพาะตอน Wen พอแล้ว (runBreathing) Wen กับอาวุธฟาร์มให้ไม่ได้
+		local how = {}
+		local wenShort = b.wen - (wallet.Wen or 0)
+		if wenShort > 0 then
+			how[#how + 1] = string.format("• Wen ขาด %s  สคริปต์ฟาร์ม Wen ให้ไม่ได้ ทำเควสหรือตีม็อบเก็บก่อน", comma(wenShort))
+		end
+		for _, it in ipairs(b.items) do
+			local short = it.need - (wallet[it.name] or 0)
+			if short > 0 then
+				if FarmWhere[it.name] and Runner.FarmSources[it.name] then
+					how[#how + 1] = string.format("• %s ขาด %d  กด START แล้วสคริปต์ไปฟาร์มให้เองจาก %s%s", it.name, short,
+						FarmWhere[it.name], wenShort > 0 and " (หลังมี Wen พอ)" or "")
+				else
+					how[#how + 1] = string.format("• %s ขาด %d  ต้องหาเอง สคริปต์ยังไม่รู้แหล่งดรอป", it.name, short)
+				end
+			end
+		end
+		if not weaponOk then
+			how[#how + 1] = "• ต้องมีอาวุธ " .. table.concat(b.anyOf, " หรือ ") .. " ในกระเป๋า"
+		end
+		if #how > 0 then
+			box.note("ของที่ขาด หาได้ยังไง", table.concat(how, "\n"), Theme.Text)
+		end
+
+		local steps = {}
+		for i, t in ipairs(b.tasks) do
+			local bad = t.kind and unsupported[t.kind]
+			steps[#steps + 1] = { i .. ". " .. t.name .. (t.max > 1 and ("  ×" .. t.max) or "") .. (bad and "  (ยังไม่รองรับ)" or ""),
+				bad and Theme.Danger or Theme.Text }
+		end
+		box.section("ขั้นตอนฝึก (สคริปต์ทำให้ตามลำดับ)", steps)
+
+		local gain = { { "ปราณ " .. b.power, Theme.Accent2 } }
+		if b.rewardExp then
+			gain[#gain + 1] = { "+" .. comma(b.rewardExp) .. " EXP", Theme.Accent }
+		end
+		if b.rewardWen then
+			gain[#gain + 1] = { "+" .. comma(b.rewardWen) .. " Wen", Theme.Warn }
+		end
+		box.section("ได้รับ", gain)
+	end
+
 	local function paintRows()
 		for _, r in ipairs(rows) do
 			local on = r.data == selected
 			tween(r.tickFill, { BackgroundTransparency = on and 0 or 1 }, FAST)
 			r.tickStroke.Color = on and Theme.Accent or Theme.Muted
-			tween(r.frame, { BackgroundColor3 = on and Theme.Raised or Theme.Row }, FAST)
+			r.frame:FindFirstChildOfClass("UIStroke").Color = on and Theme.Accent or Theme.Stroke
 			local missing = missingFor(r.data)
 			local note = supportNote(r.data)
-			r.right.Text = note and "ยังไม่รองรับ" or (#missing == 0 and "พร้อมรับเควส" or ("ขาด " .. #missing .. " อย่าง"))
-			r.right.TextColor3 = note and Theme.Dim or (#missing == 0 and Theme.Accent or Theme.Warn)
+			-- ขาดอย่างเดียวบอกชื่อเลย ขาดหลายอย่างบอกจำนวน รายการเต็มอยู่ในกล่องรายละเอียด
+			local right
+			if note then
+				right = "ยังไม่รองรับ"
+			elseif #missing == 0 then
+				right = "✓ พร้อมรับเควส"
+			elseif #missing == 1 then
+				right = "ขาด " .. missing[1]
+			else
+				right = "ขาด " .. #missing .. " อย่าง · กดดู"
+			end
+			r.right.Text = right
+			r.right.TextColor3 = note and Theme.Dim or (#missing == 0 and Theme.Good or Theme.Warn)
 			local costs = { comma(r.data.wen) .. " Wen" }
 			for _, it in ipairs(r.data.items) do
 				costs[#costs + 1] = string.format("%s %d", it.name, it.need)
 			end
 			r.sub.Text = r.data.npc .. "  ·  " .. table.concat(costs, " · ")
+			if on then
+				fillBreathDetail(r.detail, r.data)
+			end
+			r.detail.frame.Visible = on
 		end
 	end
 
@@ -4240,17 +4598,26 @@ do
 			or '<font color="#8f8f9e">ยังไม่มีปราณ</font>'
 		if #rows == 0 then
 			for i, b in ipairs(loadBreathing()) do
-				local frame = new("Frame", {
-					Size = UDim2.new(1, -6, 0, 40),
+				-- กล่องต่อปราณ: หัว (กดเลือก) + รายละเอียดที่กางออกตอนเลือก
+				local box = new("Frame", {
+					Size = UDim2.new(1, -6, 0, 0),
+					AutomaticSize = Enum.AutomaticSize.Y,
 					BackgroundColor3 = Theme.Row,
 					BorderSizePixel = 0,
 					LayoutOrder = i,
 					Parent = breathUI.list,
-				}, { corner(7) })
+				}, { corner(9), stroke(Theme.Stroke, 1), new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }) })
+				local frame = new("Frame", {
+					Size = UDim2.new(1, 0, 0, 44),
+					BackgroundTransparency = 1,
+					LayoutOrder = 1,
+					Parent = box,
+				})
+				local detail = Detail.box(box, 2)
 				local tickFill, tickStroke = tickBox(frame)
 				new("TextLabel", {
 					Position = UDim2.fromOffset(40, 5),
-					Size = UDim2.new(1, -140, 0, 14),
+					Size = UDim2.new(1, -200, 0, 14),
 					BackgroundTransparency = 1,
 					Text = b.power .. " Breathing",
 					TextColor3 = Theme.Text,
@@ -4261,7 +4628,7 @@ do
 				})
 				local sub = new("TextLabel", {
 					Position = UDim2.fromOffset(40, 20),
-					Size = UDim2.new(1, -140, 0, 13),
+					Size = UDim2.new(1, -200, 0, 13),
 					BackgroundTransparency = 1,
 					TextColor3 = Theme.Dim,
 					TextSize = 11,
@@ -4273,14 +4640,23 @@ do
 				local right = new("TextLabel", {
 					AnchorPoint = Vector2.new(1, 0.5),
 					Position = UDim2.new(1, -12, 0.5, 0),
-					Size = UDim2.fromOffset(100, 14),
+					Size = UDim2.fromOffset(170, 14),
 					BackgroundTransparency = 1,
 					TextSize = 11,
 					FontFace = font(Enum.FontWeight.Medium),
 					TextXAlignment = Enum.TextXAlignment.Right,
 					Parent = frame,
 				})
-				local row = { frame = frame, tickFill = tickFill, tickStroke = tickStroke, sub = sub, right = right, data = b }
+				local row = {
+					frame = box,
+					head = frame,
+					detail = detail,
+					tickFill = tickFill,
+					tickStroke = tickStroke,
+					sub = sub,
+					right = right,
+					data = b,
+				}
 				rows[#rows + 1] = row
 				local hit = new("TextButton", {
 					Size = UDim2.new(1, 0, 1, 0),
@@ -4294,12 +4670,14 @@ do
 					end
 					selected = selected ~= b and b or nil
 					paintRows()
+					-- ขั้นตอนเต็มอยู่ในกล่องรายละเอียดแล้ว บรรทัดสถานะสรุปแค่ว่าพร้อมหรือขาดอะไร
 					if selected then
-						local steps = {}
-						for _, t in ipairs(b.tasks) do
-							steps[#steps + 1] = t.name
+						local missing = missingFor(b)
+						if #missing == 0 then
+							breathUI.setStatus(b.power .. " Breathing · ของครบ กด START ได้เลย", Theme.Good)
+						else
+							breathUI.setStatus(b.power .. " Breathing · ขาด " .. table.concat(missing, ", "), Theme.Warn)
 						end
-						breathUI.setStatus(table.concat(steps, " → "), Theme.Muted)
 					end
 					refreshBreathButton()
 				end))
@@ -4983,18 +5361,18 @@ attackRow = switchRow("Auto-Attack", "ปิดอยู่", 2, function(on)
 		autoAttack.on = false
 	end
 end)
-
--- โหมดเจาะจงตัว: ใช้ชื่อที่ติ๊กไว้ในแผง Auto-Attack-Mob หน้า Main
-mobOnlyRow = switchRow("Auto-Attack-Mob", "ตีเฉพาะม็อบที่เลือกไว้หน้า Main", 3, function(on)
+-- โหมดเจาะจงตัว: ใช้ชื่อที่ติ๊กไว้ในแผง เลือกม็อบ (การ์ดเดียวกัน)
+mobOnlyRow = switchRow("Auto-Attack-Mob", "ปิดอยู่", 3, function(on)
 	if not on then
 		autoAttack.on = false
 		autoAttack.onlySelected = false
-		mobOnlyRow.setDesc("ตีเฉพาะม็อบที่เลือกไว้หน้า Main")
+		mobOnlyRow.setDesc("ปิดอยู่")
 		return
 	end
 	if not selectedMob then
-		mobOnlyRow.setDesc("ยังไม่ได้เลือกม็อบ ไปติ๊กที่ Main > Auto-Attack-Mob ก่อน")
 		mobOnlyRow.set(false)
+		-- ตั้งข้อความหลังปิด ไม่งั้น set(false) เขียนคำอธิบายทับ
+		mobOnlyRow.setDesc("ยังไม่ได้เลือกม็อบ กด เปิด › ที่ เลือกม็อบ ด้านล่างก่อน")
 		return
 	end
 	attackRow.set(false)
@@ -7300,13 +7678,13 @@ end
 
 local outbox = {}
 local function post(embed)
-	embed.footer = { text = "PathSlayer" }
+	embed.footer = { text = "XIIIN" }
 	embed.timestamp = DateTime.now():ToIsoDate()
 	return httpRequest({
 		Url = cfg.url,
 		Method = "POST",
 		Headers = { ["Content-Type"] = "application/json" },
-		Body = HttpService:JSONEncode({ username = "PathSlayer", embeds = { embed } }),
+		Body = HttpService:JSONEncode({ username = "XIIIN", embeds = { embed } }),
 	})
 end
 
@@ -7797,52 +8175,53 @@ track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
 end))
 
 -- ป้ายบนหัวหน้าต่าง: อะไรเปิดอยู่บ้าง + ปุ่มหยุดทั้งหมด -------------------------------
-
-local function runningNames()
-	local names = {}
-	for _, t in ipairs(toggles) do
-		if t.isOn() then
-			names[#names + 1] = t.name
+do
+	local function runningNames()
+		local names = {}
+		for _, t in ipairs(toggles) do
+			if t.isOn() then
+				names[#names + 1] = t.name
+			end
 		end
+		-- Auto-Quest / Auto-Breathing / Get Weapons ไม่ใช่สวิตช์ แต่ใช้ตัวรันเดียวกัน
+		if Runner.active then
+			names[#names + 1] = "เควส/ตัวรัน"
+		end
+		return names
 	end
-	-- Auto-Quest / Auto-Breathing / Get Weapons ไม่ใช่สวิตช์ แต่ใช้ตัวรันเดียวกัน
-	if Runner.active then
-		names[#names + 1] = "เควส/ตัวรัน"
-	end
-	return names
+
+	track(Chip.stop.MouseButton1Click:Connect(function()
+		for _, t in ipairs(toggles) do
+			t.set(false)
+		end
+		if Runner.active then
+			Runner.stop()
+		end
+	end))
+
+	task.spawn(function()
+		local shown
+		while screen.Parent do
+			local names = runningNames()
+			local text
+			if #names == 0 then
+				text = "ไม่มีอะไรทำงาน"
+			elseif #names <= 2 then
+				text = table.concat(names, " · ")
+			else
+				text = names[1] .. " · " .. names[2] .. "  +" .. (#names - 2)
+			end
+			if text ~= shown then
+				shown = text
+				Chip.label.Text = text
+				Chip.label.TextColor3 = #names > 0 and Theme.Text or Theme.Muted
+				Chip.dot.BackgroundColor3 = #names > 0 and Theme.Good or Theme.Dim
+				Chip.stop.Visible = #names > 0
+			end
+			task.wait(0.4)
+		end
+	end)
 end
-
-track(stopAllBtn.MouseButton1Click:Connect(function()
-	for _, t in ipairs(toggles) do
-		t.set(false)
-	end
-	if Runner.active then
-		Runner.stop()
-	end
-end))
-
-task.spawn(function()
-	local shown
-	while screen.Parent do
-		local names = runningNames()
-		local text
-		if #names == 0 then
-			text = "ไม่มีอะไรทำงาน"
-		elseif #names <= 2 then
-			text = table.concat(names, " · ")
-		else
-			text = names[1] .. " · " .. names[2] .. "  +" .. (#names - 2)
-		end
-		if text ~= shown then
-			shown = text
-			runLabel.Text = text
-			runLabel.TextColor3 = #names > 0 and Theme.Text or Theme.Muted
-			runDot.BackgroundColor3 = #names > 0 and Theme.Good or Theme.Dim
-			stopAllBtn.Visible = #names > 0
-		end
-		task.wait(0.4)
-	end
-end)
 
 -- เลือกแท็บแรกหลังเฟรมแรก เพราะ indicator อ่าน AbsolutePosition ที่ UIListLayout ยังไม่ได้คำนวณ
 task.defer(function()
