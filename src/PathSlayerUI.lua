@@ -7301,9 +7301,17 @@ function killAura.pinUnder(root)
 		-- ม็อบตาย/หายระหว่างรอเป้าถัดไป: ลอยค้างที่เดิมด้วยการล้างความเร็วทุกเฟรม (ร่วงแค่ ~0.3 stud/วิ) ไม่เขียน CFrame ทับ
 		-- เดิมเขียน underLast ทับทุกเฟรม: หอคอยย้ายแมพ เซิร์ฟวาร์ปเราไปแท่นเกิดแมพใหม่ แต่ตรงนี้ดึงกลับจุดเดิมทุกเฟรม
 		-- แมพเก่าถูกลบ ตัวตกลงใต้แมพตาย (ผู้ใช้เสียหัวใจ 3 ดวงในชั้น 1 และอีกดวงแถวชั้น 30)
+		-- ไม่มีเป้า: ตรึงไว้ที่จุดเดิมจริง ๆ (ล้างความเร็วอย่างเดียวยังร่วง ~0.3 stud/วิ ค้างนาน 15 นาทีจมไป 330 stud
+		-- ผู้ใช้เจอตัวไปอยู่ใต้แมพชั้น 58) แต่ถ้าตัวถูกย้ายไกลในเฟรมเดียว (เซิร์ฟวาร์ปไปแท่นเกิดแมพใหม่) รับจุดใหม่แทน
 		if r and r.Parent and r.Position.Y > Combat.WorldFloorY then
 			killAura.underLast = CFrame.new(r.Position - Vector3.new(0, killAura.depth(), 0)) * killAura.LayFaceUp
 			me.CFrame = killAura.underLast
+			killAura.hoverAt = nil
+		else
+			if not killAura.hoverAt or (me.Position - killAura.hoverAt.Position).Magnitude > 20 then
+				killAura.hoverAt = me.CFrame
+			end
+			me.CFrame = killAura.hoverAt
 		end
 		me.AssemblyLinearVelocity = Vector3.zero
 		me.AssemblyAngularVelocity = Vector3.zero
@@ -7322,6 +7330,7 @@ end
 
 -- เลิกนอนใต้ดิน คืนการชนกับสถานะ Humanoid ไม่งั้นตัวละครตกทะลุพื้นหรือล้มค้าง
 function killAura.releaseUnder()
+	killAura.hoverAt = nil
 	killAura.underRoot = nil
 	killAura.underLast = nil
 	if not killAura.underConn then
@@ -15024,7 +15033,9 @@ local function nearestEnemy(hrp)
 	for _, m in ipairs(workspace.Humanoids:GetDescendants()) do
 		local h = m:IsA("Model") and m:GetAttribute("IsMob") and m:FindFirstChildOfClass("Humanoid")
 		local root = h and m:FindFirstChild("HumanoidRootPart")
-		if root and h.Health > 0 and m:FindFirstChild("OuwigaharaMark") then
+		-- ไม่บังคับ OuwigaharaMark: ม็อบที่ Captain เรียกออกมา (ชั้น 58: Prowler / Raid Captain ฯลฯ) ไม่มีป้ายนี้
+		-- เดิมกรองทิ้งหมด เหลือแต่ตัวพวกนี้ = ไม่มีเป้า ตัวลอยค้างใต้แมพ (ผู้ใช้เจอ) ในหอคอยม็อบทุกตัวคือศัตรู
+		if root and h.Health > 0 and root.Position.Y > Combat.WorldFloorY then
 			local d = (root.Position - hrp.Position).Magnitude
 			if not bestD or d < bestD then
 				best, bestD = m, d
