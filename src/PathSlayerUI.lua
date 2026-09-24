@@ -10624,7 +10624,8 @@ local function runQueue()
 		end
 		craftUI.progress = nil
 		-- จบเองหรือกด STOP ไม่ต้องทำต่อ (ย้ายแมพกลางทาง = ไม่ถึงบรรทัดนี้ งานค้างยังอยู่ในไฟล์)
-		if not towerGoal then
+		-- กดยกเลิกจังหวะที่สูตรเพิ่งตอบ TOWER ก็ต้องล้าง ไม่งั้นงานค้างในไฟล์ทำให้โหลดครั้งหน้าตีต่อเอง
+		if not towerGoal or Runner.cancel then
 			Game.setResume(nil)
 			Game.persist.data.ouwiGoal = nil
 		end
@@ -10694,6 +10695,75 @@ end)
 track(craftUI.closeButton.MouseButton1Click:Connect(function()
 	craftFeature.setOpen(false)
 end))
+
+-- ปุ่มยกเลิกลอยใต้ตัวละคร โผล่ตลอดที่งาน Craft ยังค้าง (รันอยู่ / รอทำต่อหลังย้ายแมพ / ไปหอคอยแทนคิว)
+-- ผู้ใช้ขอ: เดิมต้องเปิดหน้าต่างหลัก ไล่เอาติ๊กออกทีละสูตร ระหว่างนั้นระบบก็ยังพาวิ่งต่อ
+local cancelBtn = new("TextButton", {
+	AnchorPoint = Vector2.new(0.5, 0),
+	-- ตัวละครอยู่กลางจอในมุมกล้องปกติ 90 px ใต้กลางจอ = ประมาณเท้า ไม่บังตัวละครกับหลอดเลือดด้านบน
+	Position = UDim2.new(0.5, 0, 0.5, 90),
+	Size = UDim2.fromOffset(0, 32),
+	AutomaticSize = Enum.AutomaticSize.X,
+	BackgroundColor3 = Theme.Danger,
+	AutoButtonColor = false,
+	Text = "ยกเลิก Auto Get Nightfall Craft",
+	TextColor3 = Theme.Text,
+	TextSize = 14,
+	FontFace = font(Enum.FontWeight.SemiBold),
+	Visible = false,
+	Parent = screen,
+}, {
+	capsule(),
+	stroke(),
+	new("UIPadding", { PaddingLeft = UDim.new(0, 16), PaddingRight = UDim.new(0, 16) }),
+})
+
+local function craftPending()
+	local data = Game.persist.data
+	-- กดยกเลิกแล้ว runQueue ยังค้างรอสูตรที่ทำอยู่คืนค่าอีกพัก ไม่นับช่วงนั้น ปุ่มจะได้ไม่เด้งกลับ
+	return Runner.active and Runner.statusSink == craftUI.queueStatus and not Runner.cancel
+		or data.resume ~= nil and data.resume.kind == "craft"
+		or data.ouwiGo ~= nil
+end
+
+track(cancelBtn.MouseButton1Click:Connect(function()
+	cancelBtn.Visible = false
+	-- ล้างคิวก่อนสั่งหยุด runQueue ตอนจบวาดติ๊กใหม่จากคิวนี้ และเขียนงานค้างเป็น nil เพราะคิวว่าง
+	table.clear(queue)
+	if Runner.active and Runner.statusSink == craftUI.queueStatus then
+		Runner.stop()
+	end
+	-- Auto-Dungeon ที่คิวสั่งเปิดให้ (ouwiGo) ปิดด้วย ส่วนที่ผู้ใช้เปิดเองไม่ยุ่ง
+	local data = Game.persist.data
+	if data.ouwiGo then
+		for _, entry in ipairs(toggles) do
+			if entry.key == "Auto-Dungeon" and entry.isOn() then
+				pcall(entry.set, false)
+			end
+		end
+	end
+	data.ouwiGo = nil
+	data.ouwiGoal = nil
+	Game.setResume(nil)
+	fixIdentity()
+	paintRows()
+	refreshGet()
+	craftUI.setStatus("ยกเลิก Auto Get Nightfall Craft แล้ว", Theme.Warn)
+end))
+
+-- สถานะงานค้างเปลี่ยนได้จากหลายที่ (runQueue, หอคอย, resumer, สวิตช์) เช็กเป็นรอบง่ายกว่าไล่ผูกทุกจุด
+local alive = true
+track({
+	Disconnect = function()
+		alive = false
+	end,
+})
+task.spawn(function()
+	while alive do
+		cancelBtn.Visible = craftPending()
+		task.wait(0.5)
+	end
+end)
 end)()
 
 -- Auto-Potion ------------------------------------------------------------------
