@@ -7876,7 +7876,10 @@ end
 -- เดิมไม่ใส่เหยื่อเลย เบ็ด Basic ได้ปลา 1 ตัวใน 90 วิ ที่เหลือ "slipped"
 -- Golden Tentacle ซื้อด้วย Wen ไม่ได้ (Robux หรือหีบ Sealed Chest) มีก็ใช้ ไม่มีก็ถอยไปตัวถัดไป
 Fishing.BaitFor = {
-	["Basic Fishing Rod"] = { "Worm" },
+	-- Jeso บอกว่าเหยื่อดีบนเบ็ด Basic ไม่ช่วย แต่วัดจริงสวน: Worm 61 ครั้งได้ปลา R3 1 ตัว (1.6%)
+	-- Fish Head 45 ครั้งได้ Clown Fish 3 ตัว (6.7%) Golden Fish ที่ต้องใช้แลกเบ็ด Rare อยู่กลุ่ม R3 เดียวกัน
+	-- refine เบ็ด Basic +5 ไม่ช่วย (33 ครั้ง R3 = 0) เบ็ดนี้ FishLuck ฐานเป็น 0 คูณเท่าไรก็ 0
+	["Basic Fishing Rod"] = { "Fish Head", "Worm" },
 	["Rare Fishing Rod"] = { "Fish Head", "Worm" },
 	["Legendary Fishing Rod"] = { "Golden Tentacle", "Fish Head", "Worm" },
 }
@@ -7899,20 +7902,16 @@ end
 
 -- ใส่เหยื่อที่ดีที่สุดที่เบ็ดนี้ใช้ได้ ไม่มีสักอันก็ซื้อตัวที่ซื้อได้ คืนชื่อเหยื่อ (nil = ตกเบ็ดเปล่า)
 local function ensureBait(rodName)
+	-- ไล่จากดีสุด: มีอยู่ก็ใช้ ไม่มีแต่ซื้อได้ก็ซื้อ เดิมเลือกตัวที่มีอยู่ก่อน
+	-- ได้เบ็ด Rare แล้วยังใช้ Worm เหลือค้างแทนที่จะซื้อ Fish Head
 	local order = Fishing.BaitFor[rodName] or {}
 	local pick
 	for _, name in ipairs(order) do
-		if not pick and (Game.wallet()[name] or 0) > 0 then
-			pick = name
-		end
-	end
-	if not pick then
-		for _, name in ipairs(order) do
-			if not pick and Fishing.BaitBuyable[name] then
-				local ok = Runner.obtain(name, Fishing.BaitStock)
-				if ok then
-					pick = name
-				end
+		if not pick then
+			if (Game.wallet()[name] or 0) > 0 then
+				pick = name
+			elseif Fishing.BaitBuyable[name] and Runner.obtain(name, Fishing.BaitStock) then
+				pick = name
 			end
 		end
 	end
