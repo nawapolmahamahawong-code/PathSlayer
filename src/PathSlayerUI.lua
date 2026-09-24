@@ -153,6 +153,48 @@ local Game = {}
 -- identity ของ executor ตอนโหลด ใช้คืนค่าเมื่อ thread งานหล่นเป็น identity เกม (ดู report)
 Game.loadIdentity = getthreadidentity and getthreadidentity()
 
+-- จำค่าตามชื่อผู้เล่น: สวิตช์ ปุ่มตัวเลือก และงานที่กำลังทำ (คิว Craft / Get) ย้ายเซิร์ฟหรือเข้าอีกแมพ
+-- สคริปต์โหลดตัวเองใหม่ (queue_on_teleport) แล้วเปิดคืน/ทำต่อ ผู้ใช้ไม่ต้องรัน loadstring ซ้ำ
+-- บันทึกเฉพาะตอนผู้เล่นกดเอง ฟีเจอร์ที่เปิดสวิตช์อื่นชั่วคราว (Money-Farm เปิด Kill Aura) ไม่นับ
+Game.SourceUrl = "https://raw.githubusercontent.com/nawapolmahamahawong-code/PathSlayer/main/src/PathSlayerUI.lua"
+Game.persist = { file = "PathSlayer/config_" .. LocalPlayer.Name .. ".json", data = {}, choiceRows = {}, resumers = {} }
+do
+	local ok, raw = pcall(function()
+		return isfile(Game.persist.file) and readfile(Game.persist.file) or nil
+	end)
+	if ok and raw then
+		local ok2, decoded = pcall(function()
+			return game:GetService("HttpService"):JSONDecode(raw)
+		end)
+		if ok2 and type(decoded) == "table" then
+			Game.persist.data = decoded
+		end
+	end
+	Game.persist.data.switches = Game.persist.data.switches or {}
+	Game.persist.data.choices = Game.persist.data.choices or {}
+end
+-- เขียนไฟล์รวบตามหลัง 1 วิ กดสวิตช์ติดกันหลายตัวเขียนครั้งเดียว
+function Game.save()
+	if Game.persist.pending then
+		return
+	end
+	Game.persist.pending = true
+	task.delay(1, function()
+		Game.persist.pending = false
+		pcall(function()
+			if not isfolder("PathSlayer") then
+				makefolder("PathSlayer")
+			end
+			writefile(Game.persist.file, game:GetService("HttpService"):JSONEncode(Game.persist.data))
+		end)
+	end)
+end
+-- งานยาวที่ต้องทำต่อหลังย้ายแมพ: { kind = "craft" | "shop", ... } ล้างเมื่อจบหรือผู้ใช้กด STOP
+function Game.setResume(job)
+	Game.persist.data.resume = job
+	Game.save()
+end
+
 -- หมวดในแผง = ชื่อโฟลเดอร์ใน ReplicatedStorage.Items
 -- ของสวมใส่คือโฟลเดอร์ที่ทุกโมดูลมี EquipType 3-5 (ตรวจครบทั้ง 256 ตัว ไม่มีปนหมวดอื่น)
 -- Quest Items / Materials / Potions ไม่ใส่ ใส่ไม่ได้และส่วนใหญ่ได้จากเควส
@@ -3230,6 +3272,7 @@ local function runShopQueue()
 	Runner.lastStart = os.clock()
 	Runner.statusSink = shopUI.queueStatus
 	refreshBuyButton()
+	Game.setResume({ kind = "shop", mode = shopFilter.mode, queue = table.clone(shopQueue) })
 	local auraWasOn = Runner.auraOn and Runner.auraOn()
 	if Runner.setAura and not auraWasOn then
 		Runner.setAura(true)
@@ -3331,6 +3374,7 @@ local function runShopQueue()
 		end
 		shopUI.progress = nil
 		Runner.canYield = nil
+		Game.setResume(nil)
 
 		if Runner.setAura and not auraWasOn then
 			Runner.setAura(false)
@@ -3358,6 +3402,20 @@ local function runShopQueue()
 			end)
 		end
 	end)
+end
+
+Game.persist.resumers.shop = function(job)
+	if Runner.active or type(job.queue) ~= "table" or #job.queue == 0 then
+		return
+	end
+	shopFilter.setMode(job.mode or "gear")
+	rebuildShop()
+	table.clear(shopQueue)
+	for _, n in ipairs(job.queue) do
+		shopQueue[#shopQueue + 1] = n
+	end
+	paintShopTicks()
+	runShopQueue()
 end
 
 track(buyBtn.MouseButton1Click:Connect(function()
@@ -6461,7 +6519,44 @@ local function switchRow(name, desc, order, onChange, opts)
 					local copy = table.clone(picked)
 					opts.onChoice(i, copy)
 				end
+				-- จำตัวเลือกไว้ (multi = รายการเลขที่เลือก)
+				if opts.multi then
+					local list = {}
+					for k in pairs(picked) do
+						list[#list + 1] = k
+					end
+					Game.persist.data.choices[name] = list
+				else
+					Game.persist.data.choices[name] = current
+				end
+				Game.save()
 			end))
+		end
+
+		-- คืนค่าที่จำไว้ตอนโหลดเสร็จ (เรียกจากท้ายไฟล์ ตัวแปรที่ onChoice อ้างถึงพร้อมแล้ว)
+		function entry.restore(saved)
+			if opts.multi and type(saved) == "table" then
+				table.clear(picked)
+				for _, k in ipairs(saved) do
+					if buttons[k] then
+						picked[k] = true
+					end
+				end
+				if next(picked) == nil then
+					return
+				end
+			elseif type(saved) == "number" and buttons[saved] then
+				current = saved
+			else
+				return
+			end
+			paint()
+			if opts.onChoice then
+				opts.onChoice(current, table.clone(picked))
+			end
+		end
+		if not opts.parent or opts.persistKey then
+			Game.persist.choiceRows[name] = entry
 		end
 
 		fitLabels(total + 24)
@@ -6520,8 +6615,11 @@ local function switchRow(name, desc, order, onChange, opts)
 
 	track(hit.MouseButton1Click:Connect(function()
 		entry.set(not on)
+		Game.persist.data.switches[name] = on or nil
+		Game.save()
 	end))
 
+	entry.key = name
 	if not opts.parent then
 		toggles[#toggles + 1] = entry
 	end
@@ -9689,6 +9787,7 @@ local function runQueue()
 	Runner.lastStart = os.clock()
 	Runner.statusSink = craftUI.queueStatus
 	refreshGet()
+	Game.setResume({ kind = "craft", queue = table.clone(queue) })
 	task.spawn(function()
 		local done, lastErr = {}, nil
 		for i = 1, #queue do
@@ -9710,8 +9809,11 @@ local function runQueue()
 				lastErr = name .. ": " .. tostring(okRun and err or ok)
 			end
 			table.remove(queue, 1)
+			Game.setResume(#queue > 0 and { kind = "craft", queue = table.clone(queue) } or nil)
 		end
 		craftUI.progress = nil
+		-- จบเองหรือกด STOP ไม่ต้องทำต่อ (ย้ายแมพกลางทาง = ไม่ถึงบรรทัดนี้ งานค้างยังอยู่ในไฟล์)
+		Game.setResume(nil)
 		local cancelled = Runner.cancel
 		Runner.active = false
 		Runner.statusSink = nil
@@ -9741,6 +9843,19 @@ track(getBtn.MouseButton1Click:Connect(function()
 		runQueue()
 	end
 end))
+
+-- ย้ายแมพ/เซิร์ฟกลางคิว โหลดใหม่แล้วทำคิวที่เหลือต่อ
+Game.persist.resumers.craft = function(job)
+	if Runner.active or type(job.queue) ~= "table" or #job.queue == 0 then
+		return
+	end
+	table.clear(queue)
+	for _, n in ipairs(job.queue) do
+		queue[#queue + 1] = n
+	end
+	rebuild()
+	runQueue()
+end
 
 local craftFeature = featureRow("Get Nightfall Craft", "ตีชิ้นเซ็ต Nightfall หาแบบ วัสดุ เงินให้เอง", 2, function()
 	rebuild()
@@ -12505,9 +12620,8 @@ do
 						end
 						attackRow.set(false)
 						mobOnlyRow.set(false)
-						if typeof(queue_on_teleport) == "function" then
-							queue_on_teleport('repeat task.wait() until game:IsLoaded() task.wait(3) local ok, e = pcall(function() loadstring(readfile("PathSlayer/PathSlayerUI.lua"))() end) if not ok then writefile("PathSlayer/fs_load_error.txt", tostring(e)) end')
-						end
+						-- ตามไปสนามสอบเองอยู่แล้ว (queue_on_teleport ท้ายไฟล์) เดิมใส่คิวซ้ำแบบอ่านไฟล์ในเครื่อง
+						-- executor เก็บแค่คิวล่าสุด ผู้ใช้ที่รันจากลิงก์ไม่มีไฟล์นั้น เลยโหลดไม่ขึ้นในสนาม
 					end
 					local _, hrp = selfParts()
 					if hrp and (hrp.Position - FinalSel.Gate).Magnitude > FinalSel.Leash then
@@ -12637,6 +12751,45 @@ end
 _G.PathSlayerUnload = unload
 
 track(closeBtn.MouseButton1Click:Connect(unload))
+
+-- ตามไปทุกเซิร์ฟ/แมพ: ย้ายแล้วโหลดตัวเองใหม่ (ลิงก์ GitHub ก่อน โหลดไม่ได้ใช้ไฟล์ใน workspace)
+-- executor เก็บคิวไว้แค่การย้ายครั้งถัดไป ทุกครั้งที่โหลดเลยต้องใส่ใหม่
+if typeof(queue_on_teleport) == "function" then
+	pcall(queue_on_teleport, string.format([[
+repeat task.wait() until game:IsLoaded()
+task.wait(3)
+local ok = pcall(function() loadstring(game:HttpGet(%q))() end)
+if not ok and isfile and isfile("PathSlayer/PathSlayerUI.lua") then
+	pcall(function() loadstring(readfile("PathSlayer/PathSlayerUI.lua"))() end)
+end]], Game.SourceUrl))
+end
+
+-- เปิดสวิตช์/ตัวเลือกที่ผู้เล่นตั้งไว้คืน แล้วทำงานที่ค้างต่อ รอแผงสร้างเสร็จและตัวละครพร้อมก่อน
+-- ถ้ามีงานค้าง (resume) ไม่เปิดตัวรันที่จองตัวละครทั้งตัว ไม่งั้นแย่งกันแล้วงานค้างไม่ได้ทำต่อ
+task.delay(2, function()
+	if not screen.Parent then
+		return
+	end
+	local data = Game.persist.data
+	for name, saved in pairs(data.choices) do
+		local row = Game.persist.choiceRows[name]
+		if row then
+			pcall(row.restore, saved)
+		end
+	end
+	local busyRunners = { ["Auto-Money-Farm"] = true, ["Auto-Final-Selection"] = true }
+	for _, entry in ipairs(toggles) do
+		if data.switches[entry.key] and not entry.isOn() and not (data.resume and busyRunners[entry.key]) then
+			pcall(entry.set, true)
+		end
+	end
+	local job = data.resume
+	local resume = job and Game.persist.resumers[job.kind]
+	if resume then
+		task.wait(3)
+		pcall(resume, job)
+	end
+end)
 
 track(UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then
