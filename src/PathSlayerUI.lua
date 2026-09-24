@@ -13,8 +13,6 @@ if _G.PathSlayerUnload then
 end
 
 local LocalPlayer = Players.LocalPlayer
--- identity ของ executor ตอนโหลด ใช้คืนค่าเมื่อ thread งานหล่นเป็น identity เกม (ดู report)
-local LoadIdentity = getthreadidentity and getthreadidentity()
 
 -- สีทั้งชุดดูดมาจาก HUD ของเกมเอง (อ่าน PlayerGui ตอนรัน) ให้เมนูดูเป็นส่วนหนึ่งของเกม
 -- ชุดเดิมเป็นเทาอมน้ำเงิน + ฟ้าไล่ม่วง ผู้เล่นทักว่าหน้าตาเหมือน UI ที่ AI ปั๊ม เพราะไม่เกี่ยวกับเกมเลย
@@ -152,6 +150,8 @@ end
 -- ข้อมูลเกม -----------------------------------------------------------------
 
 local Game = {}
+-- identity ของ executor ตอนโหลด ใช้คืนค่าเมื่อ thread งานหล่นเป็น identity เกม (ดู report)
+Game.loadIdentity = getthreadidentity and getthreadidentity()
 
 -- หมวดในแผง = ชื่อโฟลเดอร์ใน ReplicatedStorage.Items
 -- ของสวมใส่คือโฟลเดอร์ที่ทุกโมดูลมี EquipType 3-5 (ตรวจครบทั้ง 256 ตัว ไม่มีปนหมวดอื่น)
@@ -162,6 +162,31 @@ Game.WearGroups = { "Head", "Face", "Ear", "Neck", "Back", "Waist", "Haori", "Ou
 -- ผู้ใช้ขอ "ครบทุกอย่าง" รวมยา ออร์บ ของตกปลา ของเควส ที่ไม่ได้ใช้ตีอะไรเลยด้วย
 -- ไม่เอา Mounts / Misc / Style (Horse, Clan Skills, Combat) มันคือระบบของเกม ไม่ใช่ของในกระเป๋า
 Game.MaterialGroups = { "Materials", "Potions", "Schematics", "Gourds", "Evil Art Orbs", "Fishing", "Quest Items" }
+
+-- ไอคอนของเกมสำหรับชื่อของ/สกุลเงิน: Wen / RunPoints ไม่ใช่ไอเทม ไอคอนอยู่ใน BunchaIcons
+-- (ตัวเดียวกับที่ป้ายราคาหน้าช่างใช้) ที่เหลืออ่าน Icon จากโมดูลไอเทม
+Game.iconCache = {}
+function Game.iconOf(name)
+	if Game.iconCache[name] == nil then
+		local icon = false
+		local okB, Buncha = pcall(require, ReplicatedStorage.CAM.Global.BunchaIcons)
+		if okB and type(Buncha) == "table" then
+			icon = (name == "RunPoints" and Buncha.OuwigaharaPoints) or (type(Buncha[name]) == "string" and Buncha[name]) or false
+		end
+		if not icon then
+			local okI, defs = pcall(require, ReplicatedStorage.CAM.Global.Collectibles.Items)
+			local def = okI and defs[name]
+			icon = def and def.Icon or false
+		end
+		Game.iconCache[name] = icon
+		-- require โมดูลเกมบางตัวทำ identity ของ thread หล่นเป็น 2 (เจอตอนโหลดแผง: สร้างป้ายต่อจากนี้พัง
+		-- "lacking capability Plugin") คืนค่าตอนโหลดไฟล์ก่อนกลับไปสร้าง GUI ต่อ
+		if setthreadidentity and Game.loadIdentity then
+			setthreadidentity(Game.loadIdentity)
+		end
+	end
+	return Game.iconCache[name] or nil
+end
 
 -- แบบพิมพ์เซ็ต Nightfall: แหล่งได้ไม่มีในตารางดรอป/ร้านของเกมเลย (ItemSources ว่าง) ทุกชิ้นเป็นปริศนาในแมพ
 -- ข้อมูลจากสคริปต์เกม (WorldEvents.*, Dialogues ของ Tobei / Hatsu / Togane) แล้วลองเก็บจริงทุกทาง 24 ก.ย. 2026
@@ -1794,6 +1819,8 @@ local Layout = {
 			help = "แท็บ แนะนำ / ทำซ้ำได้ / ครั้งเดียว / บอส / ปราณ · ติ๊กได้หลายเควส บอกรางวัลทุกอัน" },
 		["Get Materials"] = { page = "items", section = "material", card = "material", order = 1,
 			help = "แร่ เศษเหล็ก ด้าย ยา แบบพิมพ์ ออร์บ ของตกปลา ของเควส 104 ชิ้น · ใส่จำนวนได้" },
+		["Get Nightfall Craft"] = { page = "items", section = "set", card = "nfcraft", order = 2,
+			help = "ตีชิ้นเซ็ต Nightfall แบบโต๊ะช่าง · ขาดแบบ วัสดุ หรือเงิน หาให้เองจนตีได้ · ติ๊กหลายชิ้นได้" },
 		["Get Nightfall Schematic"] = { page = "items", section = "set", card = "nightfall", order = 1,
 			help = "แบบพิมพ์เซ็ต Nightfall 11 ชิ้น · Study / คันโยก / กุญแจงู / รูปปั้น / แลก · ติ๊กหลายชิ้นได้" },
 		["Get Weapons"] = { page = "items", section = "gear", card = "shop", order = 1,
@@ -2198,8 +2225,66 @@ end
 -- ประกาศไว้ก่อนแผงพวกนี้ ไม่งั้นโค้ดแผงอ้างถึงแล้วได้ global ว่าง ๆ
 local Runner
 
+-- แถบเงินใต้หัวแผง: ไอคอนเกม + ตัวเลข ต่อกันแนวนอน (ป้ายตัวหนังสือล้วนเดิมอ่านยาก ผู้ใช้ขอไอคอนให้ครบ)
+-- RichText ของ Roblox ใส่รูปไม่ได้ เลยทำเป็นชิปแยก
+function Game.walletBar(parent, position, currencies)
+	local bar = new("Frame", {
+		Position = position,
+		Size = UDim2.new(1, 0, 0, 18),
+		BackgroundTransparency = 1,
+		Parent = parent,
+	}, { new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		Padding = UDim.new(0, 12),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}) })
+	local labels = {}
+	for i, currency in ipairs(currencies) do
+		local chip = new("Frame", {
+			Size = UDim2.fromOffset(0, 18),
+			AutomaticSize = Enum.AutomaticSize.X,
+			BackgroundTransparency = 1,
+			LayoutOrder = i,
+			Parent = bar,
+		}, { new("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			VerticalAlignment = Enum.VerticalAlignment.Center,
+			Padding = UDim.new(0, 4),
+		}) })
+		new("ImageLabel", {
+			Size = UDim2.fromOffset(16, 16),
+			BackgroundTransparency = 1,
+			Image = Game.iconOf(currency) or "",
+			ScaleType = Enum.ScaleType.Fit,
+			LayoutOrder = 1,
+			Parent = chip,
+		})
+		labels[currency] = new("TextLabel", {
+			Size = UDim2.fromOffset(0, 18),
+			AutomaticSize = Enum.AutomaticSize.X,
+			BackgroundTransparency = 1,
+			Text = "0",
+			TextColor3 = Theme.Text,
+			TextSize = 13,
+			FontFace = font(Enum.FontWeight.SemiBold),
+			LayoutOrder = 2,
+			Parent = chip,
+		})
+	end
+	return {
+		frame = bar,
+		set = function(wallet)
+			for currency, label in pairs(labels) do
+				label.Text = comma(wallet[currency] or 0)
+			end
+		end,
+	}
+end
+
 local shopUI = makePanel("Get Weapons / ไอเทม", true)
 shopUI.search.PlaceholderText = "ค้นหาชื่อของ ประเภท หรือแหล่งได้ เช่น Rengu, Katana, คอ…"
+shopUI.walletBar = Game.walletBar(shopUI.panel, UDim2.fromOffset(0, 22), Config.WalletShown)
 
 local buyLabel = new("TextLabel", {
 	Size = UDim2.new(1, 0, 1, 0),
@@ -2403,7 +2488,8 @@ function Detail.box(parent, order)
 			SortOrder = Enum.SortOrder.LayoutOrder,
 		}) })
 		for i, chip in ipairs(chips) do
-			new("TextLabel", {
+			-- chip[3] = ไอคอน (rbxassetid) วางซ้ายในชิป ดันตัวหนังสือออกไป 24px
+			local label = new("TextLabel", {
 				Size = UDim2.fromOffset(0, 22),
 				AutomaticSize = Enum.AutomaticSize.X,
 				BackgroundColor3 = Theme.Raised,
@@ -2413,7 +2499,18 @@ function Detail.box(parent, order)
 				FontFace = font(Enum.FontWeight.Medium),
 				LayoutOrder = i,
 				Parent = wrap,
-			}, { capsule(), new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+			}, { capsule(), new("UIPadding", { PaddingLeft = UDim.new(0, chip[3] and 26 or 8), PaddingRight = UDim.new(0, 8) }) })
+			if chip[3] then
+				new("ImageLabel", {
+					AnchorPoint = Vector2.new(0, 0.5),
+					Position = UDim2.new(0, -21, 0.5, 0),
+					Size = UDim2.fromOffset(17, 17),
+					BackgroundTransparency = 1,
+					Image = chip[3],
+					ScaleType = Enum.ScaleType.Fit,
+					Parent = label,
+				})
+			end
 		end
 	end
 	-- ข้อความยาว (คำใบ้ / วิธีหาของ) ตัดบรรทัดเอง ชิปยืดตามคำจะล้นกล่อง
@@ -2445,9 +2542,10 @@ function Detail.box(parent, order)
 	return api
 end
 
--- ป้ายของมี/ต้องใช้: "Demon Horns 3/10" เขียวถ้าพอ แดงถ้าขาด
+-- ป้ายของมี/ต้องใช้: "Demon Horns 3/10" เขียวถ้าพอ แดงถ้าขาด ตัวที่สาม = ไอคอนของเกม
 function Detail.have(name, have, need)
-	return { string.format("%s %s/%s", name, comma(have), comma(need)), have >= need and Theme.Good or Theme.Danger }
+	return { string.format("%s %s/%s", name, comma(have), comma(need)), have >= need and Theme.Good or Theme.Danger,
+		Game.iconOf(name) }
 end
 
 -- ชื่อประเภทภาษาไทย (ชื่อโฟลเดอร์ใน ReplicatedStorage.Items) ใช้ทั้งเม็ดกรองและบรรทัดรองของแถว
@@ -2909,15 +3007,8 @@ local function rebuildShop()
 	end
 	paintShopTicks()
 
-	local parts = {}
-	for _, currency in ipairs(Config.WalletShown) do
-		parts[#parts + 1] = string.format(
-			'<font color="#8f8f9e">%s</font> %s',
-			Config.WalletShort[currency],
-			comma(wallet[currency] or 0)
-		)
-	end
-	shopUI.subtitle.Text = table.concat(parts, "   ")
+	shopUI.subtitle.Text = ""
+	shopUI.walletBar.set(wallet)
 
 	local sellable = 0
 	for _, d in ipairs(listings) do
@@ -3217,8 +3308,8 @@ local function runShopQueue()
 				ok, err = false, ok
 			end
 			-- งานข้างในทำ identity หล่นได้ (ดู report) ต่อจากนี้แตะติ๊ก/ป้ายของแผง
-			if setthreadidentity and LoadIdentity then
-				setthreadidentity(LoadIdentity)
+			if setthreadidentity and Game.loadIdentity then
+				setthreadidentity(Game.loadIdentity)
 			end
 
 			if err == Runner.RESPAWN and not Runner.cancel then
@@ -4615,8 +4706,8 @@ Runner.BOSS_GONE = "boss-gone"
 -- แล้วเขียนป้ายใน gethui พัง "lacking capability Plugin" เจอจริงตอนซื้อเหยื่อก่อนตกปลาในคิว Get Materials
 -- ทุกงานรายงานผ่านตรงนี้ คืน identity ตอนโหลดไฟล์ก่อนแตะ GUI จุดเดียวครอบทุกตัวรัน
 local function report(text, color)
-	if setthreadidentity and LoadIdentity then
-		setthreadidentity(LoadIdentity)
+	if setthreadidentity and Game.loadIdentity then
+		setthreadidentity(Game.loadIdentity)
 	end
 	(Runner.statusSink or questUI.setStatus)(text, color or Theme.Muted)
 end
@@ -5529,7 +5620,7 @@ local function shopModeRow(name, desc, order, mode)
 end
 local shopFeature = shopModeRow("Get Weapons", "หาอาวุธและของสวมใส่ทุกชิ้นในเกม ซื้อ ฟาร์ม หรือตีที่ช่างให้เอง", 1, "gear")
 local materialFeature = shopModeRow("Get Materials", "วัตถุดิบ ยา แบบพิมพ์ ออร์บ ของตกปลา ของเควส", 1, "material")
-local nightfallFeature = shopModeRow("Get Nightfall Schematic", "แบบพิมพ์เซ็ต Nightfall", 1, "nightfall")
+shopUI.nightfallFeature = shopModeRow("Get Nightfall Schematic", "แบบพิมพ์เซ็ต Nightfall", 1, "nightfall")
 
 local questFeature = featureRow(
 	"Auto-Quest",
@@ -5556,7 +5647,7 @@ local mobFeature = featureRow(
 track(shopUI.closeButton.MouseButton1Click:Connect(function()
 	shopFeature.setOpen(false)
 	materialFeature.setOpen(false)
-	nightfallFeature.setOpen(false)
+	shopUI.nightfallFeature.setOpen(false)
 end))
 track(questUI.closeButton.MouseButton1Click:Connect(function()
 	questFeature.setOpen(false)
@@ -8866,6 +8957,803 @@ function Runner.schematic(name)
 end
 end)()
 
+-- Get Nightfall Craft --------------------------------------------------------
+-- หน้าสูตรแบบโต๊ะช่าง Togane ในเกม: รายการชิ้นซ้าย รายละเอียดสูตรขวา (ของทุกอย่างมีไอคอน ต้องใช้/มี)
+-- GET = ทำให้ตีได้แล้วตีให้: หาแบบพิมพ์ (Runner.schematic) · ของฐาน (Runner.obtain)
+-- · เงิน + วัสดุเซ็ต (ยืมลูป Auto-Money-Farm: หีบบอส World Events Chest มีวัสดุเซ็ตชนิดละ 2%)
+-- · แลกวัสดุเซ็ต 1:1 ที่ Togane · ซื้อ Scraps/Silk ที่ Ginzo · ตี
+;(function()
+local SeriesMod = require(ReplicatedStorage.CAM.Global.Series)
+local Rarities = require(ReplicatedStorage.CAM.Global.Rarities)
+local okDefs, ItemDefs = pcall(require, ReplicatedStorage.CAM.Global.Collectibles.Items)
+ItemDefs = okDefs and ItemDefs or {}
+
+local Craft = {
+	Pieces = {
+		"Nightfall Katana", "Nightfall Serpent Katana", "Nightfall Scythe", "Nightfall Claws", "Nightfall Gauntlet",
+		"Nightfall Sickles", "Nightfall Axe and Mace", "Nightfall Mask", "Nightfall Cape", "Nightfall Top",
+		"Nightfall Bottom",
+	},
+	-- Series.TierMultiplier ของเกม { 1, 1.15, 1.3 } สเตตัสของชิ้นเซ็ตคูณตามขั้น
+	TierMult = SeriesMod.TierMultiplier or { 1, 1.15, 1.3 },
+	MaxTier = SeriesMod.MaxTier or 3,
+	-- วัสดุเซ็ต 6 ชนิด (Nightfall 3 + Firstlight 3) Togane แลกกันได้ 1:1 ทุกคู่ ("Any of the six for any other")
+	SetMats = {},
+	WalletShown = { "Wen", "Metal Scraps", "Silk Thread", "Nightfall Forged Ingot", "Nightfall Weaver's Cloth",
+		"Nightfall Reinforced Plating" },
+}
+for _, name in ipairs(SeriesMod.Materials()) do
+	Craft.SetMats[name] = true
+end
+
+local function wallet()
+	return Game.wallet()
+end
+
+-- ชิ้นที่มีอยู่ ขั้นสูงสุด (ถือซ้ำได้หลายชิ้น Tier เก็บในค่า Tier ของโฟลเดอร์ไอเทม ไม่มี = 1)
+function Craft.owned(name)
+	local bag = equippedSlot().Inventory.Inventory
+	local tier
+	for _, e in ipairs(bag:GetChildren()) do
+		if e.Name == name then
+			local t = e:FindFirstChild("Tier")
+			tier = math.max(tier or 0, t and t.Value or 1)
+		end
+	end
+	return tier
+end
+
+-- สูตรถัดไป: ยังไม่มี = ตี Tier 1 (มีหลายสูตรเลือกตัวที่มีของฐานอยู่แล้ว) · มีแล้ว = อัปขั้นถัดไป (_t2 / _t3)
+function Craft.next(name)
+	local tier = Craft.owned(name)
+	if not tier then
+		local list = Game.recipesFor(name)
+		local pick = list[1]
+		for _, c in ipairs(list) do
+			local base = c.recipe.required and c.recipe.required[1]
+			if base and (wallet()[base.name] or 0) >= base.amount then
+				pick = c
+				break
+			end
+		end
+		return pick and { id = pick.id, recipe = pick.recipe, from = 0, to = 1, variants = list } or nil
+	end
+	if tier >= Craft.MaxTier then
+		return { maxed = true, from = tier, to = tier }
+	end
+	for id, r in pairs(Crafting and Crafting.Definitions or {}) do
+		local first = r.required and r.required[1]
+		if r.result == name and first and first.name == name and r.tier == tier + 1 then
+			return { id = id, recipe = r, from = tier, to = tier + 1 }
+		end
+	end
+	return nil
+end
+
+-- ของที่สูตรต้องใช้ พร้อมจำนวนที่มี kind: self (ชิ้นเดิมตอนอัป) / keep (แบบพิมพ์ ไม่หาย) / set (วัสดุเซ็ต)
+-- / money (Wen) / item (ของฐาน / Scraps / Silk)
+function Craft.inputs(name, step)
+	local w = wallet()
+	local list = {}
+	for _, input in ipairs(Game.recipeInputs(step.recipe)) do
+		local kind = input.keep and "keep"
+			or input.name == name and "self"
+			or Craft.SetMats[input.name] and "set"
+			or Game.Currencies[input.name] and "money"
+			or "item"
+		local have = kind == "self" and 1 or (w[input.name] or 0)
+		list[#list + 1] = { name = input.name, need = input.amount, have = have, kind = kind }
+	end
+	return list
+end
+
+-- วัสดุเซ็ตที่ต้องใช้ + Wen ทั้งหมด (ค่าตี + ค่าซื้อ Scraps/Silk ที่ขาด ราคาจากแผนซื้อจริงของ Game.plan)
+function Craft.needs(name, step)
+	local mats, wen = {}, 0
+	local w = table.clone(wallet())
+	w.Wen = math.huge
+	for _, i in ipairs(Craft.inputs(name, step)) do
+		if i.kind == "set" then
+			mats[i.name] = (mats[i.name] or 0) + i.need
+		elseif i.kind == "money" and i.name == "Wen" then
+			wen += i.need
+		elseif i.kind == "item" and i.have < i.need then
+			local o = Game.newPlan()
+			if not Game.plan(i.name, i.need, w, o) then
+				wen += o.spend.Wen or 0
+			end
+		end
+	end
+	return mats, wen
+end
+
+-- พอไหม: วัสดุเซ็ตนับรวมทั้ง 6 ชนิด (แลกกันได้ 1:1) + Wen
+function Craft.enough(mats, wen)
+	local w = wallet()
+	local need, pool = 0, 0
+	for _, n in pairs(mats) do
+		need += n
+	end
+	for name in pairs(Craft.SetMats) do
+		pool += w[name] or 0
+	end
+	return pool >= need and (w.Wen or 0) >= wen
+end
+
+function Craft.progress(mats, wen)
+	local w = wallet()
+	local need, pool = 0, 0
+	for _, n in pairs(mats) do
+		need += n
+	end
+	for name in pairs(Craft.SetMats) do
+		pool += w[name] or 0
+	end
+	local parts = { string.format("Wen %s/%s", comma(w.Wen or 0), comma(wen)) }
+	if need > 0 then
+		parts[#parts + 1] = string.format("วัสดุเซ็ต %d/%d", math.min(pool, need), need)
+	end
+	return table.concat(parts, " · ")
+end
+
+-- แลกวัสดุเซ็ตที่ขาดจากชนิดที่เหลือเกิน ที่ Togane (MaterialExchange { Give, Take, Amount } เหมือนหน้า Swap materials)
+function Craft.balance(mats)
+	local w = wallet()
+	local swaps = {}
+	for take, need in pairs(mats) do
+		local short = need - (w[take] or 0)
+		for give in pairs(Craft.SetMats) do
+			if short <= 0 then
+				break
+			end
+			local spare = (w[give] or 0) - (mats[give] or 0)
+			if give ~= take and spare > 0 then
+				local n = math.min(spare, short)
+				swaps[#swaps + 1] = { Give = give, Take = take, Amount = n }
+				w[give] -= n
+				w[take] = (w[take] or 0) + n
+				short -= n
+			end
+		end
+	end
+	if #swaps == 0 then
+		return true
+	end
+	local spawn = npcSpawnPoint("Blacksmith Togane")
+	local _, hrp = selfParts()
+	if not (spawn and hrp) then
+		return false, "หา Blacksmith Togane ไม่เจอ"
+	end
+	placeAt(hrp, CFrame.new(spawn.pos + Vector3.new(0, 3, 5), spawn.pos), "forge")
+	local npc
+	for _ = 1, 40 do
+		npc = findLiveNpc("Blacksmith Togane")
+		if npc then
+			break
+		end
+		task.wait(0.3)
+	end
+	if npc then
+		local pos = npc:GetPivot().Position
+		placeAt(hrp, CFrame.new(pos + Vector3.new(0, 0, 4), pos), "forge")
+		task.wait(0.6)
+	end
+	local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
+	for _, s in ipairs(swaps) do
+		report(string.format("แลก %d %s → %s ที่ Togane", s.Amount, s.Give, s.Take), Theme.Accent)
+		local ok, res = pcall(SignalFunction.ToServer, "MaterialExchange", s)
+		if not ok or res ~= true then
+			return false, "Togane ไม่ยอมแลก " .. s.Give .. " → " .. s.Take
+		end
+		task.wait(0.5)
+	end
+	return true
+end
+
+-- ตีชิ้นนี้ขึ้นอีกหนึ่งขั้น (ยังไม่มี = ตี T1) หาทุกอย่างที่ขาดเอง
+function Runner.craftPiece(name)
+	local step = Craft.next(name)
+	if not step then
+		return false, "ไม่พบสูตรของ " .. name
+	end
+	if step.maxed then
+		return true
+	end
+	local recipe = step.recipe
+	local function say(text)
+		report(string.format("%s → T%d · %s", name, step.to, text), Theme.Accent)
+	end
+
+	for _, schem in ipairs(recipe.keep or {}) do
+		if (wallet()[schem] or 0) == 0 then
+			say("หา " .. schem)
+			local ok, why, extra = Runner.schematic(schem)
+			if not ok then
+				return false, schem .. ": " .. tostring(why), extra
+			end
+		end
+	end
+
+	-- ของฐาน (ดาบ V2 เช่น Volcanic Katana) ตีได้ที่ Ouwigahara เท่านั้น obtain บอกเหตุผลเองถ้ายังไปไม่ได้
+	for _, m in ipairs(recipe.required or {}) do
+		if m.name ~= name and not Craft.SetMats[m.name] and (wallet()[m.name] or 0) < m.amount then
+			say("หา " .. m.name)
+			local ok, why, extra = Runner.obtain(m.name, m.amount)
+			if not ok then
+				return false, m.name .. ": " .. tostring(why), extra
+			end
+		end
+	end
+
+	local mats, wen = Craft.needs(name, step)
+	if not Craft.enough(mats, wen) then
+		say("ฟาร์มเงิน + วัสดุเซ็ต · " .. Craft.progress(mats, wen))
+		local ok, why = Runner.moneyUntil(function()
+			return Craft.enough(mats, wen)
+		end, function(text)
+			say(Craft.progress(mats, wen) .. " · " .. text)
+		end)
+		if not ok and not Craft.enough(mats, wen) then
+			return false, why or "หยุดก่อนเงิน/วัสดุครบ"
+		end
+	end
+	if Runner.cancel then
+		return false, "ยกเลิกแล้ว"
+	end
+
+	local okSwap, whySwap = Craft.balance(mats)
+	if not okSwap then
+		return false, whySwap
+	end
+
+	for _, m in ipairs(recipe.additionalMaterials or {}) do
+		if not Craft.SetMats[m.name] and (wallet()[m.name] or 0) < m.amount then
+			say("ซื้อ " .. m.name)
+			local ok, why = Runner.obtain(m.name, m.amount)
+			if not ok then
+				return false, m.name .. ": " .. tostring(why)
+			end
+		end
+	end
+
+	say("ตีที่ Togane")
+	return Runner.craftAt(step.id, recipe)
+end
+
+-- แผง ------------------------------------------------------------------------
+
+-- ข้อมูลสูตร (Game.plan / recipesFor) require โมดูลเกมกลางทาง identity หล่นเป็น 2 แล้วสร้างป้ายพัง
+-- (เจอตอนเปิดแผงครั้งแรก: "lacking capability Plugin") คืนค่าก่อนแตะ GUI ทุกครั้ง
+local function fixIdentity()
+	if setthreadidentity and Game.loadIdentity then
+		setthreadidentity(Game.loadIdentity)
+	end
+end
+
+local craftUI = makePanel("Get Nightfall Craft / ตีเซ็ต", true)
+craftUI.search.Visible = false
+craftUI.filterRow.Visible = false
+craftUI.walletBar = Game.walletBar(craftUI.panel, UDim2.fromOffset(0, 22), Craft.WalletShown)
+-- ซ้าย = รายการชิ้น 42% ขวา = สูตร เลข 48 = ใต้แถบเงิน, -104 = 48 + ปุ่ม GET 34 + สถานะ 14 + ช่องไฟ
+craftUI.list.Position = UDim2.fromOffset(0, 48)
+craftUI.list.Size = UDim2.new(0.42, -6, 1, -104)
+local detail = new("ScrollingFrame", {
+	Position = UDim2.new(0.42, 6, 0, 48),
+	Size = UDim2.new(0.58, -6, 1, -104),
+	BackgroundColor3 = Theme.Row,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 3,
+	ScrollBarImageColor3 = Theme.Stroke,
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	Parent = craftUI.panel,
+}, {
+	corner(10),
+	new("UIPadding", {
+		PaddingTop = UDim.new(0, 12),
+		PaddingBottom = UDim.new(0, 12),
+		PaddingLeft = UDim.new(0, 12),
+		PaddingRight = UDim.new(0, 12),
+	}),
+	new("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder }),
+})
+
+local getLabel = new("TextLabel", {
+	Size = UDim2.new(1, 0, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "GET",
+	TextColor3 = Theme.Dim,
+	TextSize = 15,
+	FontFace = font(Enum.FontWeight.SemiBold),
+})
+local getBtn = new("TextButton", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.fromScale(0, 1),
+	Size = UDim2.new(1, 0, 0, 34),
+	BackgroundColor3 = Theme.Raised,
+	AutoButtonColor = false,
+	Text = "",
+	Parent = craftUI.panel,
+}, { capsule(), getLabel })
+
+local queue, rows, selected = {}, {}, nil
+
+function craftUI.queueStatus(text, color)
+	craftUI.setStatus((craftUI.progress or "") .. text, color)
+end
+
+local function refreshGet()
+	if Runner.active and Runner.statusSink == craftUI.queueStatus then
+		getLabel.Text = "STOP"
+		tween(getBtn, { BackgroundColor3 = Theme.Danger }, FAST)
+		tween(getLabel, { TextColor3 = Theme.Text }, FAST)
+		return
+	end
+	local enabled = #queue > 0 and not Runner.active
+	getLabel.Text = Runner.active and "มีระบบอื่นกำลังรันอยู่"
+		or #queue == 1 and ("GET  ·  ตี " .. queue[1])
+		or #queue > 1 and string.format("GET  ·  ตี %d ชิ้นตามลำดับ", #queue)
+		or "GET  ·  ติ๊กชิ้นทางซ้ายก่อน"
+	tween(getBtn, { BackgroundColor3 = enabled and Theme.On or Theme.Raised }, FAST)
+	tween(getLabel, { TextColor3 = enabled and Theme.Base or Theme.Dim }, FAST)
+end
+
+local function tierText(step)
+	if not step then
+		return "ไม่มีสูตร", Theme.Warn
+	end
+	if step.maxed then
+		return string.format("T%d สูงสุดแล้ว", step.to), Theme.Good
+	end
+	return step.from == 0 and "ยังไม่มี → ตี T1" or string.format("T%d → อัป T%d", step.from, step.to), Theme.Accent
+end
+
+-- การ์ดของหนึ่งอย่าง: ไอคอน · ชื่อ · ต้องใช้ ×N · มี M (เขียวพอ / แดงขาด) แบบช่องวัตถุดิบหน้าช่าง
+local function itemCard(parent, order, i)
+	local ok = i.have >= i.need
+	local card = new("Frame", {
+		Size = UDim2.new(0.5, -4, 0, 50),
+		BackgroundColor3 = Theme.Raised,
+		LayoutOrder = order,
+		Parent = parent,
+	}, { corner(8), stroke(ok and Theme.Good or Theme.Danger, 1) })
+	card:FindFirstChildOfClass("UIStroke").Transparency = 0.55
+	local defn = ItemDefs[i.name]
+	new("ImageLabel", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 6, 0.5, 0),
+		Size = UDim2.fromOffset(38, 38),
+		BackgroundColor3 = Theme.Base,
+		Image = Game.iconOf(i.name) or "",
+		ScaleType = Enum.ScaleType.Fit,
+		Parent = card,
+	}, { corner(6), stroke(RarityColor[defn and defn.Rarity or 1] or Theme.Stroke, 1) })
+	new("TextLabel", {
+		Position = UDim2.fromOffset(50, 5),
+		Size = UDim2.new(1, -54, 0, 15),
+		BackgroundTransparency = 1,
+		Text = i.name,
+		TextColor3 = Theme.Text,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = card,
+	})
+	local needText = i.kind == "keep" and "แบบพิมพ์ · ไม่หาย"
+		or i.kind == "self" and "ชิ้นที่จะอัป"
+		or ("ต้องใช้ ×" .. comma(i.need))
+	new("TextLabel", {
+		Position = UDim2.fromOffset(50, 20),
+		Size = UDim2.new(1, -54, 0, 13),
+		BackgroundTransparency = 1,
+		Text = needText,
+		TextColor3 = Theme.Dim,
+		TextSize = 12,
+		FontFace = font(Enum.FontWeight.Regular),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = card,
+	})
+	new("TextLabel", {
+		Position = UDim2.fromOffset(50, 33),
+		Size = UDim2.new(1, -54, 0, 13),
+		BackgroundTransparency = 1,
+		Text = string.format("มี %s%s", comma(i.have), ok and "  ✓" or string.format("  (ขาด %s)", comma(i.need - i.have))),
+		TextColor3 = ok and Theme.Good or Theme.Danger,
+		TextSize = 12,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = card,
+	})
+end
+
+local function heading(text, order)
+	new("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 14),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		TextWrapped = true,
+		BackgroundTransparency = 1,
+		Text = text,
+		TextColor3 = Theme.Dim,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = order,
+		Parent = detail,
+	})
+end
+
+local function grid(order)
+	return new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = order,
+		Parent = detail,
+	}, { new("UIGridLayout", {
+		CellSize = UDim2.new(0.5, -4, 0, 50),
+		CellPadding = UDim2.fromOffset(8, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}) })
+end
+
+local function showDetail(name)
+	for _, c in ipairs(detail:GetChildren()) do
+		if c:IsA("GuiObject") then
+			c:Destroy()
+		end
+	end
+	if not name then
+		return
+	end
+	local defn = ItemDefs[name] or {}
+	local step = Craft.next(name)
+	fixIdentity()
+	local tText, tColor = tierText(step)
+	local rarityColor = RarityColor[defn.Rarity or 1] or Theme.Muted
+
+	local head = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 58),
+		BackgroundTransparency = 1,
+		LayoutOrder = 1,
+		Parent = detail,
+	})
+	new("ImageLabel", {
+		Size = UDim2.fromOffset(56, 56),
+		BackgroundColor3 = Theme.Base,
+		Image = defn.Icon or "",
+		ScaleType = Enum.ScaleType.Fit,
+		Parent = head,
+	}, { corner(10), stroke(rarityColor, 1.5) })
+	new("TextLabel", {
+		Position = UDim2.fromOffset(66, 4),
+		Size = UDim2.new(1, -66, 0, 20),
+		BackgroundTransparency = 1,
+		Text = name,
+		TextColor3 = Theme.Text,
+		TextSize = 17,
+		FontFace = font(Enum.FontWeight.Bold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = head,
+	})
+	new("TextLabel", {
+		Position = UDim2.fromOffset(66, 26),
+		Size = UDim2.new(1, -66, 0, 14),
+		BackgroundTransparency = 1,
+		RichText = true,
+		Text = string.format('<font color="#%s">%s</font>  ·  %s', rarityColor:ToHex(),
+			Rarities.Order[defn.Rarity or 1] or "?", Game.TypeThai[defn.Category] or tostring(defn.Category)),
+		TextColor3 = Theme.Dim,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.Regular),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = head,
+	})
+	new("TextLabel", {
+		Position = UDim2.fromOffset(66, 42),
+		Size = UDim2.new(1, -66, 0, 14),
+		BackgroundTransparency = 1,
+		Text = tText,
+		TextColor3 = tColor,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = head,
+	})
+
+	-- สเตตัสที่ได้ตอนขั้นเป้าหมาย (คูณ Series.TierMultiplier แบบที่เกมคิด)
+	local mult = Craft.TierMult[step and step.to or 1] or 1
+	local stats = {}
+	for stat, v in pairs(defn.Stats or defn.ActiveToolStats or {}) do
+		if typeof(v) == "number" then
+			stats[#stats + 1] = { string.format("%s +%s", stat, tostring(math.round(v * mult * 1000) / 1000)), Theme.Accent }
+		end
+	end
+	table.sort(stats, function(a, b)
+		return a[1] < b[1]
+	end)
+	if #stats > 0 then
+		heading(string.format("สเตตัสที่ T%d (คูณ %s)", step and step.to or 1, tostring(mult)), 2)
+		local wrap = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = 3,
+			Parent = detail,
+		}, { new("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			Wraps = true,
+			Padding = UDim.new(0, 4),
+		}) })
+		for i, chip in ipairs(stats) do
+			new("TextLabel", {
+				Size = UDim2.fromOffset(0, 20),
+				AutomaticSize = Enum.AutomaticSize.X,
+				BackgroundColor3 = Theme.Raised,
+				Text = chip[1],
+				TextColor3 = chip[2],
+				TextSize = 12,
+				FontFace = font(Enum.FontWeight.Medium),
+				LayoutOrder = i,
+				Parent = wrap,
+			}, { capsule(), new("UIPadding", { PaddingLeft = UDim.new(0, 7), PaddingRight = UDim.new(0, 7) }) })
+		end
+	end
+
+	if not step or step.maxed then
+		return
+	end
+	local inputs = Craft.inputs(name, step)
+	fixIdentity()
+	local needList, matList, costList = {}, {}, {}
+	for _, i in ipairs(inputs) do
+		if i.kind == "money" then
+			costList[#costList + 1] = i
+		elseif i.kind == "set" or (i.kind == "item" and (i.name == "Metal Scraps" or i.name == "Silk Thread")) then
+			matList[#matList + 1] = i
+		else
+			needList[#needList + 1] = i
+		end
+	end
+	if #needList > 0 then
+		heading("ต้องใช้ (มี/ต้องใช้)", 4)
+		local g = grid(5)
+		for n, i in ipairs(needList) do
+			itemCard(g, n, i)
+		end
+	end
+	-- ดาบฐานเลือกได้หลายเล่ม บอกให้รู้ว่าเล่มไหนก็ได้
+	if step.variants and #step.variants > 1 then
+		local names = {}
+		for _, v in ipairs(step.variants) do
+			local b = v.recipe.required and v.recipe.required[1]
+			names[#names + 1] = b and b.name or "?"
+		end
+		heading("ของฐานใช้เล่มไหนก็ได้: " .. table.concat(names, " / "), 6)
+	end
+	if #matList > 0 then
+		heading("วัสดุเพิ่ม (Additional Materials)", 7)
+		local g = grid(8)
+		for n, i in ipairs(matList) do
+			itemCard(g, n, i)
+		end
+	end
+	if #costList > 0 then
+		heading("ค่าตี", 9)
+		local g = grid(10)
+		for n, i in ipairs(costList) do
+			itemCard(g, n, i)
+		end
+	end
+	local mats, wen = Craft.needs(name, step)
+	fixIdentity()
+	heading("กด GET แล้วสคริปต์จะ: หาแบบ/ของฐานที่ขาด → ฟาร์มเงิน+วัสดุเซ็ต ("
+		.. Craft.progress(mats, wen) .. ") → แลกวัสดุที่ Togane → ซื้อ Scraps/Silk → ตี", 11)
+end
+
+local function paintRows()
+	for _, r in ipairs(rows) do
+		local order = table.find(queue, r.name)
+		tween(r.tickFill, { BackgroundTransparency = order and 0 or 1 }, FAST)
+		r.tickStroke.Color = order and Theme.On or Theme.Muted
+		r.tickNum.Text = order and tostring(order) or ""
+		r.tickNum.Visible = order ~= nil and #queue > 1
+		tween(r.frame, { BackgroundColor3 = r.name == selected and Theme.Raised or Theme.Row }, FAST)
+		r.rim.Transparency = r.name == selected and 0.2 or 1
+	end
+end
+
+local function buildRows()
+	for _, r in ipairs(rows) do
+		r.frame:Destroy()
+	end
+	table.clear(rows)
+	for n, name in ipairs(Craft.Pieces) do
+		local defn = ItemDefs[name] or {}
+		local step = Craft.next(name)
+		fixIdentity()
+		local frame = new("Frame", {
+			Size = UDim2.new(1, -6, 0, 50),
+			BackgroundColor3 = Theme.Row,
+			BorderSizePixel = 0,
+			LayoutOrder = n,
+			Parent = craftUI.list,
+		}, { corner(8) })
+		local rim = stroke(Theme.Accent, 1)
+		rim.Transparency = 1
+		rim.Parent = frame
+		local tickFill, tickStroke = tickBox(frame)
+		local tickNum = new("TextLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(1, 0, 0, 0),
+			Size = UDim2.fromOffset(15, 15),
+			BackgroundColor3 = Theme.Accent2,
+			Text = "",
+			TextColor3 = Theme.Base,
+			TextSize = 11,
+			FontFace = font(Enum.FontWeight.Bold),
+			Visible = false,
+			ZIndex = 3,
+			Parent = tickFill.Parent,
+		}, { capsule() })
+		new("ImageLabel", {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 40, 0.5, 0),
+			Size = UDim2.fromOffset(34, 34),
+			BackgroundColor3 = Theme.Base,
+			Image = defn.Icon or "",
+			ScaleType = Enum.ScaleType.Fit,
+			Parent = frame,
+		}, { corner(7), stroke(RarityColor[defn.Rarity or 1] or Theme.Stroke, 1.5) })
+		new("TextLabel", {
+			Position = UDim2.fromOffset(82, 8),
+			Size = UDim2.new(1, -86, 0, 16),
+			BackgroundTransparency = 1,
+			Text = name:gsub("^Nightfall ", ""),
+			TextColor3 = Theme.Text,
+			TextSize = 14,
+			FontFace = font(Enum.FontWeight.SemiBold),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Parent = frame,
+		})
+		local tText, tColor = tierText(step)
+		new("TextLabel", {
+			Position = UDim2.fromOffset(82, 27),
+			Size = UDim2.new(1, -86, 0, 14),
+			BackgroundTransparency = 1,
+			Text = tText,
+			TextColor3 = tColor,
+			TextSize = 12,
+			FontFace = font(Enum.FontWeight.Medium),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Parent = frame,
+		})
+		local row = { name = name, frame = frame, rim = rim, tickFill = tickFill, tickStroke = tickStroke, tickNum = tickNum }
+		-- สองจุดกด: ช่องติ๊กซ้ายสุด = เข้า/ออกคิว · ที่เหลือ = ดูสูตร (ผู้ใช้เคยเจอกดติ๊กแล้วกลายเป็นเปิดข้อมูล)
+		local tickHit = new("TextButton", {
+			Size = UDim2.new(0, 36, 1, 0),
+			BackgroundTransparency = 1,
+			Text = "",
+			Parent = frame,
+		})
+		local selHit = new("TextButton", {
+			Position = UDim2.fromOffset(36, 0),
+			Size = UDim2.new(1, -36, 1, 0),
+			BackgroundTransparency = 1,
+			Text = "",
+			Parent = frame,
+		})
+		track(tickHit.MouseButton1Click:Connect(function()
+			if step and step.maxed then
+				craftUI.setStatus(name .. " T3 สูงสุดแล้ว", Theme.Good)
+				return
+			end
+			local at = table.find(queue, name)
+			if at then
+				table.remove(queue, at)
+			else
+				queue[#queue + 1] = name
+			end
+			selected = name
+			showDetail(name)
+			paintRows()
+			refreshGet()
+		end))
+		track(selHit.MouseButton1Click:Connect(function()
+			selected = name
+			showDetail(name)
+			paintRows()
+		end))
+		rows[#rows + 1] = row
+	end
+	paintRows()
+end
+
+local function rebuild()
+	local w = wallet()
+	fixIdentity()
+	craftUI.walletBar.set(w)
+	buildRows()
+	showDetail(selected or Craft.Pieces[1])
+	selected = selected or Craft.Pieces[1]
+	paintRows()
+	refreshGet()
+end
+
+local function runQueue()
+	Runner.active = true
+	Runner.cancel = false
+	Runner.lastStart = os.clock()
+	Runner.statusSink = craftUI.queueStatus
+	refreshGet()
+	task.spawn(function()
+		local done, lastErr = {}, nil
+		for i = 1, #queue do
+			if Runner.cancel then
+				break
+			end
+			local name = queue[1]
+			if not name then
+				break
+			end
+			craftUI.progress = string.format("[%d/%d] ", #done + 1, #done + #queue)
+			local okRun, ok, err = pcall(Runner.craftPiece, name)
+			if setthreadidentity and Game.loadIdentity then
+				setthreadidentity(Game.loadIdentity)
+			end
+			if okRun and ok then
+				done[#done + 1] = name
+			elseif not Runner.cancel then
+				lastErr = name .. ": " .. tostring(okRun and err or ok)
+			end
+			table.remove(queue, 1)
+		end
+		craftUI.progress = nil
+		local cancelled = Runner.cancel
+		Runner.active = false
+		Runner.statusSink = nil
+		local summary = #done > 0 and ("ตีสำเร็จ: " .. table.concat(done, ", ")) or "ยังไม่ได้ตีสักชิ้น"
+		if cancelled then
+			summary = "หยุดแล้ว · " .. summary
+		elseif lastErr then
+			summary = summary .. " · ติด " .. lastErr
+		end
+		rebuild()
+		craftUI.setStatus(summary, lastErr and Theme.Warn or Theme.Good)
+	end)
+end
+
+track(getBtn.MouseButton1Click:Connect(function()
+	if os.clock() - (Runner.lastStart or 0) < 1 then
+		return
+	end
+	if Runner.active then
+		if Runner.statusSink == craftUI.queueStatus then
+			Runner.stop()
+			craftUI.setStatus("กำลังหยุด…", Theme.Warn)
+		end
+		return
+	end
+	if #queue > 0 then
+		runQueue()
+	end
+end))
+
+local craftFeature = featureRow("Get Nightfall Craft", "ตีชิ้นเซ็ต Nightfall หาแบบ วัสดุ เงินให้เอง", 2, function()
+	rebuild()
+	craftUI.setStatus("ติ๊กช่องซ้ายเพื่อเข้าคิว · กดชื่อเพื่อดูสูตร", Theme.Muted)
+	craftUI.show()
+end, function()
+	craftUI.hide()
+end)
+track(craftUI.closeButton.MouseButton1Click:Connect(function()
+	craftFeature.setOpen(false)
+end))
+end)()
+
 -- Auto-Dodge: อ่านท่าโจมตีของม็อบแล้วหลบก่อนดาเมจเข้า ------------------------
 
 -- เกมไม่มี attribute บอกว่าม็อบกำลังจะตี (CastTelegraph เป็น 0 ทุกตัว)
@@ -11300,6 +12188,7 @@ local function farmLoop(mine)
 			setthreadidentity(myIdentity)
 		end
 		return farm.on and farm.loop == mine and not Runner.cancel and screen.Parent ~= nil
+			and not (farm.untilDone and farm.untilDone())
 	end
 	farm.wait = {}
 	farm.kills, farm.earned = 0, 0
@@ -11328,6 +12217,9 @@ local function farmLoop(mine)
 		local rate = mins > 1 and string.format(" · ~%s/ชม.", comma(math.floor(gained / mins * 60))) or ""
 		moneyRow.setDesc(string.format("%s · ฆ่า %d ตาย %d · +%s Wen%s%s", text, farm.kills, farm.deaths,
 			comma(math.floor(gained)), rate, farm.note and (" · " .. farm.note) or ""))
+		if farm.relay then
+			farm.relay(text, farm.kills, gained)
+		end
 	end
 	farm.deaths = 0
 	local deathConn = LocalPlayer.CharacterAdded:Connect(function()
@@ -11423,7 +12315,8 @@ local function farmLoop(mine)
 	if farm.loop == mine or not farm.on then
 		Runner.active = false
 	end
-	if not farm.on then
+	-- ผู้ยืมลูป (Runner.moneyUntil) จบด้วยเงื่อนไข farm.on ยังเป็น true อยู่ ต้องคืน Kill Aura / Parry / Skill ด้วย
+	if not farm.on or farm.untilDone then
 		if not auraWasOn then
 			Runner.setAura(false)
 		end
@@ -11459,6 +12352,30 @@ moneyRow = switchRow("Auto-Money-Farm", "ปิดอยู่", 4, function(on)
 		Runner.haltAttack()
 	end
 end)
+
+-- ตัวรันอื่นยืมลูปฟาร์มเงินไปใช้จน done() เป็นจริง (Get Nightfall Craft: เงินค่าตี + วัสดุเซ็ตจากหีบบอส
+-- World Events Chest ได้ไปพร้อมกันในลูปเดียว) relay(ข้อความ, ฆ่าได้, Wen ที่ได้) ส่งความคืบหน้าให้แผงผู้ยืม
+-- ลูปตัดสิทธิ์ Runner.active ตอนจบ แต่ผู้ยืมยังทำงานต่อ (ซื้อวัตถุดิบ / ตี) เลยคืนให้หลังจบ
+function Runner.moneyUntil(done, relay)
+	if farm.on then
+		return false, "Auto-Money-Farm เปิดอยู่ ปิดก่อนแล้วกด GET ใหม่"
+	end
+	farm.loop += 1
+	local mine = farm.loop
+	farm.on = true
+	farm.untilDone = done
+	farm.relay = relay
+	farm.triedGinzo = farm.triedGinzo or -math.huge
+	local ok, err = pcall(farmLoop, mine)
+	farm.on = false
+	farm.untilDone = nil
+	farm.relay = nil
+	Runner.active = true
+	if not ok then
+		return false, tostring(err)
+	end
+	return done()
+end
 
 track({
 	Disconnect = function()
