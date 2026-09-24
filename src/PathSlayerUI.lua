@@ -6919,6 +6919,61 @@ local function equipSlot(index)
 	end
 end
 
+-- ถือของชิ้นนี้ในมือ: ช่างตีแบบ Awaken / อัปขั้นกินอาวุธ "ที่ถืออยู่" (Togane: "Hold the weapon you want reforged
+-- ... The one in your hand is used up; half its refinement carries over") มีหลายเล่มเลือกเล่มที่ Refine สูงสุด
+-- ไม่มีบน toolbar ใส่ช่องว่าง (Toolbar_Equip) คืน true เมื่อถือได้จริง
+function Game.holdItem(name)
+	local slot = equippedSlot()
+	local bag = slot and slot.Inventory:FindFirstChild("Inventory")
+	local best, bestLv
+	for _, it in ipairs(bag and bag:GetChildren() or {}) do
+		local id = it:FindFirstChild("Id")
+		if it.Name == name and id then
+			local lv = it:FindFirstChild("RefineLevel")
+			lv = lv and lv.Value or 0
+			if not bestLv or lv > bestLv then
+				best, bestLv = id.Value, lv
+			end
+		end
+	end
+	if not best then
+		return false, "ไม่มี " .. name .. " ในกระเป๋า"
+	end
+	local bar = slot.Inventory.Toolbar
+	local names = { "One", "Two", "Three", "Four", "Five" }
+	local index
+	for i, s in ipairs(names) do
+		if bar[s].Value == best then
+			index = i
+		end
+	end
+	if not index then
+		for i, s in ipairs(names) do
+			if not index and bar[s].Value == 0 then
+				SignalEvent.ToServer("Toolbar_Equip", s, best)
+				local untilT = os.clock() + 3
+				while bar[s].Value ~= best and os.clock() < untilT do
+					task.wait(0.1)
+				end
+				index = bar[s].Value == best and i or nil
+			end
+		end
+	end
+	if not index then
+		return false, "toolbar เต็ม เว้นว่างหนึ่งช่องให้ " .. name
+	end
+	-- ระบบอื่น (Auto Skill / Kill Aura) สลับกลับไปถือดาบประจำได้ กันไว้ช่วงถือของไปตี
+	Combat.drinkUntil = os.clock() + 6
+	equipSlot(index)
+	local untilT = os.clock() + 2
+	while equippedValue() and equippedValue().Value ~= index and os.clock() < untilT do
+		task.wait(0.1)
+		equipSlot(index)
+	end
+	task.wait(0.4)
+	return equippedValue() ~= nil and equippedValue().Value == index
+end
+
 -- ถือช่องที่ติ๊กไว้ช่องใดช่องหนึ่งอยู่ถือว่าพร้อมตี
 local function weaponReady()
 	return weaponSlots[heldSlot()] == true
@@ -8215,8 +8270,18 @@ function Runner.craftAt(id, recipe)
 	task.wait(0.6)
 
 	local before = itemCount(recipe.result)
+	-- สูตรที่ต่อยอดจากอาวุธเดิม (refineKept: ค่า Refine ติดไปครึ่งหนึ่ง) เกมกินเล่ม "ที่ถืออยู่" ต้องถือก่อนกดตี
+	local base = recipe.refineKept and recipe.required and recipe.required[1]
+	if base then
+		local held, why = Game.holdItem(base.name)
+		if not held then
+			Combat.drinkUntil = 0
+			return false, "ถือ " .. base.name .. " ไม่ได้: " .. tostring(why)
+		end
+	end
 	local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
 	local sent, res = pcall(SignalFunction.ToServer, "CraftRecipe", id)
+	Combat.drinkUntil = 0
 	if not sent then
 		return false, tostring(res)
 	end
@@ -15063,6 +15128,9 @@ local function climb()
 	beginRunLog()
 	local lastMap = workspace:GetAttribute("MinigameMap")
 	local pauseUntil = 0
+	-- จดทุกครั้งที่เสียหัวใจ (ชั้น ระดับ Y ใต้ดินอยู่ไหม ม็อบใกล้สุด) ลง Log ดันเจี้ยน ไว้หาว่าอะไรฆ่า
+	local hearts = LocalPlayer:GetAttribute("Hearts")
+	Ouwi.deaths = Ouwi.deaths or {}
 	while Ouwi.on and workspace:GetAttribute("MinigameState") == "Climbing" do
 		fixIdentity()
 		local floor = workspace:GetAttribute("MinigameFloor") or 1
@@ -15082,6 +15150,15 @@ local function climb()
 				killAura.underRoot = nil
 			end
 		end
+		local nowHearts = LocalPlayer:GetAttribute("Hearts")
+		if hearts and nowHearts and nowHearts < hearts then
+			local _, me = selfParts()
+			local near = me and nearestEnemy(me)
+			Ouwi.deaths[#Ouwi.deaths + 1] = string.format("ชั้น %s · Y %s · %s · ม็อบใกล้สุด %s", tostring(floor),
+				me and tostring(math.floor(me.Position.Y)) or "?", killAura and killAura.underConn and "ใต้ดิน" or "บนพื้น",
+				near and near.Name or "-")
+		end
+		hearts = nowHearts
 		pickCards()
 		autoSkip()
 		local _, hrp = selfParts()
@@ -15207,7 +15284,12 @@ local function shops()
 	fixIdentity()
 
 	-- ของที่ได้จากรอบนี้ (หีบ Cache + ของดรอประหว่างไต่) = กระเป๋าตอนนี้ - ตอนเริ่มรอบ ก่อนแลกแต้ม
+	-- ใช้กระเป๋าตอนเริ่มเฉพาะที่จดในเซิร์ฟหอคอยนี้ ของรอบก่อน (เกมเด้ง / รอบที่ไม่ได้จด) จะนับของที่ฟาร์มนอกหอคอยปนมา
+	-- เจอจริง: รอบหลังเกมเด้งขึ้น Wen +293,176 ที่จริงมาจากฟาร์มบอสในแมพหลักทั้งบ่าย
 	local runStart = persistData().ouwiRunStart
+	if runStart and runStart.jobId ~= game.JobId then
+		runStart = nil
+	end
 	local startWallet = runStart and runStart.wallet or snapshot()
 	local log = {
 		at = os.time(),
@@ -15254,7 +15336,13 @@ local function shops()
 		task.wait(1.2)
 		local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
 		local had = Game.wallet()[v2.recipe.result] or 0
+		-- Awaken Weapon กินดาบฐาน "ที่ถืออยู่" (Togane: Hold the weapon you want reforged) ถือก่อนกด
+		local raw = v2.recipe.required and v2.recipe.required[1]
+		if raw then
+			pcall(Game.holdItem, raw.name)
+		end
 		local okCraft, res = pcall(SignalFunction.ToServer, "CraftRecipe", v2.id)
+		Combat.drinkUntil = 0
 		fixIdentity()
 		task.wait(1.5)
 		local before = points
@@ -15328,6 +15416,8 @@ local function shops()
 
 	-- ลงบันทึกรอบ (เก็บ 20 รอบล่าสุด ดูได้ที่แถว Log ดันเจี้ยน) + ส่ง Discord ถ้าเปิดไว้
 	log.spent = Ouwi.spent
+	log.deaths = Ouwi.deaths
+	Ouwi.deaths = {}
 	log.net = walletDiff(startWallet, snapshot(), false)
 	local history = persistData().ouwiLog or {}
 	table.insert(history, 1, log)
@@ -15365,6 +15455,7 @@ local function towerLoop(mine)
 		elseif phase == "Ended" or LocalPlayer:GetAttribute("InShops") then
 			shops()
 		elseif phase == "Lobby" or phase == "Starting" then
+			beginRunLog()
 			if not LocalPlayer:GetAttribute("Readied") then
 				say("Ready Up")
 				local pad = workspace.Map:FindFirstChild("Minigame Map") and workspace.Map["Minigame Map"]:FindFirstChild("StartPad")
@@ -15431,6 +15522,8 @@ ouwiRow = switchRow("Auto-Dungeon", "ปิดอยู่", 5, function(on)
 	Game.save()
 	setSwitch("Insta Kill", false)
 	setSwitch("Kill Aura", false)
+	-- ปิดกลางรอบต้องปล่อยจากใต้ดินด้วย ไม่งั้นค้างนอนใต้พื้นชนไม่ได้ ม็อบรุมจนหัวใจหมด
+	releaseUnder()
 end)
 
 switchRow("ดันเจี้ยน", "Ouwigahara = หอคอยไต่ชั้น (Normal ไม่จัดอันดับ) ต้อง Lv 65", 6, function() end, {
@@ -15514,6 +15607,13 @@ track({
 		Ouwi.loop += 1
 	end,
 })
+
+-- จดกระเป๋าตอนเข้าหอคอยทุกครั้ง แม้ไม่ได้เปิด Auto-Dungeon (ผู้เล่นเล่นเอง) Log ดันเจี้ยนจะได้เทียบถูกเซิร์ฟ
+if inTower then
+	task.delay(3, function()
+		pcall(beginRunLog)
+	end)
+end
 
 -- เข้าหอคอยเพราะคิว Craft สั่ง (สวิตช์ไม่ได้เปิดค้าง) ก็ต้องทำรอบให้จบแล้วกลับ
 if inTower and persistData().ouwiGo and not Ouwi.on then
@@ -15663,6 +15763,10 @@ do
 			text(card, #spent > 0 and table.concat(spent, "\n") or "ไม่ได้แลก", 6, Theme.Text, 13)
 			text(card, "ได้กลับมาทั้งหมด (เทียบกระเป๋าก่อนเข้า → ตอนออก)", 7, Theme.Dim, 12, Enum.FontWeight.Bold)
 			chips(card, 8, run.net, true)
+			if run.deaths and #run.deaths > 0 then
+				text(card, string.format("เสียหัวใจ %d ครั้ง", #run.deaths), 9, Theme.Danger, 12, Enum.FontWeight.Bold)
+				text(card, table.concat(run.deaths, "\n"), 10, Theme.Muted, 12)
+			end
 		end
 		fixIdentity()
 	end
