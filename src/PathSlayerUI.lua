@@ -8116,6 +8116,31 @@ end
 
 -- หีบ Sealed Cache: หาหีบที่มีของชิ้นนี้ (โอกาสสูงก่อน ใกล้ก่อน) ฆ่ายามจนปลดล็อก เปิด เก็บ วนจนครบ
 -- ไม่เห็นหีบเลยก็วาร์ปไล่จุดเกิดทั้ง 12 จุดให้ stream เข้ามา หีบเกิดพร้อมกันได้ 5 ใบ เกิดใหม่ทุก 25 นาที
+-- ยามหีบแดง: เปิด Insta Kill โหมด ทันที + บอส ตีด้วย ระหว่างเคลียร์ (ผู้ใช้สั่ง 25 ก.ย. 2026 เพื่อความไว ไม่หวังของจากยาม)
+-- ยามเลือด 400-1200 เกินเกณฑ์ม็อบธรรมดาของ Insta Kill (100) ต้องเปิด บอส ตีด้วย ไม่งั้นมันข้าม
+-- คืนฟังก์ชันคืนค่า: โหมด/บอสกลับเป็นที่ผู้ใช้ตั้ง (อ่านจากไฟล์ config) และปิด Insta Kill ถ้าเดิมปิดอยู่
+function Runner.instaForGuards()
+	local rows = Game.persist.choiceRows
+	local saved = Game.persist.data.choices
+	local prevMode, prevBoss = saved["โหมด Insta Kill"] or 1, saved["บอส"] or 1
+	pcall(rows["โหมด Insta Kill"].restore, 2)
+	pcall(rows["บอส"].restore, 2)
+	local turned
+	for _, entry in ipairs(toggles) do
+		if entry.key == "Insta Kill" and not entry.isOn() then
+			turned = entry
+			entry.set(true)
+		end
+	end
+	return function()
+		if turned then
+			turned.set(false)
+		end
+		pcall(rows["โหมด Insta Kill"].restore, prevMode)
+		pcall(rows["บอส"].restore, prevBoss)
+	end
+end
+
 function Runner.sealed(item, need, alt)
 	local events = Game.chestEvents()
 	local spots = {}
@@ -8131,6 +8156,7 @@ function Runner.sealed(item, need, alt)
 	attackRow.set(false)
 	mobOnlyRow.set(false)
 	Runner.farmTarget = item
+	local instaOff = Runner.instaForGuards()
 	local skip, lockedSince, deaths, spotAt = {}, {}, {}, 0
 	-- ยามตัวที่กำลังตี ตีจนตายค่อยเปลี่ยน attackLoop เลือกตัวใกล้สุดตามชื่อ ชื่อเดียวกันก็ยังติดตัวเดิมได้
 	local guard, fighting
@@ -8223,6 +8249,7 @@ function Runner.sealed(item, need, alt)
 	Runner.haltAttack()
 	autoAttack.target = nil
 	Runner.farmTarget = nil
+	instaOff()
 	if Runner.cancel then
 		return false, "ยกเลิกแล้ว"
 	end
@@ -14423,6 +14450,7 @@ function Money.sealed(chest, alive, say)
 	local guards = Game.chestEvents()[id].guards
 	local deathsAt = farm.deaths
 	local guard, lockedSince
+	local instaOff = Runner.instaForGuards()
 	while alive() and chest.Parent and chest:GetAttribute("IsOpen") == false do
 		if farm.deaths - deathsAt >= Runner.Sealed.MaxDeaths then
 			farm.sealedSkip[chest] = os.clock() + Runner.Sealed.DeathSkipFor
@@ -14472,6 +14500,7 @@ function Money.sealed(chest, alive, say)
 	end
 	Runner.haltAttack()
 	autoAttack.target = nil
+	instaOff()
 end
 
 -- หีบแดงหนึ่งใบต่อบอสหนึ่งตัว (ผู้ใช้สั่ง 25 ก.ย. 2026): ฆ่าบอสเสร็จ → หาหีบแดงทั้งแมพ ฆ่ายาม เปิด 1 ใบ → บอสตัวถัดไป
@@ -15457,6 +15486,10 @@ local Crow = {
 	-- ค่าเดา ยังไม่ได้วัดว่าเซิร์ฟใส่เควสให้ช้าสุดกี่วิ
 	ClaimWait = 5,
 	SkipFor = 120,
+	-- บอสหายไปไม่ถึงเท่านี้ = ถือว่าเพิ่งตาย ยืนรอเควสปิดตรงนั้น ค่าเผื่อ ยังไม่ได้วัดว่าเกมปิดเควสช้าสุดกี่วิ
+	DeathGrace = 8,
+	-- รอหีบบอสโผล่หลังเควสจบ ค่าเผื่อ (Money farm รอ 3 วิแล้วบางทีไม่ทัน)
+	ChestWait = 10,
 	skip = {},
 }
 local loop = 0
@@ -15504,14 +15537,18 @@ end
 -- ฆ่าบอสของเควสที่ถืออยู่จนเควสหายจาก Holder (เกมปิดให้ตอนนับครบ) แล้วเก็บหีบ
 function Crow.fight(quest, boss, alive)
 	local center = Crow.center(boss)
+	local seenAt = -math.huge
 	while alive() and heldQuest() == quest do
 		if liveMobCount(boss) > 0 then
+			seenAt = os.clock()
 			Runner.attackMob(boss)
 			row.setDesc(string.format("%s · ตี %s", quest, boss))
 		else
 			Runner.haltAttack()
 			local _, hrp = selfParts()
-			if center and hrp and (hrp.Position - center).Magnitude > 60 then
+			-- บอสเพิ่งหาย = เพิ่งตาย เกมปิดเควสช้ากว่าบอสหายไม่กี่วิ อย่าเพิ่งวาร์ปกลับจุดเกิด
+			-- ผู้ใช้เจอ: กำลังจะเก็บหีบแต่วาร์ปไปจุดเกิด (บอสไล่ออกมาไกล) หีบเกินรัศมี 250 เลยไม่ได้เก็บ
+			if center and hrp and os.clock() - seenAt > Crow.DeathGrace and (hrp.Position - center).Magnitude > 60 then
 				goToSpawn(center)
 			end
 			row.setDesc(center and string.format("%s · รอ %s เกิดที่จุดเกิด", quest, boss)
@@ -15522,6 +15559,12 @@ function Crow.fight(quest, boss, alive)
 	Runner.haltAttack()
 	autoAttack.target = nil
 	if heldQuest() ~= quest then
+		-- หีบบอสโผล่ช้ากว่าเควสจบ (ChestWait ของ collectLoot แค่ 3 วิ เคยไปรับเควสใหม่ก่อนหีบมา) รอเองก่อน
+		local _, hrp = selfParts()
+		local by = os.clock() + Crow.ChestWait
+		while alive() and hrp and #closedChests(hrp.Position) == 0 and os.clock() < by do
+			task.wait(0.25)
+		end
 		collectLoot({
 			wait = true,
 			stop = function()
