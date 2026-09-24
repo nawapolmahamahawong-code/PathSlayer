@@ -9492,7 +9492,8 @@ local function ensureBought(name, need, say)
 	return Runner.obtain(name, need)
 end
 
-function Runner.craftRecipe(id)
+-- carry = งานคั่นของขั้นบนที่ส่งลงมา (ดู fillerJobs) ทำสลับกับงานของขั้นนี้ได้
+function Runner.craftRecipe(id, carry)
 	Craft.recipes()
 	local e = Craft.byId[id]
 	if not e then
@@ -9507,6 +9508,54 @@ function Runner.craftRecipe(id)
 		report(string.format("%s T%d · %s", e.piece, e.tier, text), Theme.Accent)
 	end
 
+	local mats = Craft.setNeeds(r)
+	-- งานที่ไม่ใช้ของฐาน (แบบพิมพ์ / วัสดุเซ็ต) ส่งลงไปให้การตีขั้นล่างใช้เป็นงานคั่นตอนรอบอสเกิดได้ด้วย
+	-- (ตี T3 แต่ยังไม่มี T1: ระหว่างรอบอสดรอปดาบ ไปฟาร์มวัสดุเซ็ตของ T2/T3 ไว้ก่อน)
+	local function fillerJobs()
+		local jobs = {}
+		for _, schem in ipairs(r.keep or {}) do
+			jobs[#jobs + 1] = {
+				name = schem,
+				done = function()
+					return (wallet()[schem] or 0) > 0
+				end,
+				run = function()
+					say("1/4 หา " .. schem)
+					local ok, why, extra = Runner.schematic(schem)
+					if not ok and why ~= Runner.RESPAWN then
+						why = schem .. ": " .. tostring(why)
+					end
+					return ok, why, extra
+				end,
+			}
+		end
+		-- วัสดุเซ็ต: ฟาร์มหีบบอส (ลูป Auto-Money-Farm) ถ้ามีงานรอบอสเกิดอยู่ ฟาร์มแค่ถึงเวลาเกิดแล้วกลับไป
+		if next(mats) then
+			local function prog()
+				local _, pool, need = Craft.setEnough(mats)
+				return string.format("วัสดุเซ็ต %d/%d", math.min(pool, need), need)
+			end
+			jobs[#jobs + 1] = {
+				name = "วัสดุเซ็ต",
+				filler = true,
+				done = function()
+					return (Craft.setEnough(mats))
+				end,
+				run = function(deadline)
+					say("3/4 ฟาร์มหีบบอสหาวัสดุเซ็ต · " .. prog())
+					local ok, why = Runner.moneyUntil(function()
+						return Craft.setEnough(mats) or (deadline ~= nil and os.clock() >= deadline)
+					end, function(t)
+						say("3/4 " .. prog() .. (deadline and string.format(" · กลับไปตีบอสในอีก %d วิ",
+							math.max(0, math.floor(deadline - os.clock()))) or "") .. " · " .. t)
+					end)
+					return ok, why or "หยุดก่อนวัสดุเซ็ตครบ"
+				end,
+			}
+		end
+		return jobs
+	end
+
 	-- ขั้นล่างยังไม่มี: ตีขั้นล่างก่อน (T3 ต้องมี T2, T2 ต้องมี T1)
 	if e.tier > 1 and owned < e.tier - 1 then
 		local lower = Craft.pickTier(e.piece, e.tier - 1)
@@ -9514,83 +9563,163 @@ function Runner.craftRecipe(id)
 			return false, "ไม่พบสูตร T" .. (e.tier - 1)
 		end
 		say("ต้องมี T" .. lower.tier .. " ก่อน")
-		local ok, why, extra = Runner.craftRecipe(lower.id)
+		local down = fillerJobs()
+		for _, j in ipairs(carry or {}) do
+			down[#down + 1] = j
+		end
+		local ok, why, extra = Runner.craftRecipe(lower.id, down)
 		if not ok then
 			return false, why, extra
 		end
 	end
 
-	-- 1 แบบพิมพ์
-	for _, schem in ipairs(r.keep or {}) do
-		if (wallet()[schem] or 0) == 0 then
-			say("1/4 หา " .. schem)
-			local ok, why, extra = Runner.schematic(schem)
-			if not ok then
-				return false, schem .. ": " .. tostring(why), extra
-			end
-		end
-	end
-
-	-- 2 ดาบฐาน: ของธรรมดาก่อน แล้วอัปในหอคอย (ต้องมีของครบในกระเป๋าก่อนเข้า ตีตอนจบรอบ)
+	-- ขั้น 1-3 เป็นงานย่อยที่ไม่ขึ้นต่อกัน ทำสลับกันได้: ผู้ใช้สั่ง ตีบอสดรอปดาบตายแล้วรอเกิดใหม่ (บอส 300 วิ)
+	-- อย่ายืนรอเปล่า ไปหาของอย่างอื่นที่สูตรต้องใช้ก่อน ใกล้เวลาเกิดค่อยกลับไปตี (ทางเดียวกับคิว Get Weapons:
+	-- Runner.farm ถาม Runner.canYield ก่อนยืนรอ ตอบ true = คืน RESPAWN + วิที่เหลือ)
+	-- เรียงตามที่ผู้ใช้สั่ง: ดาบฐานก่อน → แบบพิมพ์ → วัสดุเพิ่ม
+	local jobs = {}
+	local v2
 	if e.base and itemCount(e.base) < 1 then
-		local v2 = Craft.v2Of(e.base)
-		if not v2 then
-			say("2/4 หา " .. e.base)
-			local ok, why, extra = Runner.obtain(e.base, 1)
-			if not ok then
-				return false, e.base .. ": " .. tostring(why), extra
-			end
-		else
-			local raw = v2.recipe.required[1]
-			if itemCount(raw.name) < raw.amount then
-				say(string.format("2/4 หา %s (ดาบธรรมดาที่จะอัปเป็น %s)", raw.name, e.base))
+		v2 = Craft.v2Of(e.base)
+		local raw = v2 and v2.recipe.required[1] or { name = e.base, amount = 1 }
+		jobs[#jobs + 1] = {
+			name = raw.name,
+			done = function()
+				return itemCount(raw.name) >= raw.amount
+			end,
+			run = function()
+				say(v2 and string.format("2/4 หา %s (ดาบธรรมดาที่จะอัปเป็น %s)", raw.name, e.base) or ("2/4 หา " .. e.base))
 				local ok, why, extra = Runner.obtain(raw.name, raw.amount)
-				if not ok then
-					return false, raw.name .. ": " .. tostring(why), extra
+				if not ok and why ~= Runner.RESPAWN then
+					why = raw.name .. ": " .. tostring(why)
 				end
+				return ok, why, extra
+			end,
+		}
+		for _, m in ipairs(v2 and v2.recipe.additionalMaterials or {}) do
+			if m.name ~= "Mythic Refinement Ore" then
+				jobs[#jobs + 1] = {
+					name = m.name,
+					done = function()
+						return itemCount(m.name) >= m.amount
+					end,
+					run = function()
+						return ensureBought(m.name, m.amount, function(t)
+							say("2/4 " .. t .. " (ใช้อัปดาบฐาน)")
+						end)
+					end,
+				}
 			end
-			for _, m in ipairs(v2.recipe.additionalMaterials or {}) do
-				if m.name ~= "Mythic Refinement Ore" then
-					local ok, why, extra = ensureBought(m.name, m.amount, say)
-					if not ok then
-						return false, why, extra
-					end
-				end
-			end
-			say(string.format("2/4 อัป %s → %s ในดันเจี้ยน (90,000 แต้ม + Mythic Ore ขาดก็แลกแต้มให้)", raw.name, e.base))
-			return false, Runner.TOWER, { kind = "v2", recipe = v2.id }
 		end
 	end
-
-	-- 3 วัสดุเพิ่ม: Scraps / Silk ซื้อ · วัสดุเซ็ตฟาร์มหีบบอสแล้วแลกให้ตรงชนิดที่ Togane
-	local mats = Craft.setNeeds(r)
-	if not Craft.setEnough(mats) then
-		local function prog()
-			local _, pool, need = Craft.setEnough(mats)
-			return string.format("วัสดุเซ็ต %d/%d", math.min(pool, need), need)
-		end
-		say("3/4 ฟาร์มหีบบอสหาวัสดุเซ็ต · " .. prog())
-		local ok, why = Runner.moneyUntil(function()
-			return Craft.setEnough(mats)
-		end, function(text)
-			say("3/4 " .. prog() .. " · " .. text)
-		end)
-		if not ok and not Craft.setEnough(mats) then
-			return false, why or "หยุดก่อนวัสดุเซ็ตครบ"
-		end
-	end
-	if Runner.cancel then
-		return false, "ยกเลิกแล้ว"
+	for _, j in ipairs(fillerJobs()) do
+		jobs[#jobs + 1] = j
 	end
 	for _, m in ipairs(r.additionalMaterials or {}) do
 		if not Craft.SetMats[m.name] then
-			local ok, why, extra = ensureBought(m.name, m.amount, function(t)
-				say("3/4 " .. t)
-			end)
-			if not ok then
-				return false, why, extra
+			-- ดาบฐานยังไม่ได้อัป = Scraps / Silk ก้อนนี้จะโดนสูตรอัปกินไปก่อน ซื้อเผื่อรวมกันทีเดียว
+			local function target()
+				local extra = 0
+				for _, x in ipairs(v2 and itemCount(e.base) < 1 and v2.recipe.additionalMaterials or {}) do
+					if x.name == m.name then
+						extra = x.amount
+					end
+				end
+				return m.amount + extra
+			end
+			jobs[#jobs + 1] = {
+				name = m.name,
+				done = function()
+					return itemCount(m.name) >= target()
+				end,
+				run = function()
+					return ensureBought(m.name, target(), function(t)
+						say("3/4 " .. t)
+					end)
+				end,
+			}
+		end
+	end
+
+	for _, j in ipairs(carry or {}) do
+		jobs[#jobs + 1] = j
+	end
+
+	-- วนทำงานที่พร้อม · งานที่รอบอสเกิดพักไว้ · งานที่ต้องลงดันเจี้ยน (Wen ไม่พอซื้อ) เก็บไว้ไปรวบทีเดียวตอนท้าย
+	local waitUntil, tower = {}, nil
+	local pending = {}
+	for _, j in ipairs(jobs) do
+		if not j.done() then
+			pending[#pending + 1] = j
+		end
+	end
+	local current
+	local prevYield = Runner.canYield
+	Runner.canYield = function()
+		for _, j in ipairs(pending) do
+			if j ~= current and (waitUntil[j] or 0) <= os.clock() then
+				return true
 			end
 		end
+		return prevYield ~= nil and prevYield() or false
+	end
+	local function finish(...)
+		Runner.canYield = prevYield
+		return ...
+	end
+	while #pending > 0 do
+		if Runner.cancel then
+			return finish(false, "ยกเลิกแล้ว")
+		end
+		local job, soonest
+		for _, j in ipairs(pending) do
+			if (waitUntil[j] or 0) <= os.clock() then
+				job = job or j
+			elseif not soonest or waitUntil[j] < waitUntil[soonest] then
+				soonest = j
+			end
+		end
+		-- ทุกงานรอบอสเกิดหมด: ไปยืนรอตัวที่เกิดก่อน (canYield ตอบ false เพราะไม่มีงานอื่นพร้อม)
+		job = job or soonest
+		waitUntil[job] = nil
+		current = job
+		local deadline = soonest and soonest ~= job and waitUntil[soonest] or nil
+		local okRun, ok, why, extra = pcall(job.run, deadline)
+		current = nil
+		if not okRun then
+			return finish(false, tostring(ok))
+		end
+		if why == Runner.RESPAWN and not Runner.cancel then
+			waitUntil[job] = os.clock() + math.max(10, tonumber(extra) or 60)
+			say(string.format("บอสของ %s ตาย รอเกิดใหม่ ~%d วิ · ไปหาของอื่นก่อน", job.name,
+				math.floor(waitUntil[job] - os.clock())))
+		elseif why == Runner.TOWER then
+			tower = tower or extra
+			table.remove(pending, table.find(pending, job))
+		elseif job.done() then
+			table.remove(pending, table.find(pending, job))
+		elseif not ok then
+			return finish(false, why, extra)
+		elseif not (job.filler and deadline) then
+			-- บอกว่าสำเร็จแต่ของยังไม่ครบ วนต่อได้แค่ 3 ครั้งกันค้าง (ฟาร์มวัสดุเซ็ตที่หยุดเพราะถึงเวลากลับไปตีบอสไม่นับ)
+			job.tries = (job.tries or 0) + 1
+			if job.tries >= 3 then
+				return finish(false, job.name .. " หาแล้วของไม่เพิ่ม")
+			end
+		end
+		task.wait(0.2)
+	end
+	Runner.canYield = prevYield
+	if tower then
+		return false, Runner.TOWER, tower
+	end
+	if v2 and itemCount(e.base) < 1 then
+		say(string.format("2/4 อัป %s → %s ในดันเจี้ยน (90,000 แต้ม + Mythic Ore ขาดก็แลกแต้มให้)",
+			v2.recipe.required[1].name, e.base))
+		return false, Runner.TOWER, { kind = "v2", recipe = v2.id }
+	end
+	if Runner.cancel then
+		return false, "ยกเลิกแล้ว"
 	end
 	local okSwap, whySwap = Craft.balance(mats)
 	if not okSwap then
