@@ -8105,9 +8105,19 @@ Runner.Sealed = {
 	-- ไม่เห็นยามแล้วแต่หีบยังล็อกเกินนี้ = ยามอีกตัวยังไม่ stream หรือหีบค้าง ไปหีบอื่นก่อน ค่าเผื่อ ยังไม่ได้วัด
 	StuckAfter = 20,
 	SkipFor = 120,
+	-- หีบที่คนอื่นเคลียร์ยามแล้ว รอเขาเปิดหรือหีบหาย (T3 ใบที่เจอค้างอยู่ ~1 ชม. ก่อนมีคนเปิด) ข้ามยาว
+	TakenSkipFor = 1500,
 	-- รอ stream หลังวาร์ปไปจุดเกิดหีบ ค่าเดียวกับ Runner.Hunt.StreamWait
 	StreamWait = 3,
 }
+
+-- หีบแดงที่เราเปิดได้: ยังล็อกอยู่ (ChestState Locked = ยามยังอยู่ เราจะฆ่าเอง) หรือใบที่เราฆ่ายามเองแล้ว (mine)
+-- ใบที่ปลดล็อกแล้วแต่เราไม่ได้ฆ่ายาม = คนอื่นเคลียร์ไว้ เซิร์ฟไม่ให้เราเปิด ถึง prompt Open จะขึ้นก็ตาม
+-- เจอจริง 25 ก.ย. 2026: T2 / T3 สถานะ Spawned ไม่มียาม กด Open 4 รอบไม่เปิด ต่อมา T3 ใบนั้น OpenedBy ผู้เล่นอื่น
+-- ส่วนใบที่เราฆ่ายามเองเปิดได้ทุกครั้ง (T1 / T2 ก่อนหน้า)
+function Runner.sealedClaimable(chest, mine)
+	return chest:GetAttribute("IsOpen") == false and (chest:GetAttribute("ChestState") == "Locked" or mine[chest] == true)
+end
 
 -- ยามที่ยังไม่ตายรอบหีบ เลือดเหลือน้อยสุดก่อน: ยามน้อยลงเร็วที่สุด = โดนรุมน้อยลงเร็วที่สุด
 -- เดิมเลือกตัวใกล้หีบสุด ยามเดินไปมาเลยสลับเป้าทุก 0.5 วิ ดาเมจกระจายไม่มีตัวไหนตาย
@@ -8170,7 +8180,7 @@ function Runner.sealed(item, need, alt)
 	mobOnlyRow.set(false)
 	Runner.farmTarget = item
 	local instaOff = Runner.instaForGuards()
-	local skip, lockedSince, deaths, spotAt = {}, {}, {}, 0
+	local skip, lockedSince, deaths, spotAt, mine = {}, {}, {}, 0, {}
 	-- ยามตัวที่กำลังตี ตีจนตายค่อยเปลี่ยน attackLoop เลือกตัวใกล้สุดตามชื่อ ชื่อเดียวกันก็ยังติดตัวเดิมได้
 	local guard, fighting
 	local deathConn = LocalPlayer.CharacterAdded:Connect(function()
@@ -8197,7 +8207,7 @@ function Runner.sealed(item, need, alt)
 		local pick, pickChance, pickD
 		for _, chest in ipairs(chests and chests:GetChildren() or {}) do
 			local chance = alt.chests[chest:GetAttribute("ChestId")]
-			if chance and me and chest:GetAttribute("IsOpen") == false and (skip[chest] or 0) < os.clock() then
+			if chance and me and Runner.sealedClaimable(chest, mine) and (skip[chest] or 0) < os.clock() then
 				local d = (chest:GetPivot().Position - me.Position).Magnitude
 				if not pick or chance > pickChance or (chance == pickChance and d < pickD) then
 					pick, pickChance, pickD = chest, chance, d
@@ -8242,6 +8252,7 @@ function Runner.sealed(item, need, alt)
 				end
 				if guard then
 					lockedSince[pick] = nil
+					mine[pick] = true
 					Runner.attackMob(guard.Name)
 					report(string.format("ฆ่ายาม %s ที่ %s · %s %d/%d", guard.Name, id, item, have, need), Theme.Accent)
 				else
@@ -14545,7 +14556,7 @@ function Money.nextSealed()
 	local folder = workspace:FindFirstChild("Chests")
 	local best, bestD
 	for _, chest in ipairs(me and folder and folder:GetChildren() or {}) do
-		if events[chest:GetAttribute("ChestId")] and chest:GetAttribute("IsOpen") == false
+		if events[chest:GetAttribute("ChestId")] and Runner.sealedClaimable(chest, farm.sealedMine)
 			and (farm.sealedSkip[chest] or 0) < os.clock() then
 			local d = (chest:GetPivot().Position - me.Position).Magnitude
 			if not best or d < bestD then
@@ -14576,6 +14587,12 @@ function Money.sealed(chest, alive, say)
 			task.wait(1)
 			continue
 		end
+		-- ระหว่างเราเดินทาง คนอื่นฆ่ายามจนปลดล็อกไปก่อน = ของเขา เปิดไม่ได้ ไปใบอื่น
+		if not Runner.sealedClaimable(chest, farm.sealedMine) then
+			farm.sealedSkip[chest] = os.clock() + Runner.Sealed.TakenSkipFor
+			say("หีบแดง " .. id .. " มีคนเคลียร์ยามไปแล้ว ข้าม")
+			break
+		end
 		local prompt = chest:FindFirstChild("ChestPrompt", true)
 		if prompt and prompt.Enabled then
 			Runner.haltAttack()
@@ -14598,6 +14615,7 @@ function Money.sealed(chest, alive, say)
 		end
 		if guard then
 			lockedSince = nil
+			farm.sealedMine[chest] = true
 			Runner.attackMob(guard.Name)
 			say(string.format("หีบแดง %s · ฆ่ายาม %s", id, guard.Name))
 		else
@@ -14676,6 +14694,8 @@ local function farmLoop(mine)
 	farm.fought = {}
 	-- ไม่ล้างข้ามรอบ: Craft ยืมลูปนี้ทีละช่วงสั้น ๆ ล้างทุกครั้ง = กลับไปตายกับยามใบเดิมซ้ำ
 	farm.sealedSkip = farm.sealedSkip or {}
+	-- หีบที่เราฆ่ายามเอง เปิดได้ (ดู Runner.sealedClaimable) ไม่ล้างข้ามรอบเหตุผลเดียวกับ sealedSkip
+	farm.sealedMine = farm.sealedMine or {}
 	farm.kills, farm.earned = 0, 0
 	local started = os.clock()
 	local wenAt = Game.wallet().Wen or 0
