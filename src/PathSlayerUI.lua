@@ -7571,8 +7571,9 @@ local Loot = {
 	-- (วาร์ปแล้วยิงทันทีเซิร์ฟยังเห็นที่เดิม แบบเดียวกับที่เจอกับลังของ Shiori) 0.3 ค่าเดา สั้นกว่า 0.4 ของ firePromptAt
 	GrabRadius = 9,
 	GrabSettle = 0.3,
-	-- ย้ายจุดยืนเก็บเป็นกลุ่มได้กี่ครั้ง เกินนี้ที่เหลือไล่เก็บทีละชิ้น
-	GrabStops = 4,
+	-- ไล่เก็บทุกกลุ่มกี่รอบ รอบหลังเก็บชิ้นที่ยิงแล้วเซิร์ฟไม่รับ · รอของหายก่อนตรวจรอบถัดไป (เซิร์ฟลบใน ~0.6 วิ)
+	GrabPasses = 3,
+	ClaimWait = 0.8,
 	-- กดเปิดหีบซ้ำได้กี่ครั้ง (ครั้งละรอ 2 วิ) ก่อนยอมแพ้ · คนอื่นเปิดตัดหน้า IsOpen เปลี่ยน ออกจากลูปเอง
 	OpenTries = 4,
 }
@@ -7689,65 +7690,54 @@ local function collectLoot(opts)
 	-- ชิ้นที่อยู่นอกระยะ Claim (10) ค่อยไล่เก็บทีละชิ้นแบบเดิมข้างล่าง
 	-- ของกระจายกว้างกว่าระยะ Claim รอบจุดกึ่งกลาง (World Events Chest 5 ชิ้น ยืนกลางกองแล้วเข้าระยะแค่ 1)
 	-- เลยยืนที่ของชิ้นที่มีเพื่อนในระยะมากสุด ทุกชิ้นในกลุ่มห่างจุดยืนไม่เกิน GrabRadius แน่นอน เก็บทีละกลุ่ม
-	local left = myDrops(origin)
-	for _ = 1, Loot.GrabStops do
+	-- ยิงแล้วไปกลุ่มถัดไปเลย ไม่ยืนรอของหาย: เดิมจำกัด 4 จุด แต่ละจุดรอได้ถึง 1.2 วิ ที่เหลือไล่ทีละชิ้นชิ้นละ 0.4 + รอ 3 วิ
+	-- จบดันเจี้ยนหีบ Cache 20 ใบของกระจายทั้งลาน ผู้ใช้บอกเก็บช้ามาก (25 ก.ย. 2026)
+	-- เซิร์ฟลบของใน ~0.6 วิหลังกด ตรวจทีเดียวตอนจบรอบ ชิ้นที่ยังอยู่ (ยิงตอนเซิร์ฟยังไม่เห็นตัวเรา) วนเก็บรอบถัดไป
+	local fired = {}
+	for pass = 1, Loot.GrabPasses do
+		local left = {}
+		for _, d in ipairs(myDrops(origin)) do
+			if d.part.Parent then
+				left[#left + 1] = d
+			end
+		end
 		if #left == 0 or stop() then
 			break
 		end
-		local spot, group
-		for _, a in ipairs(left) do
-			local members = {}
-			for _, b in ipairs(left) do
-				if (b.part.Position - a.part.Position).Magnitude <= Loot.GrabRadius then
-					members[#members + 1] = b
+		while #left > 0 and not stop() do
+			local spot, group
+			for _, a in ipairs(left) do
+				local members = {}
+				for _, b in ipairs(left) do
+					if (b.part.Position - a.part.Position).Magnitude <= Loot.GrabRadius then
+						members[#members + 1] = b
+					end
+				end
+				if not group or #members > #group then
+					spot, group = a.part.Position, members
 				end
 			end
-			if not group or #members > #group then
-				spot, group = a.part.Position, members
-			end
-		end
-		placeAt(hrp, CFrame.new(spot + Vector3.new(0, 2, 0)), "loot-group")
-		hrp.AssemblyLinearVelocity = Vector3.zero
-		task.wait(Loot.GrabSettle)
-		for _, d in ipairs(group) do
-			task.spawn(fireproximityprompt, d.prompt)
-		end
-		say(string.format("เก็บพร้อมกัน %d ชิ้น", #group))
-		local until_ = os.clock() + 1.2
-		repeat
-			task.wait(0.1)
-			local waiting = 0
+			placeAt(hrp, CFrame.new(spot + Vector3.new(0, 2, 0)), "loot-group")
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			task.wait(Loot.GrabSettle)
 			for _, d in ipairs(group) do
-				if d.part.Parent then
-					waiting += 1
-				elseif not d.done then
-					d.done = true
-					claimed(d)
+				fired[d.part] = d
+				task.spawn(fireproximityprompt, d.prompt)
+			end
+			say(string.format("เก็บพร้อมกัน %d ชิ้น (เหลือ %d · รอบ %d)", #group, #left - #group, pass))
+			local rest = {}
+			for _, d in ipairs(left) do
+				if not table.find(group, d) then
+					rest[#rest + 1] = d
 				end
 			end
-		until waiting == 0 or os.clock() > until_ or stop()
-		local rest = {}
-		for _, d in ipairs(left) do
-			if d.part.Parent then
-				rest[#rest + 1] = d
-			end
+			left = rest
 		end
-		left = rest
+		task.wait(Loot.ClaimWait)
 	end
-
-	for _, d in ipairs(myDrops(origin)) do
-		if stop() then
-			break
-		end
-		say("เก็บ " .. tostring(d.item))
-		if firePromptAt(d.prompt) then
-			local until_ = os.clock() + 3
-			while d.part.Parent and os.clock() < until_ do
-				task.wait(0.1)
-			end
-			if not d.part.Parent then
-				claimed(d)
-			end
+	for part, d in pairs(fired) do
+		if not part.Parent then
+			claimed(d)
 		end
 	end
 	return got
