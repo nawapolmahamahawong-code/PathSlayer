@@ -14938,8 +14938,10 @@ function FinalSel.buy(item)
 end
 
 function FinalSel.kill(mob, taskName, max)
+	-- วาร์ปไปจุดเกิดเฉพาะตอนยังไม่เห็นม็อบ เดิมวาร์ปทุก 0.5 วิเมื่อห่างจุดเกิด 60 → Hand Demon เดินไล่ (TrackMovement)
+	-- ตัวเราโดนดึงขึ้นจากใต้ดินกลับจุดเกิดวนไป ผู้ใช้เห็นว่าไม่ตีแบบใต้ดิน เสียหัวใจ 2 ดวงกับบอส
 	local _, hrp = selfParts()
-	if hrp and (hrp.Position - mob.center).Magnitude > 60 then
+	if hrp and liveMobCount(mob.name) == 0 and (hrp.Position - mob.center).Magnitude > 60 then
 		goToSpawn(mob.center)
 	end
 	Runner.attackMob(mob.name)
@@ -15252,8 +15254,17 @@ function FinalSel.run(alive)
 	Combat.WorldFloorY = FinalSel.FloorY
 	Runner.active = true
 	Runner.cancel = false
-	local auraWas = Runner.auraOn()
-	Runner.setAura(true)
+	-- ตั้งชุดสู้แบบ Auto-Money-Farm (ผู้ใช้สั่ง): นอนใต้ดิน + Kill Aura + Parry + Auto Skill + หยิบดาบคืนเองตอนมือว่าง
+	-- ในสนามมีหัวใจ 3 ดวง เดิมเปิดแค่ Kill Aura สู้ Hand Demon เหลือ 1 ดวง
+	local restore = {}
+	for _, key in ipairs({ "ตีจากใต้ดิน", "Kill Aura", "Parry อัตโนมัติ", "Auto Skill", "Auto-Equip-Weapon" }) do
+		for _, entry in ipairs(toggles) do
+			if entry.key == key and not entry.isOn() then
+				restore[#restore + 1] = entry
+				entry.set(true)
+			end
+		end
+	end
 	local fails = 0
 	while alive() do
 		local key = FinalSel.held()
@@ -15279,8 +15290,8 @@ function FinalSel.run(alive)
 	end
 	Runner.haltAttack()
 	autoAttack.target = nil
-	if not auraWas then
-		Runner.setAura(false)
+	for _, entry in ipairs(restore) do
+		entry.set(false)
 	end
 	Runner.active = false
 end
