@@ -14394,6 +14394,84 @@ function Money.fight(t, alive, say)
 	return "stopped"
 end
 
+-- หีบแดง (Sealed Cache) ที่ stream อยู่รอบตัว ใกล้สุดก่อน · ไกลเกินระยะ stream มองไม่เห็นอยู่แล้ว
+-- ผู้ใช้สั่ง 25 ก.ย. 2026: ฆ่าบอสเสร็จแวะเคลียร์หีบแดงแถวนั้นก่อน แล้วค่อยไปบอสตัวถัดไป
+function Money.nextSealed()
+	local events = Game.chestEvents()
+	local _, me = selfParts()
+	local folder = workspace:FindFirstChild("Chests")
+	local best, bestD
+	for _, chest in ipairs(me and folder and folder:GetChildren() or {}) do
+		if events[chest:GetAttribute("ChestId")] and chest:GetAttribute("IsOpen") == false
+			and (farm.sealedSkip[chest] or 0) < os.clock() then
+			local d = (chest:GetPivot().Position - me.Position).Magnitude
+			if not best or d < bestD then
+				best, bestD = chest, d
+			end
+		end
+	end
+	return best
+end
+
+-- ใบเดียวจนจบ: ฆ่ายาม (เลือดน้อยสุดก่อน ดู Runner.sealedGuard) → prompt เปิด → เปิดแล้วเก็บของ
+-- เกณฑ์ทิ้งใช้ชุดเดียวกับ Runner.sealed: ตายครบ MaxDeaths = ยามแรงเกินตัว · ไม่เห็นยามแต่ยังล็อก StuckAfter วิ = ค้าง
+function Money.sealed(chest, alive, say)
+	local id = chest:GetAttribute("ChestId")
+	local pos = chest:GetPivot().Position
+	local guards = Game.chestEvents()[id].guards
+	local deathsAt = farm.deaths
+	local guard, lockedSince
+	while alive() and chest.Parent and chest:GetAttribute("IsOpen") == false do
+		if farm.deaths - deathsAt >= Runner.Sealed.MaxDeaths then
+			farm.sealedSkip[chest] = os.clock() + Runner.Sealed.DeathSkipFor
+			say("ยามหีบแดง " .. id .. " แรงเกิน ข้ามไปก่อน")
+			break
+		end
+		local _, me, myHum = selfParts()
+		if not (me and myHum and myHum.Health > 0) then
+			task.wait(1)
+			continue
+		end
+		local prompt = chest:FindFirstChild("ChestPrompt", true)
+		if prompt and prompt.Enabled then
+			Runner.haltAttack()
+			goToSpawn(pos)
+			collectLoot({
+				stop = function()
+					return not alive()
+				end,
+				say = say,
+			})
+			-- เปิดไม่ติด (คนอื่นเปิดก่อน / prompt หาย) อย่าวนกลับมาใบเดิม
+			if chest.Parent and chest:GetAttribute("IsOpen") == false then
+				farm.sealedSkip[chest] = os.clock() + Runner.Sealed.SkipFor
+			end
+			break
+		end
+		local gHum = guard and guard.Parent and guard:FindFirstChildOfClass("Humanoid")
+		if not (gHum and gHum.Health > 0) then
+			guard = Runner.sealedGuard(pos, guards)
+		end
+		if guard then
+			lockedSince = nil
+			Runner.attackMob(guard.Name)
+			say(string.format("หีบแดง %s · ฆ่ายาม %s", id, guard.Name))
+		else
+			Runner.haltAttack()
+			goToSpawn(pos)
+			lockedSince = lockedSince or os.clock()
+			if os.clock() - lockedSince > Runner.Sealed.StuckAfter then
+				farm.sealedSkip[chest] = os.clock() + Runner.Sealed.SkipFor
+				break
+			end
+			say("รอหีบแดง " .. id .. " ปลดล็อก")
+		end
+		task.wait(0.5)
+	end
+	Runner.haltAttack()
+	autoAttack.target = nil
+end
+
 local moneyRow
 local function farmLoop(mine)
 	-- identity ของ thread หล่นเป็น 2 กลางทาง (Auto Skill ตั้งให้ thread ลูก แล้วรั่วมาถึงนี่ เหมือนที่ skillLoop เจอ)
@@ -14408,6 +14486,8 @@ local function farmLoop(mine)
 			and not (farm.untilDone and farm.untilDone())
 	end
 	farm.wait = {}
+	-- ไม่ล้างข้ามรอบ: Craft ยืมลูปนี้ทีละช่วงสั้น ๆ ล้างทุกครั้ง = กลับไปตายกับยามใบเดิมซ้ำ
+	farm.sealedSkip = farm.sealedSkip or {}
 	farm.kills, farm.earned = 0, 0
 	local started = os.clock()
 	local wenAt = Game.wallet().Wen or 0
@@ -14489,8 +14569,11 @@ local function farmLoop(mine)
 			Money.sell(say)
 		end
 
-		local t = Money.next()
-		if not t then
+		local chest = Money.nextSealed()
+		local t = not chest and Money.next()
+		if chest then
+			Money.sealed(chest, alive, say)
+		elseif not t then
 			say("บอสทุกตัวยังไม่เกิด รอรอบถัดไป")
 			task.wait(3)
 		else
