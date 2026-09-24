@@ -937,6 +937,12 @@ function Game.chestEvents()
 				local e = { guards = {}, spawns = {} }
 				for _, g in ipairs(ev.Guards or {}) do
 					e.guards[#e.guards + 1] = g.Config
+					-- Config ของ T1 เป็นรหัส (GroveRaider / RaidCaptain) แต่โมเดลในแมพใช้ชื่อจาก NpcDataTable ("Grove Raider")
+					-- เดิมหายามหีบ T1 ไม่เจอเลย ยืนรอหีบปลดล็อก 20 วิแล้วข้าม (เห็นจาก log 25 ก.ย. 2026) ใส่ทั้งสองชื่อ
+					local data = g.NpcCode and lootTables().npc[g.NpcCode]
+					if type(data) == "table" and data.Name and data.Name ~= g.Config then
+						e.guards[#e.guards + 1] = data.Name
+					end
 				end
 				for _, cf in ipairs(def.Spawns or {}) do
 					e.spawns[#e.spawns + 1] = typeof(cf) == "CFrame" and cf.Position or cf
@@ -7606,13 +7612,18 @@ local function closedChests(origin)
 	return list
 end
 
--- เก็บเฉพาะของที่เกมผูกกับเรา (DropOwnerUserId) ของคนอื่นกดไปก็ไม่ได้
-local function myDrops()
+-- ของที่เกมผูกกับเรา (DropOwnerUserId) + ของไม่มีเจ้าของใกล้ origin · ของคนอื่นกดไปก็ไม่ได้
+-- หีบแดง (Sealed Cache) ปล่อยของแบบไม่มีเจ้าของ ต่างจากหีบบอสที่ผูกกับเรา เดิมรับแต่ของเรา
+-- เปิดหีบแดงแล้วไม่เก็บสักชิ้น วาร์ปไปบอสใน 1 วิ ของ 6 ชิ้นหายตอนเราออกไป (log 02:45:04 25 ก.ย. 2026)
+-- ของไม่มีเจ้าของจำกัดรัศมีเดียวกับหีบ (ChestRadius) ไม่งั้นวาร์ปไปเก็บกองจากหีบที่คนอื่นเปิดอีกฟากแมพ
+local function myDrops(origin)
 	local list = {}
 	local folder = workspace:FindFirstChild("LootDrops")
 	for _, drop in ipairs(folder and folder:GetChildren() or {}) do
 		local prompt = drop:FindFirstChild("LootDropPrompt")
-		if prompt and drop:GetAttribute("DropOwnerUserId") == LocalPlayer.UserId then
+		local owner = drop:GetAttribute("DropOwnerUserId")
+		local near = origin and drop:IsA("BasePart") and (drop.Position - origin).Magnitude <= Loot.ChestRadius
+		if prompt and (owner == LocalPlayer.UserId or owner == nil and near) then
 			list[#list + 1] = { part = drop, prompt = prompt, item = drop:GetAttribute("DropItemId") }
 		end
 	end
@@ -7666,7 +7677,7 @@ local function collectLoot(opts)
 	-- ชิ้นที่อยู่นอกระยะ Claim (10) ค่อยไล่เก็บทีละชิ้นแบบเดิมข้างล่าง
 	-- ของกระจายกว้างกว่าระยะ Claim รอบจุดกึ่งกลาง (World Events Chest 5 ชิ้น ยืนกลางกองแล้วเข้าระยะแค่ 1)
 	-- เลยยืนที่ของชิ้นที่มีเพื่อนในระยะมากสุด ทุกชิ้นในกลุ่มห่างจุดยืนไม่เกิน GrabRadius แน่นอน เก็บทีละกลุ่ม
-	local left = myDrops()
+	local left = myDrops(origin)
 	for _ = 1, Loot.GrabStops do
 		if #left == 0 or stop() then
 			break
@@ -7712,7 +7723,7 @@ local function collectLoot(opts)
 		left = rest
 	end
 
-	for _, d in ipairs(myDrops()) do
+	for _, d in ipairs(myDrops(origin)) do
 		if stop() then
 			break
 		end
@@ -8028,7 +8039,7 @@ function Runner.farm(item, need, code)
 
 		-- บอสใหญ่ไม่ได้ดรอปของตรง แต่ทิ้งหีบไว้ (Rengu = World Events Chest, Hoyuzo = Rare Chest) เปิดด้วย
 		local _, me = selfParts()
-		if #myDrops() > 0 or (me and #closedChests(me.Position) > 0) then
+		if #myDrops(me and me.Position) > 0 or (me and #closedChests(me.Position) > 0) then
 			stopAttack()
 			local got = collectLoot({
 				stop = function()
