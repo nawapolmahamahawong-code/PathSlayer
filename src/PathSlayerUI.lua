@@ -14848,7 +14848,16 @@ end
 
 -- หน้าคุยที่ค้างอยู่ (บทมาถึงสนาม / NPC แจ้งจบงาน) กดต่อจนปิด
 function FinalSel.clearDialogue()
-	if dialogueActual() then
+	local actual = dialogueActual()
+	if actual then
+		-- หน้ายืนยันซื้อของ Rika มีแค่ Buy / Cancel ตัวปิดของ walkDialogue รู้จักแค่ Close หน้านี้เลยค้างข้ามรอบ
+		-- แล้วทุกครั้งที่คุยกับ Rika อ่านได้หน้าเดิม (เจอจริง: ติด Find Rika วน "มี: Cancel / Buy")
+		for _, o in ipairs(dialogueOptions(actual)) do
+			if o.text:lower():find("cancel", 1, true) then
+				clickGui(o.button)
+				task.wait(0.5)
+			end
+		end
 		walkDialogue(FinalSel.content().answers, os.clock() + 15)
 		local closeBy = os.clock() + 3
 		while dialogueActual() and os.clock() < closeBy do
@@ -14881,7 +14890,14 @@ function FinalSel.talk(npcName)
 	hrp.AssemblyLinearVelocity = Vector3.zero
 	task.wait(0.8)
 	FinalSel.clearDialogue()
-	fireproximityprompt(npc:FindFirstChildWhichIsA("ProximityPrompt", true))
+	-- โมเดล Rika มี prompt ซื้อ Bandage (ในร้าน) อยู่ข้างใน หยิบตัวแรกเจอ prompt ซื้อ ขึ้นหน้า Buy / Cancel แทนหน้าคุย
+	local chat
+	for _, d in ipairs(npc:GetDescendants()) do
+		if d:IsA("ProximityPrompt") and d.ActionText == "Chat" then
+			chat = d
+		end
+	end
+	fireproximityprompt(chat or npc:FindFirstChildWhichIsA("ProximityPrompt", true))
 	local openBy = os.clock() + 8
 	while os.clock() < openBy and not dialogueActual() do
 		task.wait(0.2)
@@ -14898,10 +14914,19 @@ function FinalSel.buy(item)
 	for _, d in ipairs(workspace:GetDescendants()) do
 		if d:IsA("ProximityPrompt") and d.ActionText == "Purchase" and d.ObjectText == item then
 			report("ซื้อ " .. item .. " ที่ร้าน Rika", Theme.Accent)
+			-- กด Buy ในหน้ายืนยันผ่าน getconnections แล้วเงินไม่ลดเลย (Wen ค้าง 101 วนสิบรอบ) handler ค้างรออะไรสักอย่าง
+			-- ใช้ทางเดียวกับ Game.buy: ยืนที่แผงแล้วยิง PurchaseFromShop เอง เซิร์ฟเช็กแค่ระยะ ยืนยันผลจากเงินที่ลด
 			firePromptAt(d)
+			FinalSel.clearDialogue()
+			local before = Game.wallet().Wen or 0
+			SignalEvent.ToServer("PurchaseFromShop", item, 1)
+			local untilT = os.clock() + 4
+			while os.clock() < untilT and (Game.wallet().Wen or 0) >= before do
+				task.wait(0.25)
+			end
 			task.wait(FinalSel.ShopWait)
 			FinalSel.clearDialogue()
-			return true
+			return (Game.wallet().Wen or 0) < before, "ซื้อ " .. item .. " ไม่เข้า (Wen " .. before .. ")"
 		end
 	end
 	return false, "ไม่เจอปุ่มซื้อ " .. item
@@ -14916,6 +14941,36 @@ function FinalSel.kill(mob, taskName, max)
 	local p = taskProgress(taskName) or 0
 	report(string.format("ฆ่า %s  %d/%d", mob.name, p, max), Theme.Accent)
 	task.wait(0.5)
+end
+
+-- Mountain Survival: คุย Lavato "Im ready" เริ่มด่านก่อน แล้วผ่านธง 4 จุดตามลำดับ
+-- ธงแต่ละอันมี TouchPart ใส 3x28x29 (Debree.MountainCheckpoints.CheckpointN) วาร์ปเข้าไปแล้วยิง touch เอง
+function FinalSel.checkpoints()
+	local folder = workspace.Debree:FindFirstChild("MountainCheckpoints")
+	local _, hrp = selfParts()
+	if not (folder and hrp) then
+		return false, "ไม่เจอ MountainCheckpoints"
+	end
+	-- เริ่มด่านซ้ำทุก 2 นาทีถ้าธงยังไม่นับ (หมดเวลา / ตกด่าน) ค่าเดา ยังไม่รู้เวลาจำกัดของด่าน
+	if os.clock() - (FinalSel.trialAt or -math.huge) > 120 then
+		FinalSel.trialAt = os.clock()
+		FinalSel.talk("Lavato")
+	end
+	for i = 1, #folder:GetChildren() do
+		local cp = folder:FindFirstChild("Checkpoint" .. i)
+		local touch = cp and cp:FindFirstChild("TouchPart")
+		if touch and not Runner.cancel then
+			report(string.format("Mountain Survival · ธง %d/%d", i, #folder:GetChildren()), Theme.Accent)
+			placeAt(hrp, CFrame.new(touch.Position), "fs-checkpoint")
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			task.wait(0.5)
+			firetouchinterest(hrp, touch, 0)
+			task.wait(0.1)
+			firetouchinterest(hrp, touch, 1)
+			task.wait(1)
+		end
+	end
+	return true
 end
 
 -- ทำเควสที่ถืออยู่หนึ่งจังหวะ แล้วกลับไปอ่านสถานะใหม่ (เควสเปลี่ยนเองตอนจบ)
@@ -14950,13 +15005,27 @@ function FinalSel.step(key)
 			positions = t.spec.Positions, quest = key }, 1, 1)
 	elseif t.spec.Type == "Deliver" then
 		local need = t.spec.RequiredItem
-		if need and itemCount(need) < (t.spec.Count or 1) then
+		-- Bandage เป็น NoSave อาจไม่โผล่ในกระเป๋าที่ wallet อ่าน ซื้อติดแล้วเว้น 60 วิ ไม่งั้นซื้อซ้ำทุกรอบจน Wen หมด
+		FinalSel.boughtAt = FinalSel.boughtAt or {}
+		if need and itemCount(need) < (t.spec.Count or 1) and os.clock() - (FinalSel.boughtAt[need] or -math.huge) > 60 then
 			local ok, why = FinalSel.buy(need)
 			if not ok then
 				return false, why
 			end
+			FinalSel.boughtAt[need] = os.clock()
 		end
-		return FinalSel.talk(t.spec.TargetNpc)
+		local ok, why = FinalSel.talk(t.spec.TargetNpc)
+		-- ปุ่มคำตอบของเกม (Functions.QuestActions ถอดโค้ดดู 25 ก.ย. 2026) ส่งแค่ QuestProgress(เควส, งาน)
+		-- Treat Klien เปิดมินิเกมแถบเลื่อน 20 วิก่อน ผ่านแล้วค่อยส่ง QuestProgress("Treat Klien", "Treat Klien")
+		-- ยืนข้าง NPC อยู่แล้วหลังคุย ส่งเองเลย ไม่ต้องเล่นมินิเกม (กดคำตอบผ่าน getconnections ก็ไม่ติดอยู่ดี)
+		if (taskProgress(t.name) or 0) < t.max then
+			SignalEvent.ToServer("QuestProgress", key, t.name)
+			task.wait(1)
+			return (taskProgress(t.name) or t.max) >= t.max or ok, why
+		end
+		return true
+	elseif t.name == "Checkpoints" then
+		return FinalSel.checkpoints()
 	end
 	for _, mob in ipairs(data.mobs) do
 		if t.name:find(mob.name, 1, true) then
