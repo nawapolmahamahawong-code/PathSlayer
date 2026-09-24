@@ -9771,6 +9771,18 @@ local function buildRows()
 			local at = table.find(queue, name)
 			if at then
 				table.remove(queue, at)
+				-- เอาติ๊กชิ้นที่กำลังทำออก = หยุดเลย (เดิมลบแค่ในรายการ งานที่ค้างโหลดกลับมาทำต่อจนผู้ใช้หยุดไม่ได้)
+				local running = Runner.active and Runner.statusSink == craftUI.queueStatus
+				if running and craftUI.current == name then
+					Runner.stop()
+					craftUI.setStatus("หยุด " .. name .. " แล้ว", Theme.Warn)
+				end
+				if #queue == 0 then
+					Game.setResume(nil)
+					Game.persist.data.ouwiGo = nil
+				elseif running then
+					Game.setResume({ kind = "craft", queue = table.clone(queue) })
+				end
 			else
 				queue[#queue + 1] = name
 			end
@@ -9819,7 +9831,9 @@ local function runQueue()
 				break
 			end
 			craftUI.progress = string.format("[%d/%d] ", #done + 1, #done + #queue)
+			craftUI.current = name
 			local okRun, ok, err = pcall(Runner.craftPiece, name)
+			craftUI.current = nil
 			if setthreadidentity and Game.loadIdentity then
 				setthreadidentity(Game.loadIdentity)
 			end
@@ -9832,7 +9846,11 @@ local function runQueue()
 			elseif not Runner.cancel then
 				lastErr = name .. ": " .. tostring(okRun and err or ok)
 			end
-			table.remove(queue, 1)
+			-- ลบตามชื่อ ผู้ใช้อาจเอาติ๊กออกระหว่างทำ ตัวแรกในรายการอาจไม่ใช่ชิ้นนี้แล้ว
+			local at = table.find(queue, name)
+			if at then
+				table.remove(queue, at)
+			end
 			Game.setResume(#queue > 0 and { kind = "craft", queue = table.clone(queue) } or nil)
 		end
 		craftUI.progress = nil
@@ -13320,7 +13338,10 @@ local function towerLoop(mine)
 					holdPrompt(prompt)
 				end
 			else
-				say(string.format("รอเริ่มรอบ %ss", tostring(inter:GetAttribute("Countdown") or "")))
+				-- Countdown เป็นเวลาเซิร์ฟตอนเริ่ม ไม่ใช่วินาทีที่เหลือ (เดิมโชว์ "รอเริ่มรอบ 1790244400s")
+				local at = tonumber(inter:GetAttribute("Countdown"))
+				local left = at and math.max(0, math.floor(at - workspace:GetServerTimeNow())) or nil
+				say(left and string.format("รอเริ่มรอบ %d วิ", left) or "รอเริ่มรอบ")
 			end
 		end
 		task.wait(1)
@@ -13360,9 +13381,20 @@ ouwiRow = switchRow("Auto-Dungeon", "ปิดอยู่", 5, function(on)
 	Ouwi.on = on
 	if on then
 		start()
-	else
-		Ouwi.loop += 1
+		return
 	end
+	-- ปิด = หยุดจริงทุกทาง: ลูปนี้ งานที่คิว Craft ส่งมา (ouwiGo) และคิว Craft ที่รอกลับมาทำต่อ
+	-- เดิมคิว Craft สั่งเริ่มโดยไม่เปิดสวิตช์ ผู้ใช้เห็นสวิตช์ปิดแต่ระบบยังวิ่ง ปิดไม่ได้
+	Ouwi.loop += 1
+	local data = persistData()
+	data.ouwiGo = nil
+	data.returning = nil
+	if data.resume and data.resume.kind == "craft" then
+		data.resume = nil
+	end
+	Game.save()
+	setSwitch("Insta Kill", false)
+	setSwitch("Kill Aura", false)
 end)
 
 switchRow("ดันเจี้ยน", "Ouwigahara = หอคอยไต่ชั้น (Normal ไม่จัดอันดับ) ต้อง Lv 65", 6, function() end, {
@@ -13428,15 +13460,22 @@ end
 function Game.ouwiRequest()
 	persistData().ouwiGo = true
 	Game.save()
-	Ouwi.on = true
-	start()
+	-- เปิดสวิตช์ให้เห็นว่ากำลังทำ (ไม่บันทึกเป็นค่าที่ผู้ใช้ตั้ง) ผู้ใช้กดปิดได้ = หยุดทั้งหมด
+	ouwiRow.set(true)
 end
+
+-- ปิดสคริปต์ (Delete / X / รันใหม่ทับ) ต้องหยุดลูปนี้ด้วย ไม่งั้นตัวเก่ายังพาตัวละครวิ่งต่อ
+track({
+	Disconnect = function()
+		Ouwi.on = false
+		Ouwi.loop += 1
+	end,
+})
 
 -- เข้าหอคอยเพราะคิว Craft สั่ง (สวิตช์ไม่ได้เปิดค้าง) ก็ต้องทำรอบให้จบแล้วกลับ
 if inTower and persistData().ouwiGo and not Ouwi.on then
 	task.delay(4, function()
-		Ouwi.on = true
-		start()
+		ouwiRow.set(true)
 	end)
 end
 end)()
