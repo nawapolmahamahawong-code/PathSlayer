@@ -961,12 +961,13 @@ function Game.schematicRow(row, guide, wallet)
 		row.locked, row.owned, row.reason = true, true, "มีแล้ว ✓"
 		return
 	end
+	-- ยังขาดของก่อนหน้าก็ยังติ๊กได้ ผู้ใช้กดแถวแล้วกลายเป็นเปิดข้อมูลแทน (แถวล็อก) คิดว่าติ๊กพัง
+	-- ตัวรันบอกเองตอนถึงคิวว่าติดอะไร / capstone รอแบบอื่นในคิวเสร็จก่อน
+	row.farmable = true
+	row.reason = guide.short
 	if guide.how == "trade" and (wallet[guide.give] or 0) == 0 then
-		row.locked = true
-		row.reason = "ต้องมี " .. guide.give .. " ก่อน (ตกปลา Legendary / Lost Chest)"
-		return
-	end
-	if guide.how == "capstone" then
+		row.reason = "ต้องมี " .. guide.give .. " ก่อน (ตกด้วย Legendary Fishing Rod)"
+	elseif guide.how == "capstone" then
 		local Series = require(ReplicatedStorage.CAM.Global.Series)
 		local missing = 0
 		for _, name in ipairs(Series.CapstoneGate(guide.set)) do
@@ -975,13 +976,9 @@ function Game.schematicRow(row, guide, wallet)
 			end
 		end
 		if missing > 0 then
-			row.locked = true
-			row.reason = string.format("ขาดแบบ %s อีก %d ชิ้น (ต้องครบ 9)", guide.set, missing)
-			return
+			row.reason = string.format("ครบ 9 แบบแล้ว Togane วาดให้ (ขาดอีก %d)", missing)
 		end
 	end
-	row.farmable = true
-	row.reason = guide.short
 end
 
 function Game.listings(mode)
@@ -2794,6 +2791,11 @@ local function buildShopRow(data, order)
 	track(infoBtn.MouseButton1Click:Connect(toggleInfo))
 
 	track(hit.MouseButton1Click:Connect(function()
+		-- มีแล้ว (แบบพิมพ์เซ็ต) ไม่ต้องหา บอกที่แถบสถานะ ไม่เปิดกล่องข้อมูลให้ดูเหมือนกดผิด
+		if data.owned then
+			shopUI.setStatus(data.name .. " มีแล้ว ไม่ต้องหา · กด ข้อมูล ดูสเตตัสกับวัตถุดิบตอนตี", Theme.Good)
+			return
+		end
 		-- ติ๊กไม่ได้ กดแล้วเปิดข้อมูลแทน จะได้เห็นว่าได้จากไหน ติดอะไร
 		if data.locked then
 			toggleInfo()
@@ -3203,7 +3205,7 @@ local function runShopQueue()
 			-- วัตถุดิบไปทาง Runner.obtain เสมอแม้ซื้อได้ มันวนซื้อครั้งละ 99 จนครบจำนวน Game.buy ซื้อรอบเดียว
 			local done, ok, err, secsLeft
 			if target.source == "schematic" then
-				done, ok, err = pcall(Runner.schematic, target.name)
+				done, ok, err, secsLeft = pcall(Runner.schematic, target.name)
 			elseif target.farmable or shopFilter.mode == "material" then
 				-- จำนวนเป้าหมายตั้งครั้งแรกที่เริ่มชิ้นนี้ กลับมาทำต่อหลังสลับไปชิ้นอื่นไม่ต้องบวกเพิ่มอีกรอบ
 				goal[target.name] = goal[target.name] or (Game.wallet()[target.name] or 0) + shopFilter.qty()
@@ -8781,7 +8783,15 @@ end
 
 function Methods.trade(guide, schem)
 	if not have(guide.give) then
-		return false, "ต้องมี " .. guide.give .. " ก่อน"
+		-- Lost Cape ตกได้เฉพาะเบ็ด CatchTier "Items" (Legendary) เบ็ดอื่นตกไปก็ไม่มีวันได้ ห้ามปล่อยตกค้าง
+		if not have("Legendary Fishing Rod") then
+			return false, "ต้องมี " .. guide.give .. " ก่อน · ได้จากตกปลาด้วย Legendary Fishing Rod (ยังไม่มี)"
+				.. " หรือหีบ Lost Chest 0.9%"
+		end
+		local ok, why = Runner.fish({ [guide.give] = 1 }, Runner.FishSpot, "หา " .. guide.give .. " · ")
+		if not ok then
+			return false, why
+		end
 	end
 	if not goNpc(guide.npc) then
 		return false, "หา " .. guide.npc .. " ไม่เจอ"
@@ -8792,6 +8802,21 @@ function Methods.trade(guide, schem)
 end
 
 function Methods.capstone(guide, schem)
+	local Series = require(ReplicatedStorage.CAM.Global.Series)
+	local missing = {}
+	for _, name in ipairs(Series.CapstoneGate(guide.set)) do
+		if not have(name) then
+			missing[#missing + 1] = name
+		end
+	end
+	if #missing > 0 then
+		-- แบบอื่นที่ติ๊กไว้ในคิวอาจยังไม่ถึงตา ให้คิวไปทำอันนั้นก่อนแล้ววนกลับมา (ใช้ทางเดียวกับรอบอสเกิด)
+		if Runner.canYield and Runner.canYield(schem) then
+			return false, Runner.RESPAWN, 20
+		end
+		return false, string.format("Togane วาดให้เมื่อมีแบบ %s ครบ 9 ชิ้น ยังขาด: %s", guide.set,
+			table.concat(missing, ", "):gsub(" Schematic", ""))
+	end
 	if not goNpc("Blacksmith Togane", Puzzle.Togane) then
 		return false, "หา Blacksmith Togane ไม่เจอ"
 	end
@@ -8820,7 +8845,7 @@ function Runner.schematic(name)
 	if skillWasOn then
 		Runner.setSkill(false)
 	end
-	local ok, res, why = pcall(Methods[guide.how], guide, name)
+	local ok, res, why, extra = pcall(Methods[guide.how], guide, name)
 	unpin()
 	if auraWasOn then
 		Runner.setAura(true)
@@ -8837,7 +8862,7 @@ function Runner.schematic(name)
 	if res then
 		return true
 	end
-	return false, why
+	return false, why, extra
 end
 end)()
 
