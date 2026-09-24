@@ -14857,6 +14857,9 @@ local function enterTower()
 	return false, "กด Enter แล้วยังไม่ย้าย (ลองใหม่)"
 end
 
+-- ปุ่ม เข้าดันเจี้ยน ในหน้าจุดวาร์ปใช้ทางเดียวกัน (รับเควส Togane ถ้ายังไม่รับ → ไปประตู → กด Enter)
+Game.enterTower = enterTower
+
 -- ฝั่งหอคอย --------------------------------------------------------------
 
 -- คะแนนการ์ด: ผู้ใช้สั่งเน้นแต้มสูงสุด (ตายแล้วแต้มยังอยู่ เอาไปแลกเงิน/ของได้) แต่ต้องรอดถึงชั้นที่ตั้ง
@@ -16030,6 +16033,49 @@ local mainFrame, mainDesc, mainBtn = serverRow(2, "กลับเกมหล�
 	inMain and "อยู่เกมหลักอยู่แล้ว · ออกจากดันเจี้ยน / Lobby แล้วกดปุ่มนี้กลับเซิร์ฟเดิม"
 		or "กลับเซิร์ฟที่เล่นอยู่ก่อนหน้า (VIP ก็กลับห้องเดิม) · ไม่ได้ก็เข้าเซิร์ฟใหม่ของ Ouwland",
 	"กลับ  ›")
+-- เข้าหอคอย Ouwigahara เองกับมือ (ไม่เปิด Auto-Dungeon ให้ เข้าไปแล้วเล่นเองหรือเปิดสวิตช์เองก็ได้)
+local towerDesc = "วาร์ปไปประตูหน้า Hidden Mist แล้วกด Enter ให้ · รับเควส Ill find the forge ที่ Togane ให้ถ้ายังไม่รับ · ต้อง Lv 65"
+local towerFrame, towerDescLabel, towerBtn = serverRow(3, "เข้าดันเจี้ยน Ouwigahara",
+	inMain and towerDesc or "ต้องอยู่เกมหลักก่อน (กด กลับเกมหลัก)", "เข้า  ›")
+if not inMain then
+	towerFrame.BackgroundTransparency = 0.4
+end
+local towerBusy = false
+track(towerBtn.MouseButton1Click:Connect(function()
+	if not inMain then
+		status("เข้าดันเจี้ยนได้จากเกมหลักเท่านั้น · กด กลับเกมหลัก ก่อน", Theme.Warn)
+		return
+	end
+	if towerBusy then
+		return
+	end
+	if Runner.active then
+		status("ตัวรัน (เควส / ฟาร์ม / Get) ทำงานอยู่ จะพาตัวไปที่อื่น · กดหยุดก่อน", Theme.Warn)
+		return
+	end
+	local lv = Game.level()
+	fixIdentity()
+	if lv and lv < 65 then
+		status(string.format("หอคอยต้อง Lv 65 (ตอนนี้ %d)", lv), Theme.Warn)
+		return
+	end
+	if not Game.enterTower then
+		status("ไม่พบส่วนเข้าหอคอย", Theme.Danger)
+		return
+	end
+	towerBusy = true
+	towerDescLabel.Text = "กำลังไปประตู Ouwigahara …"
+	status("กำลังไปประตูดันเจี้ยน · ถึงแล้วกด Enter ให้ รอเซิร์ฟย้ายสักครู่", Theme.Accent)
+	task.spawn(function()
+		local ok, res, why = pcall(Game.enterTower)
+		fixIdentity()
+		towerBusy = false
+		towerDescLabel.Text = towerDesc
+		-- สำเร็จ = เซิร์ฟย้ายไปหอคอย สคริปต์นี้จบก่อนถึงบรรทัดนี้ มาถึงแปลว่าไม่ได้ย้าย
+		status("เข้าดันเจี้ยนไม่สำเร็จ: " .. tostring(ok and (why or "ไม่ย้ายเซิร์ฟ") or res), Theme.Danger)
+	end)
+end))
+
 if inMenu then
 	lobbyFrame.BackgroundTransparency = 0.4
 end
