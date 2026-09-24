@@ -13,6 +13,8 @@ if _G.PathSlayerUnload then
 end
 
 local LocalPlayer = Players.LocalPlayer
+-- identity ของ executor ตอนโหลด ใช้คืนค่าเมื่อ thread งานหล่นเป็น identity เกม (ดู report)
+local LoadIdentity = getthreadidentity and getthreadidentity()
 
 -- สีทั้งชุดดูดมาจาก HUD ของเกมเอง (อ่าน PlayerGui ตอนรัน) ให้เมนูดูเป็นส่วนหนึ่งของเกม
 -- ชุดเดิมเป็นเทาอมน้ำเงิน + ฟ้าไล่ม่วง ผู้เล่นทักว่าหน้าตาเหมือน UI ที่ AI ปั๊ม เพราะไม่เกี่ยวกับเกมเลย
@@ -1022,9 +1024,16 @@ function Game.listings(mode)
 				end
 				local have = wallet[p.currency] or 0
 				if have < p.amount then
-					row.locked = true
-					row.reason = string.format("ขาด %s %s", comma(p.amount - have), p.currency)
-					break
+					-- ราคาที่เป็นของ (Rare Fishing Rod = 10,000 Wen + Golden Fish 5) ให้ Runner.obtain ไปหาของก่อนแล้วซื้อ
+					-- เดิมล็อกแถวทิ้ง "ขาด 5 Golden Fish" ทั้งที่ Golden Fish ตกได้ เงินจริง (Game.Currencies) ยังล็อกเหมือนเดิม
+					if not Game.Currencies[p.currency] then
+						row.farmable = true
+						row.reason = string.format("หา %s %s ก่อนแล้วซื้อ", comma(p.amount - have), p.currency)
+					else
+						row.locked = true
+						row.reason = string.format("ขาด %s %s", comma(p.amount - have), p.currency)
+						break
+					end
 				end
 			end
 		end
@@ -3057,6 +3066,10 @@ local function runShopQueue()
 			if not done then
 				ok, err = false, ok
 			end
+			-- งานข้างในทำ identity หล่นได้ (ดู report) ต่อจากนี้แตะติ๊ก/ป้ายของแผง
+			if setthreadidentity and LoadIdentity then
+				setthreadidentity(LoadIdentity)
+			end
 
 			if err == Runner.RESPAWN and not Runner.cancel then
 				-- ไม่ใช่พลาด ม็อบตายรอเกิด กลับมาอีกทีตอนใกล้เกิด (อย่างน้อย 10 วิ กันวนสลับถี่)
@@ -4448,7 +4461,13 @@ Runner.BOSS_GONE = "boss-gone"
 
 -- Auto-Breathing ใช้ตัวรันชุดเดียวกัน (คุยกับ NPC / ฆ่าม็อบ / เก็บของ) แต่มีแผงของตัวเอง
 -- ตอนมันรันจะตั้ง Runner.statusSink ให้ข้อความไปขึ้นแผงนั้นแทนแผง Auto-Quest
+-- identity ของ thread หล่นเป็น 2 กลางทางได้ (hook มินิเกมตกปลา/Auto Skill ตั้ง 2 ให้ thread ลูกแล้วรั่วมา)
+-- แล้วเขียนป้ายใน gethui พัง "lacking capability Plugin" เจอจริงตอนซื้อเหยื่อก่อนตกปลาในคิว Get Materials
+-- ทุกงานรายงานผ่านตรงนี้ คืน identity ตอนโหลดไฟล์ก่อนแตะ GUI จุดเดียวครอบทุกตัวรัน
 local function report(text, color)
+	if setthreadidentity and LoadIdentity then
+		setthreadidentity(LoadIdentity)
+	end
 	(Runner.statusSink or questUI.setStatus)(text, color or Theme.Muted)
 end
 
@@ -7851,6 +7870,62 @@ local function click(pos)
 	SignalEvent.ToServer("Tool_Mouse", "Up", pos)
 end
 
+-- เหยื่อตามเบ็ด จากบทพูด Jeso (Jeso_Pairing): "Rich bait on that Basic Fishing Rod ... small fry all day"
+-- "On the Rare Fishing Rod, a Fish Head" "the Golden Tentacle pulls the deep things up. Only the Legendary"
+-- เบ็ดกำหนดว่าตกอะไรได้ (CatchTier) เหยื่อเพิ่ม CatchChance / FishLuck = ได้ของบ่อยขึ้น
+-- เดิมไม่ใส่เหยื่อเลย เบ็ด Basic ได้ปลา 1 ตัวใน 90 วิ ที่เหลือ "slipped"
+-- Golden Tentacle ซื้อด้วย Wen ไม่ได้ (Robux หรือหีบ Sealed Chest) มีก็ใช้ ไม่มีก็ถอยไปตัวถัดไป
+Fishing.BaitFor = {
+	["Basic Fishing Rod"] = { "Worm" },
+	["Rare Fishing Rod"] = { "Fish Head", "Worm" },
+	["Legendary Fishing Rod"] = { "Golden Tentacle", "Fish Head", "Worm" },
+}
+Fishing.BaitBuyable = { Worm = true, ["Fish Head"] = true }
+-- ซื้อครั้งละเท่านี้ (Worm 6 Wen / Fish Head 9 Wen ต่อชิ้น) กินหนึ่งชิ้นต่อหนึ่งครั้งที่ปลากิน
+Fishing.BaitStock = 40
+
+local function equippedBaitId()
+	local slot = equippedSlot()
+	local misc = slot and slot:FindFirstChild("Misc")
+	local v = misc and misc:FindFirstChild("EquippedBaitId")
+	return v and v.Value or 0
+end
+
+local function inventoryEntry(name)
+	local slot = equippedSlot()
+	local bag = slot and slot.Inventory:FindFirstChild("Inventory")
+	return bag and bag:FindFirstChild(name)
+end
+
+-- ใส่เหยื่อที่ดีที่สุดที่เบ็ดนี้ใช้ได้ ไม่มีสักอันก็ซื้อตัวที่ซื้อได้ คืนชื่อเหยื่อ (nil = ตกเบ็ดเปล่า)
+local function ensureBait(rodName)
+	local order = Fishing.BaitFor[rodName] or {}
+	local pick
+	for _, name in ipairs(order) do
+		if not pick and (Game.wallet()[name] or 0) > 0 then
+			pick = name
+		end
+	end
+	if not pick then
+		for _, name in ipairs(order) do
+			if not pick and Fishing.BaitBuyable[name] then
+				local ok = Runner.obtain(name, Fishing.BaitStock)
+				if ok then
+					pick = name
+				end
+			end
+		end
+	end
+	local entry = pick and inventoryEntry(pick)
+	local id = entry and entry:FindFirstChild("Id")
+	if id and equippedBaitId() ~= id.Value then
+		-- เดียวกับปุ่มใส่เหยื่อในกระเป๋าเกม (EquippedOptions.Bait): EquipBait(Id), 0 = ถอด
+		SignalEvent.ToServer("EquipBait", id.Value)
+		task.wait(0.5)
+	end
+	return pick
+end
+
 local function waitFor(check, seconds)
 	local untilT = os.clock() + seconds
 	while not check() and os.clock() < untilT and not Runner.cancel do
@@ -7909,6 +7984,7 @@ function Runner.fish(targets, near, prefix)
 	end
 
 	_G.PathSlayerAutoFish = Fishing.WinDelay
+	local bait = ensureBait(rodName)
 	local caught = 0
 	local function done()
 		for name, need in pairs(targets) do
@@ -7971,7 +8047,17 @@ function Runner.fish(targets, near, prefix)
 				task.wait(1)
 			end
 
-			report(string.format("%sโยนเบ็ด · ได้แล้ว %d ตัว · %s", prefix, caught, progress()), Theme.Accent)
+			-- เหยื่อหมดกลางทาง (กินชิ้นละครั้งที่ปลากิน) ซื้อ/ใส่ใหม่ ไม่งั้นตกเบ็ดเปล่าต่อจนจบ
+			if bait and (Game.wallet()[bait] or 0) == 0 then
+				bait = ensureBait(rodName)
+				-- ไปซื้อที่ร้านมา ต้องกลับมายืนริมน้ำก่อน
+				local _, back = selfParts()
+				if back and (back.Position - stand).Magnitude > 4 then
+					placeAt(back, CFrame.lookAt(stand, Vector3.new(water.X, stand.Y, water.Z)), "fishing")
+					task.wait(0.5)
+				end
+			end
+			report(string.format("%sโยนเบ็ด%s · ได้แล้ว %d ตัว · %s", prefix, bait and (" (" .. bait .. ")") or "", caught, progress()), Theme.Accent)
 			catchModel = nil
 			-- สถานะสายดูจากเสียงที่เซิร์ฟเล่นใต้ HumanoidRootPart ไม่เดาจากเวลา
 			-- PS2fishingCAST* = โยนออกแล้ว, PS2fishingRECALL = ดึงกลับ
