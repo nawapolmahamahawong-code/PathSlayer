@@ -9635,6 +9635,12 @@ local function ensureBought(name, need, say)
 	if itemCount(name) >= need then
 		return true
 	end
+	-- ซื้อเองเฉพาะผู้ใช้เปิดไว้ในแผง (ค่าเริ่มปิด) ผู้ใช้เจอ 25 ก.ย. 2026: กด GET แล้ววาร์ปไปซื้อ Silk ที่ Ginzo ทันที
+	-- ทั้งที่คิดว่ามีครบ (แผงเดิมติ๊ก ✓ แยกขั้น 2 กับ 3 แต่ต้องใช้รวมกัน) ขาดแล้วหยุดบอกยอด ให้ผู้ใช้หาเอง
+	if not Game.persist.data.craftBuy then
+		return false, string.format("%s ขาด %s (มี %s ต้องใช้ %s) · ไม่ได้เปิด \"ซื้อที่ Ginzo\"", name,
+			comma(need - itemCount(name)), comma(itemCount(name)), comma(need))
+	end
 	local cost = Craft.buyCost(name, need)
 	if cost > (wallet().Wen or 0) then
 		say(string.format("Wen ไม่พอซื้อ %s (ต้อง %s) · ลงดันเจี้ยนเอา Wen", name, comma(cost)))
@@ -10339,6 +10345,17 @@ local function showDetail(id)
 	end
 	if #mats > 0 then
 		local cards = cardsOf(mats)
+		-- ดาบฐานยังไม่ได้อัป: Scraps / Silk ชุดเดียวกันโดนสูตรอัปกินก่อน ต้องมีรวมสองขั้น (craftRecipe ก็นับแบบนี้)
+		-- เดิมติ๊กแยกกัน มี Silk 1,000 ขึ้น ✓ ทั้งสองช่อง แต่จริงต้อง 1,300
+		local v2 = e.base and itemCount(e.base) < 1 and Craft.v2Of(e.base)
+		for _, c in ipairs(cards) do
+			for _, x in ipairs(v2 and v2.recipe.additionalMaterials or {}) do
+				if x.name == c.name and not Craft.SetMats[c.name] then
+					c.note = string.format("ต้องใช้ ×%s +%s อัปดาบฐาน", comma(c.need), comma(x.amount))
+					c.need += x.amount
+				end
+			end
+		end
 		local done = true
 		for _, c in ipairs(cards) do
 			done = done and c.have >= c.need
@@ -10352,8 +10369,27 @@ local function showDetail(id)
 			text("วัสดุเซ็ตฟาร์มจากหีบบอส แลกชนิดกันได้ 1:1 ที่ Togane · Scraps / Silk ซื้อที่ Ginzo", 32, Theme.Muted, 13,
 				Enum.FontWeight.Regular)
 		else
-			text("Scraps / Silk ซื้อที่ Ginzo (เงินไม่พอซื้อ ลงดันเจี้ยนเอา Wen ก่อน)", 32, Theme.Muted, 13, Enum.FontWeight.Regular)
+			text("Scraps / Silk ต้องมีเองในกระเป๋า · เปิดปุ่มล่างถ้าให้สคริปต์ซื้อที่ Ginzo ตอนขาด", 32, Theme.Muted, 13,
+				Enum.FontWeight.Regular)
 		end
+		local buy = Game.persist.data.craftBuy == true
+		local buyBtn = new("TextButton", {
+			Size = UDim2.fromOffset(0, 26),
+			AutomaticSize = Enum.AutomaticSize.X,
+			BackgroundColor3 = buy and Theme.On or Theme.Raised,
+			AutoButtonColor = false,
+			Text = buy and "ซื้อ Scraps / Silk ที่ Ginzo ถ้าขาด: เปิด" or "ซื้อ Scraps / Silk ที่ Ginzo ถ้าขาด: ปิด",
+			TextColor3 = buy and Theme.Base or Theme.Dim,
+			TextSize = 12,
+			FontFace = font(Enum.FontWeight.SemiBold),
+			LayoutOrder = 33,
+			Parent = detail,
+		}, { capsule(), new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }) })
+		buyBtn.MouseButton1Click:Connect(function()
+			Game.persist.data.craftBuy = not buy or nil
+			Game.save()
+			showDetail(id)
+		end)
 	end
 
 	-- 4 ค่าตี Wen จากดันเจี้ยน
