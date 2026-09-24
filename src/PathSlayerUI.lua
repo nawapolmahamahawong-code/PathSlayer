@@ -2005,7 +2005,9 @@ local Layout = {
 		["ยอมแพ้ที่ชั้น"] = { page = "quest", section = "quest", card = "dungeon", child = 2, title = "ยอมแพ้ที่ชั้น" },
 		["Auto-Skip"] = { page = "quest", section = "quest", card = "dungeon", child = 4, title = "Auto-Skip",
 			help = "ข้ามช่วงพัก 10 วิระหว่างชั้นทันที ไต่เร็วขึ้น" },
-		["เปิด Ouwigahara Chest"] = { page = "quest", section = "quest", card = "dungeon", child = 5,
+		["Auto-Retry"] = { page = "quest", section = "quest", card = "dungeon", child = 5, title = "Auto-Retry",
+			help = "จบรอบ เก็บหีบ แลกของครบแล้ว ออกไปเล่นรอบใหม่เอง · ปิด = รออยู่ในโซนร้านหลังแลกของเสร็จ" },
+		["เปิด Ouwigahara Chest"] = { page = "quest", section = "quest", card = "dungeon", child = 6,
 			title = "เปิด Ouwigahara Chest (30,000 แต้ม)",
 			help = "กล่องโซนร้านหลังจบรอบที่ใช้แต้มเปิด · ปิดไว้ = ไม่กด เก็บแต้มไว้แลกของ" },
 		["แลกแต้มเป็น"] = { page = "quest", section = "quest", card = "dungeon", child = 3,
@@ -15906,6 +15908,9 @@ local Ouwi = {
 	rewardPick = { [1] = true, [2] = true },
 	-- ข้ามช่วงพัก 10 วิระหว่างชั้น (เล่นคนเดียวโหวตเดียวผ่าน) ค่าเริ่มต้นเปิด ผู้ใช้ปิดได้ในแถว Auto-Skip
 	autoSkip = Game.persist.data.switches["Auto-Skip"] ~= false,
+	-- จบรอบแล้วออกไปเข้าประตูเล่นรอบใหม่เอง · ปิด = เก็บหีบ แลกของเสร็จแล้วรออยู่ในโซนร้าน (ผู้ใช้สั่ง 25 ก.ย. 2026)
+	-- ค่าเริ่มต้นเปิด = แบบเดิมก่อนมีสวิตช์นี้
+	autoRetry = Game.persist.data.switches["Auto-Retry"] ~= false,
 	on = false,
 	loop = 0,
 }
@@ -16795,9 +16800,16 @@ local function shops()
 	end
 	persistData().ouwiLog = history
 	persistData().ouwiRunStart = nil
+	-- จดว่าเซิร์ฟนี้เก็บ/แลกเสร็จแล้ว towerLoop วนมาเจอ Phase Ended ซ้ำทุกวิ ห้ามเปิดหีบ/แลกซ้ำ (โหลดสคริปต์ใหม่ก็ยังจำ)
+	persistData().ouwiShopped = game.JobId
+	Game.save()
 	pcall(Runner.hook, "dungeon", log)
 	fixIdentity()
+end
 
+-- ออกจากหอคอยกลับเซิร์ฟเดิม แล้วฝั่งแมพหลัก (returning) เปิด Auto-Dungeon รอบใหม่ต่อเอง
+-- เซิร์ฟหอคอยเล่นได้รอบเดียว: จบแล้ว Phase ค้าง "Ended" และ StartRun ไม่รับตอนไม่ใช่ Lobby (โค้ด Minigames.Ouwigahara)
+local function leaveTower()
 	say("กลับเซิร์ฟเดิม")
 	persistData().ouwiGo = nil
 	-- เป้าหมายใช้แค่รอบนี้ กลับไปแล้วคิว Craft เช็กของใหม่แล้วสั่งรอบถัดไปเอง
@@ -16822,7 +16834,14 @@ local function towerLoop(mine)
 		if state == "Climbing" then
 			climb()
 		elseif phase == "Ended" or LocalPlayer:GetAttribute("InShops") then
-			shops()
+			if persistData().ouwiShopped ~= game.JobId then
+				shops()
+			-- รอบของคิว Get Nightfall Craft ต้องกลับไปทำคิวต่อเสมอ ไม่งั้นคิวค้างรออยู่ในร้าน
+			elseif Ouwi.autoRetry or persistData().ouwiGoal then
+				leaveTower()
+			else
+				say("จบรอบแล้ว · Auto-Retry ปิดอยู่ รออยู่ในโซนร้าน (เปิด Auto-Retry = ออกไปเริ่มรอบใหม่)")
+			end
 		elseif phase == "Lobby" or phase == "Starting" then
 			beginRunLog()
 			if not LocalPlayer:GetAttribute("Readied") then
@@ -17031,6 +17050,13 @@ local skipRow = switchRow("Auto-Skip", "ข้ามช่วงพัก 10 ว
 end)
 if Ouwi.autoSkip then
 	skipRow.set(true)
+end
+
+local retryRow = switchRow("Auto-Retry", "จบรอบ เก็บหีบ แลกของครบแล้ว ออกไปเล่นรอบใหม่เอง", 11, function(on)
+	Ouwi.autoRetry = on
+end)
+if Ouwi.autoRetry then
+	retryRow.set(true)
 end
 
 switchRow("แลกแต้มเป็น", "ติ๊กหลายอย่าง = แบ่งแต้มเท่ากัน · ไม่ติ๊กเลย = ไม่แลก เปิดหีบแล้วกลับไปรันรอบใหม่", 8, function() end, {
