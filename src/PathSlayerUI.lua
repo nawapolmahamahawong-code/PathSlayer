@@ -14792,6 +14792,9 @@ FinalSel.Arena = workspace:GetAttribute("MinigameKey") == "FinalSelection"
 FinalSel.FloorY = -300
 -- ของเควส (Bandage) ซื้อที่ Rika ครั้งละชิ้น prompt Purchase เปิดหลังจบ Find Rika
 FinalSel.ShopWait = 1.5
+-- วาร์ปแล้วรอให้เซิร์ฟเห็นตำแหน่งใหม่ก่อนส่ง remote ที่เซิร์ฟเช็กระยะ (สวิตช์ Parkour 20 stud / Final 75 stud)
+FinalSel.ReplicateWait = 1.5
+FinalSel.DungeonTries = 2
 
 function FinalSel.content()
 	if FinalSel.data then
@@ -14983,24 +14986,45 @@ end
 function FinalSel.dungeon()
 	-- ไม่มีสกิลสองตัวนี้ prompt Train ไม่เปิดด่านเลย สวิตช์ / Stop ที่ส่งไปเซิร์ฟทิ้งหมด
 	-- ส่ง QuestProgress("The Dungeon", "Complete Dungeon") ตรง ๆ ก็ไม่รับ (ลองแล้ว ตัวนับค้าง 0)
+	-- เกมเก็บเป็นตัวนับต่อหมวด ไม่ใช่ชื่อสกิล (Stats.IsSkillUnlocked): SkillTreeUnlockedList["Innate Skills"] = ปลดถึงลำดับไหน
+	-- วัดจาก GetSkillInfoFor: Double Jump ลำดับ 1 · Wall Climb ลำดับ 2 ต้องได้ 2 ขึ้นไป
 	local slot = equippedSlot()
-	local tree = slot and slot:FindFirstChild("SkillTreeUnlockedList")
-	for _, skill in ipairs({ "Double Jump", "Wall Climb" }) do
-		if not (tree and tree:FindFirstChild(skill, true)) then
-			report("The Dungeon ต้องมีสกิล Double Jump + Wall Climb (ยังไม่ได้ปลด " .. skill .. ") · สอบรอบนี้ไปต่อไม่ได้",
-				Theme.Danger)
-			task.wait(10)
-			return true
-		end
+	local innate = slot and slot:FindFirstChild("SkillTreeUnlockedList")
+	innate = innate and innate:FindFirstChild("Innate Skills")
+	if not (innate and innate.Value >= 2) then
+		report("The Dungeon ต้องปลด Double Jump + Wall Climb (Innate Skills) ก่อน · สอบรอบนี้ไปต่อไม่ได้", Theme.Danger)
+		task.wait(10)
+		return true
+	end
+	-- วาร์ปส่งสวิตช์ครบ 7 + ยืนที่ Final ตอน Stop แล้วเซิร์ฟยังไม่ให้เครดิต (ลอง 4 รอบ 25 ก.ย. 2026 ตัวนับค้าง 0)
+	-- เซิร์ฟคงเช็กมากกว่าที่ฝั่ง client เห็น ลองเองครบ DungeonTries รอบแล้วหยุดวาร์ป ให้ผู้เล่นวิ่งเอง จบแล้วรันต่อ
+	FinalSel.dungeonTries = (FinalSel.dungeonTries or 0) + 1
+	if FinalSel.dungeonTries > FinalSel.DungeonTries then
+		Runner.haltAttack()
+		report("Parkour Dungeon · วิ่งเองตอนนี้ (สคริปต์ไม่วาร์ปแล้ว) จบด่านแล้วระบบไปหา Mizuto ต่อเอง", Theme.Warn)
+		task.wait(3)
+		return true
 	end
 	local _, hrp = selfParts()
+	-- prompt Train อยู่ที่ Debree["Parkour Dungeon"].Ref ยืนไกลแล้วมันไม่ stream มา (เจอจริง: Ref หายตอนอยู่แมพ Parkour)
+	local door = FinalSel.content().quests["The Dungeon"].Markers["Complete Dungeon"].Position
+	if hrp and (hrp.Position - door).Magnitude > 60 then
+		placeAt(hrp, CFrame.new(door + Vector3.new(0, 3, 6), door), "fs-parkour")
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		task.wait(2)
+	end
 	local dungeon = workspace.Debree:FindFirstChild("Parkour Dungeon")
 	local prompt = dungeon and dungeon:FindFirstChild("Ref") and dungeon.Ref:FindFirstChildWhichIsA("ProximityPrompt")
 	if prompt and hrp then
 		report("เข้า Parkour Dungeon (ต้องมี Double Jump + Wall Climb)", Theme.Accent)
 		firePromptAt(prompt)
-		-- เกมเล่นฉากตัดแล้ววาร์ปเข้าแมพเอง (WipeTransition + TransitionWait) ค่าเผื่อ ยังไม่ได้วัด
-		task.wait(4)
+		-- เกมเล่นฉากตัดแล้ววาร์ปเข้าแมพเองราว 6 วิหลังกด (วัด 01:22:35 → 01:22:41) แมพลอยอยู่ Y ~890-1040
+		-- เดิมรอ 4 วิ วาร์ปไปสวิตช์แรกก่อน เกมวาร์ปทับทีหลัง สวิตช์แรกหลุด รอจนตัวขึ้นไปอยู่ในแมพจริง
+		local inBy = os.clock() + 12
+		while os.clock() < inBy and hrp.Position.Y < 800 do
+			task.wait(0.25)
+		end
+		task.wait(1)
 	end
 	-- Final อยู่ปลายแมพ ยังไม่ stream มาตอนยืนนอกด่าน (เจอจริง: "ไม่เจอแมพ Parkour" ทั้งที่ Switchs มี)
 	-- ไปยืนที่สวิตช์ตัวสูงสุด (ปลายทาง) ให้ stream ก่อนค่อยหา
@@ -15009,18 +15033,40 @@ function FinalSel.dungeon()
 	if not (switches and hrp) then
 		return false, "ไม่เจอแมพ Parkour"
 	end
-	local list = switches:GetChildren()
-	for i, sw in ipairs(list) do
+	-- Lever ต้องดึงเรียง Switch_1 → Switch_7: เกมสร้าง prompt "Pull" (ปุ่ม T) ให้ทีละด่านตาม attribute Level
+	-- ดึงแล้วด่านเลื่อน ประตูเปิด แล้วค่อยมี prompt ตัวถัดไป เดิมส่ง StateChanged เองเรียงตาม GetChildren ไม่ได้เครดิต
+	local count = #switches:GetChildren()
+	for i = 1, count do
 		if Runner.cancel then
 			return false, "ยกเลิกแล้ว"
 		end
-		local pos = sw:GetPivot().Position
-		report(string.format("Parkour · สวิตช์ %d/%d", i, #list), Theme.Accent)
-		placeAt(hrp, CFrame.new(pos + Vector3.new(0, 3, 4), pos), "fs-parkour")
-		hrp.AssemblyLinearVelocity = Vector3.zero
-		task.wait(0.6)
-		SignalEvent.ToServer("training_signaler", "StateChanged", sw)
-		task.wait(0.4)
+		local sw = switches:FindFirstChild("Switch_" .. i)
+		if sw then
+			local pos = sw:GetPivot().Position
+			report(string.format("Parkour · ดึง Lever %d/%d", i, count), Theme.Accent)
+			placeAt(hrp, CFrame.new(pos + Vector3.new(0, 3, 4), pos), "fs-parkour")
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			-- เซิร์ฟวัดระยะ 20 จากตำแหน่งที่มันเห็น 1.5 วิ ค่าเผื่อ ping ยังไม่ได้วัดว่าต่ำสุดเท่าไร
+			task.wait(FinalSel.ReplicateWait)
+			local pull
+			for _ = 1, 12 do
+				for _, d in ipairs(sw:GetDescendants()) do
+					if d:IsA("ProximityPrompt") and d.Enabled then
+						pull = d
+					end
+				end
+				if pull then
+					break
+				end
+				task.wait(0.25)
+			end
+			if pull then
+				fireproximityprompt(pull)
+			else
+				SignalEvent.ToServer("training_signaler", "StateChanged", sw)
+			end
+			task.wait(1)
+		end
 	end
 	local final
 	for _ = 1, 20 do
@@ -15037,11 +15083,9 @@ function FinalSel.dungeon()
 	report("Parkour · ไปจุด Final", Theme.Accent)
 	placeAt(hrp, CFrame.new(final.Position + Vector3.new(0, 4, 0)), "fs-parkour")
 	hrp.AssemblyLinearVelocity = Vector3.zero
-	task.wait(0.6)
-	firetouchinterest(hrp, final, 0)
-	task.wait(0.1)
-	firetouchinterest(hrp, final, 1)
-	task.wait(1)
+	-- ไม่ยิง touch ให้ Final: มันอยู่คนละ WorldModel firetouchinterest พัง "new overlap in different world"
+	-- เซิร์ฟเช็กแค่ระยะ 75 ตอน Stop อยู่แล้ว
+	task.wait(FinalSel.ReplicateWait)
 	SignalEvent.ToServer("training_signaler", "Stop")
 	task.wait(4)
 	return true
