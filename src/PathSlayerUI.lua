@@ -1822,6 +1822,12 @@ local Layout = {
 			title = "Auto-Attack", help = "บินไปลอยเหนือม็อบที่เลือกไว้แล้วตี (Auto-Quest ตีให้เองอยู่แล้ว)" },
 		["Auto-Money-Farm"] = { page = "quest", section = "quest", card = "money", order = 4,
 			help = "วนฆ่าบอสที่ทิ้งหีบ Coin Pouch (คุ้มสุดต่อ HP) นอนใต้ดินตี แล้วเอาเหรียญไปขาย Ginzo เอง" },
+		["Auto-Dungeon"] = { page = "quest", section = "quest", card = "dungeon", order = 5,
+			help = "เข้าดันเจี้ยนเอง ไต่ชั้นด้วย Insta Kill เลือกการ์ดแต้มสูงสุด ยอมแพ้ตามชั้นที่ตั้ง แลกแต้มเป็นของ แล้วกลับ" },
+		["ดันเจี้ยน"] = { page = "quest", section = "quest", card = "dungeon", child = 1, title = "ดันเจี้ยน" },
+		["ยอมแพ้ที่ชั้น"] = { page = "quest", section = "quest", card = "dungeon", child = 2, title = "ยอมแพ้ที่ชั้น" },
+		["แลกแต้มเป็น"] = { page = "quest", section = "quest", card = "dungeon", child = 3,
+			title = "แลกแต้มเป็น (ติ๊กหลายอย่าง = แบ่งเท่ากัน)" },
 		["Auto-Final-Selection"] = { page = "quest", section = "quest", card = "finalsel", order = 3,
 			help = "ไปรอหน้าประตูสอบ (Sisters, Final Selection Plains) ก่อนเปิดทุก 2 ชม. ต้อง Lv 45 + Human" },
 		["ตีจากใต้ดิน"] = { page = "combat", section = "attack", card = "under", order = 2,
@@ -9249,6 +9255,9 @@ function Craft.balance(mats)
 end
 
 -- ตีชิ้นนี้ขึ้นอีกหนึ่งขั้น (ยังไม่มี = ตี T1) หาทุกอย่างที่ขาดเอง
+-- ค่าคืนพิเศษ: ต้องไปหอคอย Ouwigahara ก่อน (ของฐาน V2) คิวเก็บงานค้างไว้แล้วส่งต่อ Auto-Dungeon
+Runner.TOWER = "__tower"
+
 function Runner.craftPiece(name)
 	local step = Craft.next(name)
 	if not step then
@@ -9272,8 +9281,16 @@ function Runner.craftPiece(name)
 		end
 	end
 
-	-- ของฐาน (ดาบ V2 เช่น Volcanic Katana) ตีได้ที่ Ouwigahara เท่านั้น obtain บอกเหตุผลเองถ้ายังไปไม่ได้
+	-- ของฐาน (ดาบ V2 เช่น Volcanic Katana) ตีได้ที่ Ouwigahara เท่านั้น ส่งต่อให้ Auto-Dungeon ไปตีในหอคอย
 	for _, m in ipairs(recipe.required or {}) do
+		local towerOnly = #Game.recipesFor(m.name) > 0
+		for _, c in ipairs(Game.recipesFor(m.name)) do
+			towerOnly = towerOnly and c.recipe.station == "Ouwigahara"
+		end
+		if towerOnly and (wallet()[m.name] or 0) < m.amount then
+			say(m.name .. " ตีได้แค่ในหอคอย Ouwigahara · ไปดันเจี้ยนก่อน")
+			return false, Runner.TOWER
+		end
 		if m.name ~= name and not Craft.SetMats[m.name] and (wallet()[m.name] or 0) < m.amount then
 			say("หา " .. m.name)
 			local ok, why, extra = Runner.obtain(m.name, m.amount)
@@ -9790,6 +9807,7 @@ local function runQueue()
 	Game.setResume({ kind = "craft", queue = table.clone(queue) })
 	task.spawn(function()
 		local done, lastErr = {}, nil
+		local toTower = false
 		for i = 1, #queue do
 			if Runner.cancel then
 				break
@@ -9803,7 +9821,11 @@ local function runQueue()
 			if setthreadidentity and Game.loadIdentity then
 				setthreadidentity(Game.loadIdentity)
 			end
-			if okRun and ok then
+			if okRun and err == Runner.TOWER then
+				-- งานค้างยังอยู่ในไฟล์ (ไม่ล้าง) กลับจากหอคอยแล้วโหลดใหม่ทำคิวนี้ต่อ
+				toTower = true
+				break
+			elseif okRun and ok then
 				done[#done + 1] = name
 			elseif not Runner.cancel then
 				lastErr = name .. ": " .. tostring(okRun and err or ok)
@@ -9813,7 +9835,9 @@ local function runQueue()
 		end
 		craftUI.progress = nil
 		-- จบเองหรือกด STOP ไม่ต้องทำต่อ (ย้ายแมพกลางทาง = ไม่ถึงบรรทัดนี้ งานค้างยังอยู่ในไฟล์)
-		Game.setResume(nil)
+		if not toTower then
+			Game.setResume(nil)
+		end
 		local cancelled = Runner.cancel
 		Runner.active = false
 		Runner.statusSink = nil
@@ -9825,6 +9849,10 @@ local function runQueue()
 		end
 		rebuild()
 		craftUI.setStatus(summary, lastErr and Theme.Warn or Theme.Good)
+		if toTower and Game.ouwiRequest then
+			craftUI.setStatus("ต้องตีของฐานในหอคอย Ouwigahara · Auto-Dungeon พาไปแล้วกลับมาทำคิวต่อเอง", Theme.Accent)
+			Game.ouwiRequest()
+		end
 	end)
 end
 
@@ -12752,6 +12780,644 @@ _G.PathSlayerUnload = unload
 
 track(closeBtn.MouseButton1Click:Connect(unload))
 
+-- Auto-Dungeon (Ouwigahara) ------------------------------------------------
+-- หอคอย Ouwigahara อยู่คนละเซิร์ฟ (PlaceId 75556147183481) เข้าทางประตูหน้า Hidden Mist (-1605, 1014, 1142)
+-- สคริปต์ตามไปเองด้วย queue_on_teleport + สวิตช์นี้จำไว้ในไฟล์ config เลยทำต่อทันทีที่โหลดขึ้นมาอีกฝั่ง
+-- วงจร: เข้าประตู → Ready Up → ไต่ชั้นด้วย Insta Kill + เลือกการ์ดแต้มสูงสุด → จบที่ชั้นที่ตั้ง (70)
+-- → เปิดหีบ Cache → ตีอาวุธ V2 ที่ Togane ถ้าของครบ → แลกแต้มเป็น Mythic Ore / Wen ที่ Zeni → Leave กลับ
+-- แต้ม (RunPoints) อยู่แค่ในเซิร์ฟหอคอยรอบนั้น ออกแล้วหาย ต้องใช้ให้หมดก่อน Leave เสมอ
+-- ตัวเลขทดสอบจริง 24 ก.ย. 2026 (Insta Kill ทันที + Kill Aura): ชั้น 7-16 ใน 4 นาที แต้มรวม 4,830 ไม่เสียหัวใจ
+;(function()
+local RunService = game:GetService("RunService")
+local Ouwi = {
+	Place = 75556147183481,
+	Portal = Vector3.new(-1605.633, 1014.179, 1142.769),
+	-- โซนร้านหลังจบรอบ (Shop.PlaceCaches / NPC ของ Content.Ouwigahara)
+	Zeni = Vector3.new(-2290.288, 1141.71, -2634.784),
+	Togane = Vector3.new(-2312.125, 1144.3, -2684.875),
+	Caches = Vector3.new(-2339.874, 1142, -2635.096),
+	WenPack = "1,000 Wen",
+	WenPackPrice = 2500,
+	MythicPrice = 30000,
+	-- ทุกสูตร V2 ที่ Togane ฝั่งหอคอย: 90,000 แต้ม + Mythic Ore 10 + Scraps 500 + Silk 300
+	V2Mythic = 10,
+	-- ผู้ใช้กำหนดสูงสุด 80 (ชั้นลึกกว่า 50 ม็อบโตแบบทวีคูณ Waves.DeepFloor)
+	StopChoices = { 30, 40, 50, 60, 70, 80 },
+	stopFloor = 70,
+	-- ของที่แลกด้วยแต้มตอนจบรอบ (ติ๊กหลายอย่าง = แบ่งแต้มเท่ากัน) ชื่อ/ราคาจาก Shop.itemsforsale ฝั่งหอคอย
+	Rewards = {
+		{ key = "Wen", item = "1,000 Wen", price = 2500 },
+		{ key = "Mythic Ore", item = "Mythic Refinement Ore", price = 30000 },
+		{ key = "Refinement Ore", item = "Refinement Ore", price = 1500 },
+		{ key = "EXP", item = "1,000 Exp", price = 3500 },
+	},
+	rewardPick = { [1] = true, [2] = true },
+	on = false,
+	loop = 0,
+}
+local inTower = game.PlaceId == Ouwi.Place or workspace:GetAttribute("MinigameKey") == "Ouwigahara"
+local ouwiRow
+
+local function fixIdentity()
+	if setthreadidentity and Game.loadIdentity then
+		setthreadidentity(Game.loadIdentity)
+	end
+end
+
+local function say(text)
+	fixIdentity()
+	if ouwiRow then
+		ouwiRow.setDesc(text)
+	end
+end
+
+local function stream(pos)
+	local done = false
+	task.spawn(function()
+		pcall(function()
+			LocalPlayer:RequestStreamAroundAsync(pos, 4)
+		end)
+		done = true
+	end)
+	local untilT = os.clock() + 4
+	while not done and os.clock() < untilT do
+		task.wait(0.1)
+	end
+end
+
+-- กดค้าง prompt จริง (Ready Up / Enter / Leave 0.5 วิ) ตรึงตัวไว้ระหว่างกด
+local function holdPrompt(prompt)
+	local _, hrp = selfParts()
+	if not (prompt and hrp) then
+		return false
+	end
+	local p = prompt.Parent
+	local pos = p:IsA("BasePart") and p.Position or (p:IsA("Attachment") and p.WorldPosition) or p:GetPivot().Position
+	local goal = CFrame.new(pos + Vector3.new(0, 3, 3), pos)
+	local pin = RunService.Heartbeat:Connect(function()
+		hrp.CFrame = goal
+		hrp.AssemblyLinearVelocity = Vector3.zero
+	end)
+	task.wait(1)
+	prompt.RequiresLineOfSight = false
+	local fired = false
+	local c = prompt.Triggered:Connect(function()
+		fired = true
+	end)
+	prompt:InputHoldBegin()
+	task.wait(prompt.HoldDuration + 0.4)
+	prompt:InputHoldEnd()
+	task.wait(0.8)
+	c:Disconnect()
+	pin:Disconnect()
+	return fired
+end
+
+local function findPrompt(action, near, radius)
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("ProximityPrompt") and d.ActionText == action then
+			local p = d.Parent
+			local pos = p:IsA("BasePart") and p.Position or (p:IsA("Attachment") and p.WorldPosition) or nil
+			if not near or (pos and (pos - near).Magnitude <= (radius or 80)) then
+				return d
+			end
+		end
+	end
+end
+
+local function persistData()
+	return Game.persist.data
+end
+
+-- ฝั่งแมพหลัก --------------------------------------------------------------
+
+-- เซิร์ฟต้นทาง: ผู้เล่นเล่นใน VIP แต่ปุ่ม Leave ของหอคอย (TeleportHandler.ToOrigin) ส่งกลับเซิร์ฟ public
+-- (ผู้ใช้เจอจริง 24 ก.ย.) จำไว้ก่อนเข้าแล้วขอย้ายกลับเซิร์ฟนี้เองด้วย Teleporter.Request { placeId, jobId }
+local function rememberOrigin()
+	persistData().origin = {
+		placeId = game.PlaceId,
+		jobId = game.JobId,
+		privateId = game.PrivateServerId,
+		ownerId = game.PrivateServerOwnerId,
+	}
+	Game.save()
+end
+
+local function requestTeleport(settings)
+	local ok, Teleporter = pcall(require, ReplicatedStorage.CAM.Client.Modules.Teleporter)
+	fixIdentity()
+	if not ok then
+		return false
+	end
+	local sent, res = pcall(Teleporter.Request, settings)
+	fixIdentity()
+	return sent and res == true
+end
+
+-- กลับเซิร์ฟต้นทาง: ตาม jobId ก่อน (VIP ของผู้เล่นยังเปิดอยู่) ไม่ได้ลองทางเจ้าของเซิร์ฟ
+local function goOrigin()
+	local o = persistData().origin
+	if not o or not o.jobId then
+		return false
+	end
+	if requestTeleport({ placeId = o.placeId, jobId = o.jobId, allowFallback = false }) then
+		return true
+	end
+	if (o.ownerId or 0) > 0 then
+		return requestTeleport({ placeId = o.placeId, privateOwner = o.ownerId })
+	end
+	return false
+end
+
+local function enterTower()
+	local Quests = require(ReplicatedStorage.CAM.Global.Subsets.Gameplay.Quests)
+	rememberOrigin()
+	fixIdentity()
+	-- ประตูเปิดให้หลังรับเควสของ Togane ("Ill find the forge(Lv 65)") เดินเข้าประตูคือจบเควสนั้นเอง
+	if Quests.GetPlayerQuestState(LocalPlayer, "Ill find the forge(Lv 65)") == "None" then
+		say("รับเควส Ill find the forge ที่ Togane ก่อน")
+		local spot = npcSpawnPoint("Blacksmith Togane")
+		local _, hrp = selfParts()
+		if spot and hrp then
+			placeAt(hrp, CFrame.new(spot.pos + Vector3.new(0, 3, 5), spot.pos), "forge")
+			task.wait(2)
+			SignalEvent.ToServer("AddQuest", "Ill find the forge(Lv 65)")
+			task.wait(1.5)
+		end
+	end
+	say("ไปประตู Ouwigahara")
+	stream(Ouwi.Portal)
+	local _, hrp = selfParts()
+	if hrp then
+		placeAt(hrp, CFrame.new(Ouwi.Portal + Vector3.new(0, 4, 0)), "ouwigahara")
+	end
+	task.wait(1.5)
+	local pad = workspace.Map:FindFirstChild("OuwigaharaPromptPad")
+	local prompt = pad and pad:FindFirstChildWhichIsA("ProximityPrompt", true)
+	if not prompt then
+		return false, "ประตู Ouwigahara ไม่โหลด"
+	end
+	holdPrompt(prompt)
+	say("กำลังย้ายเข้าหอคอย…")
+	-- เซิร์ฟย้ายตัวเราเอง (OnTeleport RequestedFromServer) สคริปต์นี้จบตรงนั้น ที่เหลืออีกฝั่งทำต่อ
+	task.wait(20)
+	return false, "กด Enter แล้วยังไม่ย้าย (ลองใหม่)"
+end
+
+-- ฝั่งหอคอย --------------------------------------------------------------
+
+-- คะแนนการ์ด: ผู้ใช้สั่งเน้นแต้มสูงสุด (ตายแล้วแต้มยังอยู่ เอาไปแลกเงิน/ของได้) แต่ต้องรอดถึงชั้นที่ตั้ง
+-- เลยให้ชีวิตเพิ่มสูงสุด รองลงมาการ์ดแต้ม/ตัวคูณแต้ม สเตตัสป้องกันมีค่ามากขึ้นเมื่อชั้นลึก
+local function cardScore(c, floor)
+	local t = c:GetAttribute("Type")
+	local title = tostring(c:GetAttribute("Title") or "")
+	local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+	local hpPct = hum and hum.MaxHealth > 0 and hum.Health / hum.MaxHealth or 1
+	if t == "ExtraLife" or t == "Revive" then
+		return 150
+	elseif t == "Points" or t == "Fortune" then
+		return (tonumber(c:GetAttribute("Points")) or 50) / 4
+	elseif t == "Event" then
+		-- เดิมพัน/จับเวลาเสียแต้มได้ มือเปล่า/ห้ามสกิลทำ Insta Kill ตีไม่ได้
+		for _, bad in ipairs({ "Wager", "Time Attack", "Tribute", "Bare Hands", "Iron Discipline" }) do
+			if title:find(bad) then
+				return -100
+			end
+		end
+		local mult = tonumber(title:match("x(%d+%.?%d*)")) or 1
+		return (mult - 1) * 150
+	elseif t == "Stat" then
+		if title:find("Health") or title:find("Reduction") then
+			return floor >= 40 and 45 or 30
+		elseif title:find("Damage") or title:find("Attack Speed") then
+			return 35
+		end
+		return 8
+	elseif t == "Heal" then
+		return hpPct < 0.5 and 80 or 1
+	elseif t == "Potion" then
+		return 20
+	elseif t == "Weapon" or t == "Forge" then
+		return 15
+	elseif t == "Skip" then
+		return 0
+	end
+	return 4
+end
+
+local function pickCards()
+	local offers = LocalPlayer:FindFirstChild("OuwigaharaOffers")
+	local cards = offers and offers:GetChildren() or {}
+	if #cards == 0 then
+		return
+	end
+	local floor = workspace:GetAttribute("MinigameFloor") or 1
+	local best, bestScore
+	for _, c in ipairs(cards) do
+		local s = cardScore(c, floor)
+		if not bestScore or s > bestScore then
+			best, bestScore = c, s
+		end
+	end
+	-- ของใน hand ไม่คุ้มเลย (คะแนน < 5) มีรีโรลเหลือใช้รีโรลก่อน
+	if bestScore < 5 and (offers:GetAttribute("Rerolls") or 0) > 0 then
+		SignalEvent.ToServer("OuwigaharaRequest", { action = "Reroll" })
+		task.wait(0.8)
+		return
+	end
+	SignalEvent.ToServer("OuwigaharaRequest", { action = "Pick", id = best.Name })
+	task.wait(0.8)
+	-- เล่นคนเดียวโหวตข้ามพัก 10 วิได้ทันที
+	SignalEvent.ToServer("OuwigaharaRequest", { action = "Skip" })
+end
+
+local function nearestEnemy(hrp)
+	local best, bestD
+	for _, m in ipairs(workspace.Humanoids:GetChildren()) do
+		local h = m:FindFirstChildOfClass("Humanoid")
+		local root = m:FindFirstChild("HumanoidRootPart")
+		if root and h and h.Health > 0 and m:FindFirstChild("OuwigaharaMark") then
+			local d = (root.Position - hrp.Position).Magnitude
+			if not bestD or d < bestD then
+				best, bestD = m, d
+			end
+		end
+	end
+	return best, bestD
+end
+
+local function setSwitch(key, state)
+	for _, entry in ipairs(toggles) do
+		if entry.key == key and entry.isOn() ~= state then
+			pcall(entry.set, state)
+		end
+	end
+end
+
+-- ตีจริงด้วย Insta Kill โหมดทันที (ผู้ใช้สั่ง ไม่ต้องได้ของ) ตีบอสด้วย + Kill Aura ตามม็อบ + Auto Skill
+local function combatOn()
+	local mode = Game.persist.choiceRows["โหมด Insta Kill"]
+	local boss = Game.persist.choiceRows["บอส"]
+	if mode then
+		pcall(mode.restore, 2)
+	end
+	if boss then
+		pcall(boss.restore, 2)
+	end
+	setSwitch("Insta Kill", true)
+	setSwitch("Kill Aura", true)
+	setSwitch("Auto Skill", true)
+end
+
+-- ออกจากรอบด้วยการตาย (หอคอยไม่มีปุ่มออกตอนยังมีชีวิต) ตายไม่เสียแต้ม หัวใจหมดแล้วเซิร์ฟพาไปโซนร้าน
+local function endRun()
+	say(string.format("ครบชั้น %d แล้ว จบรอบ (ตายไม่เสียแต้ม)", Ouwi.stopFloor))
+	setSwitch("Insta Kill", false)
+	setSwitch("Kill Aura", false)
+	local untilT = os.clock() + 120
+	while os.clock() < untilT and not LocalPlayer:GetAttribute("Spectating") do
+		local phase = ReplicatedStorage:FindFirstChild("Intermission") and ReplicatedStorage.Intermission:GetAttribute("Phase")
+		if phase == "Ended" then
+			break
+		end
+		local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+		if hum and hum.Health > 0 then
+			hum:ChangeState(Enum.HumanoidStateType.Dead)
+			hum.Health = 0
+		end
+		task.wait(1)
+	end
+end
+
+local function climb()
+	combatOn()
+	local lastMap = workspace:GetAttribute("MinigameMap")
+	local pauseUntil = 0
+	while Ouwi.on and workspace:GetAttribute("MinigameState") == "Climbing" do
+		fixIdentity()
+		local floor = workspace:GetAttribute("MinigameFloor") or 1
+		if floor > Ouwi.stopFloor then
+			endRun()
+			return
+		end
+		-- ย้ายแมพ (ทุก 10 ชั้น) เซิร์ฟเช็กว่าตัวเราอยู่ใกล้แท่นเกิดหลัง 3.5 วิ ห้ามวาร์ปไปไหนช่วงนั้น
+		local map = workspace:GetAttribute("MinigameMap")
+		if map ~= lastMap then
+			lastMap = map
+			pauseUntil = os.clock() + 4
+		end
+		pickCards()
+		local _, hrp = selfParts()
+		if hrp and os.clock() > pauseUntil and not LocalPlayer:GetAttribute("Spectating") then
+			local enemy, d = nearestEnemy(hrp)
+			if enemy and d > 8 then
+				local p = enemy.HumanoidRootPart.Position
+				hrp.CFrame = CFrame.lookAt(p + (hrp.Position - p).Unit * 3 + Vector3.new(0, 1, 0), p)
+			end
+		end
+		say(string.format("ชั้น %d/%d · แต้ม %s · หัวใจ %s", floor, Ouwi.stopFloor,
+			comma(LocalPlayer:GetAttribute("RunPoints") or 0), tostring(LocalPlayer:GetAttribute("Hearts") or "?")))
+		task.wait(0.3)
+	end
+end
+
+-- สูตร V2 ฝั่งหอคอยที่ทำได้ตอนนี้ (มีของฐาน Mythic Scraps Silk แต้มครบ) เลือกตัวที่เป็นของฐานของเซ็ต Nightfall ก่อน
+local function craftableV2(points)
+	local w = Game.wallet()
+	local best
+	for id, r in pairs(Crafting and Crafting.Definitions or {}) do
+		local price = r.price or {}
+		if r.station == "Ouwigahara" and price.RunPoints and not price.Wen and points >= price.RunPoints then
+			local ok = true
+			for _, input in ipairs(Game.recipeInputs(r)) do
+				if input.name ~= "RunPoints" and (w[input.name] or 0) < input.amount then
+					ok = false
+				end
+			end
+			if ok then
+				local forNightfall = false
+				for _, c in pairs(Crafting.Definitions) do
+					local first = c.required and c.required[1]
+					if first and first.name == r.result and tostring(c.result):find("^Nightfall") then
+						forNightfall = true
+					end
+				end
+				if not best or (forNightfall and not best.nf) then
+					best = { id = id, recipe = r, nf = forNightfall }
+				end
+			end
+		end
+	end
+	return best
+end
+
+-- มีของฐานของสูตร V2 ในกระเป๋าไหม (จะได้เก็บ Mythic Ore ไว้ตี)
+local function wantsMythic()
+	local w = Game.wallet()
+	for _, r in pairs(Crafting and Crafting.Definitions or {}) do
+		local first = r.required and r.required[1]
+		if r.station == "Ouwigahara" and first and (w[first.name] or 0) > 0 and first.name ~= r.result then
+			return true
+		end
+	end
+	return false
+end
+
+local function buyAt(where, item, count)
+	if count <= 0 then
+		return true
+	end
+	local _, hrp = selfParts()
+	stream(where)
+	if hrp then
+		hrp.CFrame = CFrame.new(where + Vector3.new(0, 2, 5), where)
+	end
+	task.wait(1)
+	local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
+	-- ตะกร้าเดียวกับหน้าคุย NPC (Dialogue.ProceedWithCartPurchase): { [ชื่อของ] = จำนวน } ครั้งละไม่เกิน 99
+	local left = count
+	while left > 0 do
+		local n = math.min(left, 99)
+		local ok, res = pcall(SignalFunction.ToServer, "PurchaseSelection", { [item] = n })
+		fixIdentity()
+		if not ok or not res then
+			return false
+		end
+		left -= n
+		task.wait(0.4)
+	end
+	return true
+end
+
+local function shops()
+	say("จบรอบ เปิดหีบ Cache")
+	task.wait(3)
+	-- หีบ Cache ชั้นละ 10 วางเรียงกันที่จุดเดียว เปิดฟรี
+	stream(Ouwi.Caches)
+	for _ = 1, 12 do
+		local prompt
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if d:IsA("ProximityPrompt") and d.Enabled and d.Parent and (d.Parent:IsA("BasePart") or d.Parent:IsA("Attachment")) then
+				local pos = d.Parent:IsA("BasePart") and d.Parent.Position or d.Parent.WorldPosition
+				if (pos - Ouwi.Caches).Magnitude < 40 and d.ActionText ~= "Chat" then
+					prompt = d
+					break
+				end
+			end
+		end
+		if not prompt then
+			break
+		end
+		holdPrompt(prompt)
+		task.wait(0.5)
+	end
+	pcall(collectLoot, { wait = true })
+	fixIdentity()
+
+	local points = LocalPlayer:GetAttribute("RunPoints") or 0
+	local v2 = craftableV2(points)
+	if v2 then
+		say("ตี " .. v2.recipe.result .. " ที่ Togane")
+		stream(Ouwi.Togane)
+		local _, hrp = selfParts()
+		if hrp then
+			hrp.CFrame = CFrame.new(Ouwi.Togane + Vector3.new(0, 2, 4), Ouwi.Togane)
+		end
+		task.wait(1.2)
+		local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
+		pcall(SignalFunction.ToServer, "CraftRecipe", v2.id)
+		fixIdentity()
+		task.wait(1.5)
+		points = LocalPlayer:GetAttribute("RunPoints") or 0
+	end
+
+	-- แต้มที่เหลือแบ่งเท่ากันตามของที่ติ๊ก ส่วนแบ่งที่ไม่พอซื้อสักชิ้น (Mythic 30,000) โยกไปของที่ติ๊กตัวอื่น
+	local picked = {}
+	for i, r in ipairs(Ouwi.Rewards) do
+		if Ouwi.rewardPick[i] then
+			picked[#picked + 1] = r
+		end
+	end
+	if #picked == 0 then
+		picked = { Ouwi.Rewards[1] }
+	end
+	local share = math.floor(points / #picked)
+	local afford = {}
+	for _, r in ipairs(picked) do
+		if share >= r.price then
+			afford[#afford + 1] = r
+		end
+	end
+	if #afford == 0 then
+		table.sort(picked, function(x, y)
+			return x.price < y.price
+		end)
+		afford = { picked[1] }
+	end
+	share = math.floor(points / #afford)
+	for _, r in ipairs(afford) do
+		local n = math.floor(math.min(share, LocalPlayer:GetAttribute("RunPoints") or 0) / r.price)
+		if n > 0 then
+			say(string.format("แลก %s × %d", r.item, n))
+			buyAt(Ouwi.Zeni, r.item, n)
+		end
+	end
+	-- เศษที่เหลือจากการปัด ซื้อของถูกสุดที่ติ๊กไว้ให้หมด (ออกแล้วแต้มหาย)
+	table.sort(afford, function(x, y)
+		return x.price < y.price
+	end)
+	local rest = LocalPlayer:GetAttribute("RunPoints") or 0
+	local cheap = afford[1]
+	if cheap and rest >= cheap.price then
+		buyAt(Ouwi.Zeni, cheap.item, math.floor(rest / cheap.price))
+	end
+
+	say("กลับเซิร์ฟเดิม")
+	persistData().ouwiGo = nil
+	persistData().returning = true
+	Game.save()
+	if not goOrigin() then
+		local leave = findPrompt("Leave")
+		if leave then
+			holdPrompt(leave)
+		end
+	end
+	task.wait(20)
+end
+
+local function towerLoop(mine)
+	while Ouwi.on and Ouwi.loop == mine do
+		fixIdentity()
+		local inter = ReplicatedStorage:FindFirstChild("Intermission")
+		local phase = inter and inter:GetAttribute("Phase")
+		local state = workspace:GetAttribute("MinigameState")
+		if state == "Climbing" then
+			climb()
+		elseif phase == "Ended" or LocalPlayer:GetAttribute("InShops") then
+			shops()
+		elseif phase == "Lobby" or phase == "Starting" then
+			if not LocalPlayer:GetAttribute("Readied") then
+				say("Ready Up")
+				local pad = workspace.Map:FindFirstChild("Minigame Map") and workspace.Map["Minigame Map"]:FindFirstChild("StartPad")
+				local prompt = pad and pad:FindFirstChildWhichIsA("ProximityPrompt", true)
+				if prompt then
+					holdPrompt(prompt)
+				end
+			else
+				say(string.format("รอเริ่มรอบ %ss", tostring(inter:GetAttribute("Countdown") or "")))
+			end
+		end
+		task.wait(1)
+	end
+end
+
+local function worldLoop(mine)
+	-- รอให้งานที่ค้าง (คิว Craft) ได้เริ่มก่อน ถ้างานนั้นยังต้องใช้หอคอย มันส่งต่อมาทาง ouwiGo เอง
+	task.wait(8)
+	if persistData().returning then
+		return
+	end
+	while Ouwi.on and Ouwi.loop == mine do
+		fixIdentity()
+		local data = persistData()
+		if not Runner.active and (not data.resume or data.ouwiGo) then
+			pcall(enterTower)
+		else
+			say(Runner.active and "รอตัวรันอื่นทำงานให้จบก่อน" or "รองานที่ค้างทำต่อ")
+		end
+		task.wait(5)
+	end
+end
+
+local function start()
+	Ouwi.loop += 1
+	local mine = Ouwi.loop
+	task.spawn(function()
+		local ok, err = pcall(inTower and towerLoop or worldLoop, mine)
+		if not ok then
+			say("ผิดพลาด: " .. tostring(err):sub(1, 90))
+		end
+	end)
+end
+
+ouwiRow = switchRow("Auto-Dungeon", "ปิดอยู่", 5, function(on)
+	Ouwi.on = on
+	if on then
+		start()
+	else
+		Ouwi.loop += 1
+	end
+end)
+
+switchRow("ดันเจี้ยน", "Ouwigahara = หอคอยไต่ชั้น (Normal ไม่จัดอันดับ) ต้อง Lv 65", 6, function() end, {
+	choices = { "Ouwigahara" },
+	selected = 1,
+	onChoice = function() end,
+})
+
+switchRow("ยอมแพ้ที่ชั้น", "เคลียร์ชั้นนี้แล้วจบรอบเอง ได้หีบ Cache ทุก 10 ชั้น", 7, function() end, {
+	choices = { "30", "40", "50", "60", "70", "80" },
+	selected = 5,
+	onChoice = function(i)
+		Ouwi.stopFloor = Ouwi.StopChoices[i]
+	end,
+})
+
+switchRow("แลกแต้มเป็น", "ติ๊กหลายอย่าง = แบ่งแต้มเท่ากัน · ของครบตีอาวุธ V2 ให้ก่อน", 8, function() end, {
+	choices = { "Wen", "Mythic Ore", "Ore", "EXP" },
+	multi = true,
+	selected = { 1, 2 },
+	onChoice = function(_, picked)
+		Ouwi.rewardPick = picked
+	end,
+})
+
+-- กลับจากหอคอยแล้วไม่ได้อยู่เซิร์ฟต้นทาง (หลุดไป public) ย้ายกลับ VIP เองก่อนทำอย่างอื่น
+if not inTower and persistData().returning then
+	task.delay(5, function()
+		local o = persistData().origin or {}
+		local home = game.JobId == o.jobId or (o.privateId ~= nil and o.privateId ~= "" and game.PrivateServerId == o.privateId)
+		if home or not o.jobId or o.privateId == "" then
+			persistData().returning = nil
+			Game.save()
+			if Ouwi.on then
+				start()
+			end
+			return
+		end
+		say("หลุดมาเซิร์ฟ public · ย้ายกลับเซิร์ฟ VIP เดิม")
+		for _ = 1, 3 do
+			if goOrigin() then
+				return
+			end
+			task.wait(10)
+		end
+		-- ย้ายไม่ได้ (VIP ปิดไปแล้ว) เล่นต่อเซิร์ฟนี้
+		persistData().returning = nil
+		Game.save()
+		if Ouwi.on then
+			start()
+		end
+	end)
+end
+
+-- คิว Craft เจอของฐานที่ตีได้แค่ในหอคอย: สั่งไปหอคอย (งานค้างยังอยู่ กลับมาแล้วคิวทำต่อเอง)
+function Game.ouwiRequest()
+	persistData().ouwiGo = true
+	Game.save()
+	Ouwi.on = true
+	start()
+end
+
+-- เข้าหอคอยเพราะคิว Craft สั่ง (สวิตช์ไม่ได้เปิดค้าง) ก็ต้องทำรอบให้จบแล้วกลับ
+if inTower and persistData().ouwiGo and not Ouwi.on then
+	task.delay(4, function()
+		Ouwi.on = true
+		start()
+	end)
+end
+end)()
+
 -- ตามไปทุกเซิร์ฟ/แมพ: ย้ายแล้วโหลดตัวเองใหม่ (ลิงก์ GitHub ก่อน โหลดไม่ได้ใช้ไฟล์ใน workspace)
 -- executor เก็บคิวไว้แค่การย้ายครั้งถัดไป ทุกครั้งที่โหลดเลยต้องใส่ใหม่
 if typeof(queue_on_teleport) == "function" then
@@ -12785,7 +13451,8 @@ task.delay(2, function()
 	end
 	local job = data.resume
 	local resume = job and Game.persist.resumers[job.kind]
-	if resume then
+	-- ในเซิร์ฟดันเจี้ยนไม่ทำคิว Craft/Get (ของพวกนั้นอยู่แมพหลัก) รอกลับไปก่อน
+	if resume and not workspace:GetAttribute("IsMinigame") then
 		task.wait(3)
 		pcall(resume, job)
 	end
