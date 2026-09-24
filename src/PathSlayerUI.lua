@@ -2003,7 +2003,7 @@ local Layout = {
 			title = "เปิด Ouwigahara Chest (30,000 แต้ม)",
 			help = "กล่องโซนร้านหลังจบรอบที่ใช้แต้มเปิด · ปิดไว้ = ไม่กด เก็บแต้มไว้แลกของ" },
 		["แลกแต้มเป็น"] = { page = "quest", section = "quest", card = "dungeon", child = 3,
-			title = "แลกแต้มเป็น (ติ๊กหลายอย่าง = แบ่งเท่ากัน)" },
+			title = "แลกแต้มเป็น (ติ๊กหลายอย่าง = แบ่งเท่ากัน · ไม่ติ๊ก = ไม่แลก)" },
 		["Kasugai Crow Auto-Quest"] = { page = "quest", section = "quest", card = "crow", order = 6,
 			help = "รับเควสล่าบอสจากกระดานอีกาเอง (บอสที่ยืนอยู่ก่อน) ตีแบบใต้ดิน เก็บหีบ แล้ววนรับเควสถัดไป" },
 		["Auto-Final-Selection"] = { page = "quest", section = "quest", card = "finalsel", order = 3,
@@ -6652,7 +6652,7 @@ local function switchRow(name, desc, order, onChange, opts)
 
 		local buttons = {}
 		local current = opts.selected or 1
-		-- multi: เลือกได้หลายปุ่ม เก็บเป็นเซ็ต { [i] = true } ต้องเหลืออย่างน้อยหนึ่งเสมอ
+		-- multi: เลือกได้หลายปุ่ม เก็บเป็นเซ็ต { [i] = true } ต้องเหลืออย่างน้อยหนึ่ง ยกเว้นแถวที่ allowNone (ไม่เลือกเลย = ปิดทั้งหมด)
 		local picked = {}
 		if opts.multi then
 			for _, i in ipairs(opts.selected or { 1 }) do
@@ -6699,7 +6699,7 @@ local function switchRow(name, desc, order, onChange, opts)
 					for _ in pairs(picked) do
 						count += 1
 					end
-					if picked[i] and count == 1 then
+					if picked[i] and count == 1 and not opts.allowNone then
 						return
 					end
 					picked[i] = not picked[i] or nil
@@ -6734,7 +6734,7 @@ local function switchRow(name, desc, order, onChange, opts)
 						picked[k] = true
 					end
 				end
-				if next(picked) == nil then
+				if next(picked) == nil and not opts.allowNone then
 					return
 				end
 			elseif type(saved) == "number" and buttons[saved] then
@@ -14397,7 +14397,7 @@ function Money.fight(t, alive, say)
 end
 
 -- หีบแดง (Sealed Cache) ที่ stream อยู่รอบตัว ใกล้สุดก่อน · ไกลเกินระยะ stream มองไม่เห็นอยู่แล้ว
--- ผู้ใช้สั่ง 25 ก.ย. 2026: ฆ่าบอสเสร็จแวะเคลียร์หีบแดงแถวนั้นก่อน แล้วค่อยไปบอสตัวถัดไป
+-- ใช้ใน Money.sealedRound (หนึ่งใบต่อบอสหนึ่งตัว)
 function Money.nextSealed()
 	local events = Game.chestEvents()
 	local _, me = selfParts()
@@ -14472,6 +14472,48 @@ function Money.sealed(chest, alive, say)
 	end
 	Runner.haltAttack()
 	autoAttack.target = nil
+end
+
+-- หีบแดงหนึ่งใบต่อบอสหนึ่งตัว (ผู้ใช้สั่ง 25 ก.ย. 2026): ฆ่าบอสเสร็จ → หาหีบแดงทั้งแมพ ฆ่ายาม เปิด 1 ใบ → บอสตัวถัดไป
+-- เดิมเคลียร์เฉพาะหีบที่ stream อยู่รอบตัวและทำก่อนบอสทุกรอบ หีบไกลไม่เคยเห็น
+-- ไม่เห็นหีบรอบตัว = วาร์ปไล่จุดเกิดของหีบทุกแบบ (Game.chestEvents) ให้ stream เข้ามา เจอใบแรกก็เคลียร์เลย
+-- ทั้งแมพไม่มี = หีบเกิดใหม่ทุก 25 นาที (RespawnTime 1500) ไม่ต้องไล่ซ้ำทุกบอส พัก SealedSweepEvery แล้วค่อยไล่อีก
+Money.SealedSweepEvery = 300
+function Money.sealedRound(alive, say)
+	local chest = Money.nextSealed()
+	if not chest and os.clock() >= (farm.sealedSweepAt or 0) then
+		local spots, seen = {}, {}
+		for _, e in pairs(Game.chestEvents()) do
+			for _, pos in ipairs(e.spawns) do
+				-- T1/T2/T3 ใช้จุดเกิดชุดเดียวกันบางจุด ปัดเป็นช่อง 10 stud กันแวะซ้ำ
+				local key = string.format("%d,%d,%d", pos.X // 10, pos.Y // 10, pos.Z // 10)
+				if not seen[key] then
+					seen[key] = true
+					spots[#spots + 1] = pos
+				end
+			end
+		end
+		for i, pos in ipairs(spots) do
+			if not alive() then
+				return
+			end
+			say(string.format("หาหีบแดงทั้งแมพ จุด %d/%d", i, #spots))
+			goToSpawn(pos)
+			task.wait(Runner.Sealed.StreamWait)
+			chest = Money.nextSealed()
+			if chest then
+				break
+			end
+		end
+		if not chest then
+			farm.sealedSweepAt = os.clock() + Money.SealedSweepEvery
+		end
+	end
+	if chest then
+		Money.sealed(chest, alive, say)
+	else
+		say("ทั้งแมพไม่มีหีบแดงให้เปิด · ตีบอสต่อ")
+	end
 end
 
 local moneyRow
@@ -14571,11 +14613,8 @@ local function farmLoop(mine)
 			Money.sell(say)
 		end
 
-		local chest = Money.nextSealed()
-		local t = not chest and Money.next()
-		if chest then
-			Money.sealed(chest, alive, say)
-		elseif not t then
+		local t = Money.next()
+		if not t then
 			say("บอสทุกตัวยังไม่เกิด รอรอบถัดไป")
 			task.wait(3)
 		else
@@ -14596,6 +14635,7 @@ local function farmLoop(mine)
 					end,
 					say = say,
 				})
+				Money.sealedRound(alive, say)
 			elseif result == "missing" then
 				-- บอสกลางคืน (Sumari, Reaper, Domae, Yahari) กลางวันไม่เกิดเลย แวะทุก 90 วิเปลืองเวลาเปล่า
 				farm.wait[t.name] = os.clock() + (t.night and Money.RespawnWait or Money.MissingRetry)
@@ -16309,38 +16349,40 @@ local function shops()
 			picked[#picked + 1] = r
 		end
 	end
+	-- ไม่ติ๊กอะไรเลย (รอบปกติ) = ไม่แลก แต้มหายตอนออกเอง ผู้ใช้ตั้งใจลงไปเอาแค่หีบ Cache + ของดรอป
 	if #picked == 0 then
-		picked = { Ouwi.Rewards[1] }
-	end
-	local share = math.floor(points / #picked)
-	local afford = {}
-	for _, r in ipairs(picked) do
-		if share >= r.price then
-			afford[#afford + 1] = r
+		say("ไม่ได้ติ๊กแลกแต้ม · ข้ามการแลก")
+	else
+		local share = math.floor(points / #picked)
+		local afford = {}
+		for _, r in ipairs(picked) do
+			if share >= r.price then
+				afford[#afford + 1] = r
+			end
 		end
-	end
-	if #afford == 0 then
-		table.sort(picked, function(x, y)
+		if #afford == 0 then
+			table.sort(picked, function(x, y)
+				return x.price < y.price
+			end)
+			afford = { picked[1] }
+		end
+		share = math.floor(points / #afford)
+		for _, r in ipairs(afford) do
+			local n = math.floor(math.min(share, LocalPlayer:GetAttribute("RunPoints") or 0) / r.price)
+			if n > 0 then
+				say(string.format("แลก %s × %d", r.item, n))
+				buyAt(Ouwi.Zeni, r.item, n)
+			end
+		end
+		-- เศษที่เหลือจากการปัด ซื้อของถูกสุดที่ติ๊กไว้ให้หมด (ออกแล้วแต้มหาย)
+		table.sort(afford, function(x, y)
 			return x.price < y.price
 		end)
-		afford = { picked[1] }
-	end
-	share = math.floor(points / #afford)
-	for _, r in ipairs(afford) do
-		local n = math.floor(math.min(share, LocalPlayer:GetAttribute("RunPoints") or 0) / r.price)
-		if n > 0 then
-			say(string.format("แลก %s × %d", r.item, n))
-			buyAt(Ouwi.Zeni, r.item, n)
+		local rest = LocalPlayer:GetAttribute("RunPoints") or 0
+		local cheap = afford[1]
+		if cheap and rest >= cheap.price then
+			buyAt(Ouwi.Zeni, cheap.item, math.floor(rest / cheap.price))
 		end
-	end
-	-- เศษที่เหลือจากการปัด ซื้อของถูกสุดที่ติ๊กไว้ให้หมด (ออกแล้วแต้มหาย)
-	table.sort(afford, function(x, y)
-		return x.price < y.price
-	end)
-	local rest = LocalPlayer:GetAttribute("RunPoints") or 0
-	local cheap = afford[1]
-	if cheap and rest >= cheap.price then
-		buyAt(Ouwi.Zeni, cheap.item, math.floor(rest / cheap.price))
 	end
 
 	-- ลงบันทึกรอบ (เก็บ 20 รอบล่าสุด ดูได้ที่แถว Log ดันเจี้ยน) + ส่ง Discord ถ้าเปิดไว้
@@ -16593,9 +16635,11 @@ if Ouwi.autoSkip then
 	skipRow.set(true)
 end
 
-switchRow("แลกแต้มเป็น", "ติ๊กหลายอย่าง = แบ่งแต้มเท่ากัน · ของครบตีอาวุธ V2 ให้ก่อน", 8, function() end, {
+switchRow("แลกแต้มเป็น", "ติ๊กหลายอย่าง = แบ่งแต้มเท่ากัน · ไม่ติ๊กเลย = ไม่แลก เปิดหีบแล้วกลับไปรันรอบใหม่", 8, function() end, {
 	choices = { "Wen", "Mythic Ore", "Ore", "EXP" },
 	multi = true,
+	-- ผู้ใช้ขอปิดการแลกได้ทั้งหมด (25 ก.ย. 2026): ลงไปเอาแค่หีบ Cache กับของดรอป แต้มทิ้งไว้
+	allowNone = true,
 	selected = { 1, 2 },
 	onChoice = function(_, picked)
 		Ouwi.rewardPick = picked
