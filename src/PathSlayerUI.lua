@@ -7571,6 +7571,8 @@ local Loot = {
 	GrabSettle = 0.3,
 	-- ย้ายจุดยืนเก็บเป็นกลุ่มได้กี่ครั้ง เกินนี้ที่เหลือไล่เก็บทีละชิ้น
 	GrabStops = 4,
+	-- กดเปิดหีบซ้ำได้กี่ครั้ง (ครั้งละรอ 2 วิ) ก่อนยอมแพ้ · คนอื่นเปิดตัดหน้า IsOpen เปลี่ยน ออกจากลูปเอง
+	OpenTries = 4,
 }
 
 local function promptPoint(prompt)
@@ -7655,11 +7657,19 @@ local function collectLoot(opts)
 		if stop() then
 			break
 		end
-		say("เปิดหีบ " .. c.model.Name)
-		firePromptAt(c.prompt)
-		local until_ = os.clock() + 2
-		while c.model.Parent and c.model:GetAttribute("IsOpen") == false and os.clock() < until_ do
-			task.wait(0.1)
+		-- กดซ้ำจนเปิด: วาร์ปข้ามแมพไปหีบแดง T3 ที่ไม่มียามแล้ว (ยิงหลังถึง 0.4 วิ) เซิร์ฟยังเห็นตัวเราที่เดิม
+		-- หีบไม่เปิด แล้วเดิมลองครั้งเดียวก็ไปตีบอสเลย (ผู้ใช้เจอ 25 ก.ย. 2026 prompt Open ยังขึ้นค้าง)
+		-- รอบถัดไปตัวยืนนิ่งที่หีบแล้ว กดติด
+		for try = 1, Loot.OpenTries do
+			if stop() or not c.model.Parent or c.model:GetAttribute("IsOpen") ~= false then
+				break
+			end
+			say(string.format("เปิดหีบ %s%s", c.model.Name, try > 1 and (" (ครั้งที่ " .. try .. ")") or ""))
+			firePromptAt(c.prompt)
+			local until_ = os.clock() + 2
+			while c.model.Parent and c.model:GetAttribute("IsOpen") == false and os.clock() < until_ do
+				task.wait(0.1)
+			end
 		end
 	end
 	if #chests > 0 then
@@ -13207,13 +13217,15 @@ local function fastLoop()
 		local _, hrp, hum = selfParts()
 		-- Auto-Attack / Auto-Quest ลอยติดเป้าให้อยู่แล้ว ลูปนี้ยิงอย่างเดียว ห้ามย้ายตัวแย่งกัน
 		local positioned = autoAttack.on or Runner.active
+		-- นอนใต้บอส (Money Farm / หอคอย) ตัวห่างม็อบเท่าความลึก 8 เกินระยะหมัด 6 เหมือนที่ Kill Aura ขยายให้ (auraStep)
+		-- เดิมไม่ขยาย ค้าง "รอม็อบในระยะ 6 stud" ทั้งไฟต์ Kill Aura ก็หลีกให้ Insta Kill ตีดาบไม่ออกเลย เหลือแต่สกิล
+		local reach = positioned and (killAura.underConn and Combat.UnderDepth + Aura.Range or Aura.Range) or InstaKill.Range
 		local mob = hrp and hum and hum.Health > 0 and not isKnockedDown(hum) and os.clock() >= autoDodge.holdUntil
-			and nearestMob(hrp.Position, positioned and Aura.Range or InstaKill.Range)
+			and nearestMob(hrp.Position, reach)
 		local mobHum = mob and mob:FindFirstChildOfClass("Humanoid")
 		local root = mob and mob:FindFirstChild("HumanoidRootPart")
 		if not (mobHum and root) then
-			show(string.format("รอม็อบในระยะ %d stud · ฆ่าไป %d ตัว",
-				positioned and Aura.Range or InstaKill.Range, insta.kills))
+			show(string.format("รอม็อบในระยะ %d stud · ฆ่าไป %d ตัว", reach, insta.kills))
 			task.wait(0.1)
 		elseif not positioned and airborneFor(hum) > Combat.MaxAirTime then
 			-- เกมฆ่าตัวละครที่ค้าง Freefall ~9 วิ ลอยต่อหลายตัวติดกันต้องลงแตะพื้นก่อน (แบบเดียวกับ Auto-Attack)
@@ -14227,6 +14239,11 @@ local Money = {
 	SellAt = 5000,
 	Ginzo = Vector3.new(273.8, 941.5, 528.2),
 	GinzoQuest = "Ill find the jewelry box(Lv 45)",
+	-- prompt "Return the Heart" ของก้อน Frozen Yeti (Meshes/ice_pack_Cube.010)
+	YetiAltar = Vector3.new(-1381.9, -32.8, 502.6),
+	-- ยังไม่ได้วัดว่ากดแล้ว Yeti โผล่ช้าแค่ไหน (มีท่าแตกน้ำแข็ง YetiSummon) ค่าเผื่อ
+	YetiSpawnWait = 15,
+	YetiFindWait = 10,
 	Coins = { "Coin Pouch", "Coin Pile", "Coin Stack", "Coin" },
 }
 local farm = { on = false, loop = 0 }
@@ -14262,7 +14279,8 @@ function Money.targets()
 		local hp = type(data) == "table" and data.Stats and data.Stats.MaxHealth
 		if hp and hp > 0 and m.center then
 			local wen = (data.Rewards and tonumber(data.Rewards.Wen) or 0) + (data.Chest and Money.chestWen(data.Chest) or 0)
-			if wen / hp >= Money.MinWenPerHp then
+			-- บอสทุกตัว (Rarity 6 ของเกม) ไปตีหมด ไม่ดูความคุ้ม ผู้ใช้สั่ง · ม็อบอื่นยังต้องคุ้มพอ
+			if (data.Rarity or 0) >= 6 or wen / hp >= Money.MinWenPerHp then
 				list[#list + 1] = { name = m.name, center = m.center, hp = hp, wen = wen, night = data.OnlyAtNight == true }
 			end
 		end
@@ -14273,8 +14291,78 @@ function Money.targets()
 		end
 		return a.name < b.name
 	end)
+	-- Yeti Demon ไม่มีจุดเกิดประจำ ต้องถือ Frozen Heart ไปกด "Return the Heart" ที่ก้อนน้ำแข็งในถ้ำใต้ YetiRoof
+	-- ใบละครั้ง (เว็บไกด์ nerdschalk / slayers-2-roblox.wiki) มีหัวใจเมื่อไรก็เข้าคิววนเหมือนบอสตัวอื่น
+	-- อยู่หัวรายการ: รอบแรกที่ยังไม่ได้ตีสักตัว Money.next เลือกตัวแรกที่เจอ มีหัวใจก็ไปก่อน
+	local yeti = npc.YetiDemon
+	if type(yeti) == "table" then
+		table.insert(list, 1, {
+			name = yeti.Name,
+			center = Money.YetiAltar,
+			hp = yeti.Stats.MaxHealth,
+			wen = (tonumber(yeti.Rewards and yeti.Rewards.Wen) or 0) + (yeti.Chest and Money.chestWen(yeti.Chest) or 0),
+			ready = function()
+				return (Game.wallet()["Frozen Heart"] or 0) > 0 or liveMobCount(yeti.Name) > 0
+			end,
+			fight = Money.yeti,
+		})
+	end
 	Money.list = list
 	return list
+end
+
+-- ปลุก Yeti ก่อนถ้ายังไม่มีตัว แล้วตีแบบบอสปกติ · prompt อยู่ที่ Workspace.Map.Map.FrozenYeti (เจอด้วยการ stream
+-- ใต้หลังคา YetiRoof 25 ก.ย.) กดค้างตามเวลาจริง fireproximityprompt ข้ามการกดค้างเซิร์ฟไม่รับ (ดู Puzzle)
+function Money.yeti(t, alive, say)
+	if liveMobCount(t.name) == 0 then
+		local _, hrp = selfParts()
+		if not hrp then
+			return "missing"
+		end
+		say("ถือ Frozen Heart ไปปลุก Yeti Demon")
+		-- ถ้ำอยู่ใต้ดิน (Y -33) ไกลจากทุกจุดเกิดบอส ครั้งแรกรอ stream 4 วิไม่พอ หา prompt ไม่เจอ ข้ามไปตี Datai
+		-- ขอ stream ก่อนวาร์ปแล้วรอนานขึ้น
+		pcall(function()
+			LocalPlayer:RequestStreamAroundAsync(t.center, 5)
+		end)
+		placeAt(hrp, CFrame.new(t.center + Vector3.new(0, 3, 6), t.center), "yeti")
+		local prompt
+		local findBy = os.clock() + Money.YetiFindWait
+		repeat
+			task.wait(0.25)
+			local altar = workspace.Map.Map:FindFirstChild("FrozenYeti")
+			prompt = altar and altar:FindFirstChildWhichIsA("ProximityPrompt", true)
+		until prompt or os.clock() > findBy or not alive()
+		if not (prompt and prompt.Enabled) then
+			say("หาก้อน Frozen Yeti ไม่เจอ ข้ามไปก่อน")
+			return "missing"
+		end
+		prompt.RequiresLineOfSight = false
+		-- ยืนนิ่งหน้า prompt ให้เซิร์ฟเห็นตำแหน่งก่อนกด เหตุผลเดียวกับหีบ T3 (Loot.OpenTries) · Puzzle รอ 1.2 วิเหมือนกัน
+		local at = promptPoint(prompt) or t.center
+		for _ = 1, 2 do
+			placeAt(hrp, CFrame.new(at + Vector3.new(0, 2, 4), at), "yeti")
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			task.wait(1.2)
+			local fired = false
+			local conn = prompt.Triggered:Connect(function()
+				fired = true
+			end)
+			prompt:InputHoldBegin()
+			task.wait(prompt.HoldDuration + 0.4)
+			prompt:InputHoldEnd()
+			task.wait(0.5)
+			conn:Disconnect()
+			if fired or liveMobCount(t.name) > 0 then
+				break
+			end
+		end
+		local spawnBy = os.clock() + Money.YetiSpawnWait
+		while liveMobCount(t.name) == 0 and os.clock() < spawnBy and alive() do
+			task.wait(0.25)
+		end
+	end
+	return Money.fight(t, alive, say)
 end
 
 function Money.coinValue()
@@ -14296,11 +14384,46 @@ function Money.canSell()
 	return true
 end
 
+-- ของสวมใส่/อาวุธที่ซ้ำ ขายให้เหลือชิ้นเดียว (ผู้ใช้สั่ง 25 ก.ย. 2026: ชุด ดาบ Accessory x6 x8 เหลือ x1)
+-- ของที่สวมอยู่นับรวมใน Amount ของกองเดียวกัน (Demonic Lantern x8 มีติ๊กสวม) เหลือ 1 = ชิ้นที่สวมยังอยู่
+-- โฟลเดอร์หมวดจาก ReplicatedStorage.Items ห้ามแตะแร่/วัตถุดิบ (ผู้ใช้ย้ำ) ปลา ยา ของเควส
+-- ขายแล้วได้วัตถุดิบคืน ไม่ใช่ Wen: Black Dragon Armour / Demonic Lantern ได้ Mythic Refinement Ore 1 · Flame Katana ได้
+-- Metal Scraps 4 + Refinement Ore 2 (Shop.GetSellTotals)
+Money.GearKinds = {
+	Outfits = true, Haori = true, Katana = true, Weapons = true,
+	Head = true, Face = true, Neck = true, Ear = true, Back = true, Waist = true,
+}
+-- ชิ้นเกินรวมถึงเท่านี้ค่อยวาร์ปไปขาย ไม่งั้นบอสดรอปชุดทีละชิ้นก็วาร์ปทุกตัว
+Money.GearSellAt = 3
+function Money.extraGear()
+	local slot = equippedSlot()
+	local bag = slot and slot:FindFirstChild("Inventory")
+	bag = bag and bag:FindFirstChild("Inventory")
+	local defs = require(ReplicatedStorage.CAM.Global.Collectibles.Items)
+	local pick, total = {}, 0
+	for _, entry in ipairs(bag and bag:GetChildren() or {}) do
+		local name = entry.Name
+		local amount = entry:FindFirstChild("Amount")
+		local n = amount and amount.Value or 1
+		local def = defs[name]
+		local model = ReplicatedStorage.Items:FindFirstChild(name, true)
+		-- เงื่อนไขเดียวกับหน้าขายของเกม (DialogueComponent.Components.Sell GatherSellables)
+		local sellable = def and not def.NoDelete and not def.NoSell and def.Requirements == nil
+			and def.NoSaveRequirements == nil and (def.Price ~= nil or Shop.itemsforsale[name] ~= nil)
+			and not entry:FindFirstChild("NoSave") and not entry:FindFirstChild("QuestGrant")
+		if n > 1 and sellable and model and Money.GearKinds[model.Parent.Name] then
+			pick[name] = math.min(n - 1, 999)
+			total += pick[name]
+		end
+	end
+	return pick, total
+end
+
 -- ขายผ่านทางเดียวกับหน้าคุยของ Ginzo (MerchantActions.GinzoSell): SignalFunction.ToServer("SellItems", { ชื่อ = จำนวน })
 -- เซิร์ฟตอบตารางเงินที่ได้ ว่างเปล่า = ไม่ขาย ยืนข้าง Ginzo ก่อนเหมือนคนกดจริง (ร้านซื้อของต้องยืนใกล้แผง)
 function Money.sell(say)
 	local wallet = Game.wallet()
-	local pick = {}
+	local pick = Money.extraGear()
 	for _, coin in ipairs(Money.Coins) do
 		local n = wallet[coin] or 0
 		if n > 0 then
@@ -14324,11 +14447,12 @@ function Money.sell(say)
 	local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
 	local ok, res = pcall(SignalFunction.ToServer, "SellItems", pick)
 	local got = (Game.wallet().Wen or 0) - before
-	if not ok or type(res) ~= "table" or not res.Wen then
+	-- ขายแต่ชุด/อาวุธ เซิร์ฟตอบเป็นวัตถุดิบ ไม่มี Wen ในตาราง ไม่ใช่ขายไม่ผ่าน
+	if not ok or type(res) ~= "table" or not next(res) then
 		say("Ginzo ไม่รับซื้อ: " .. tostring(ok and "ตอบว่างเปล่า" or res))
 		return 0
 	end
-	return math.max(got, res.Wen)
+	return math.max(got, res.Wen or 0)
 end
 
 -- บอส 3000 HP เท่ากันหมดบนกระดาษ แต่ตีจริงต่างกันมาก (ตัวละคร Lv 78 เลือด ~370 ท่านอนใต้ดิน):
@@ -14357,31 +14481,18 @@ function Money.record(name, secs, killed, deaths)
 	pcall(writefile, Money.StatsFile, game:GetService("HttpService"):JSONEncode(Money.stats()))
 end
 
--- Wen ต่อวินาทีที่คาดว่าได้: ยังไม่เคยตี = สูงสุด (ลองก่อน) · ตีมาแล้ว = ของจริง (เวลาที่ตายรวมอยู่ในนั้นแล้ว)
--- ตีสองรอบแล้วไม่เคยฆ่าได้ = ตัดทิ้ง (คืน nil) ไม่ตัดจากจำนวนตาย บัญชีเลือด 290 ตายเฉลี่ย 2 ครั้งทุกตัว
-function Money.score(t)
-	local s = Money.stats()[t.name]
-	if not s or s.fights == 0 then
-		return math.huge
-	end
-	if s.kills == 0 and s.fights >= 2 then
-		return nil
-	end
-	return s.kills * t.wen / math.max(s.secs, 1)
-end
-
--- ตัวถัดไป: คะแนนดีสุดในตัวที่ไม่ได้อยู่ในช่วงรอเกิด คะแนนเท่ากันเอาตัวที่ stream อยู่แล้ว (ไม่ต้องวาร์ปไปดู)
+-- ตัวถัดไป: วนครบทุกตัว ตัวที่ไม่ได้ไปตีนานสุดก่อน (ผู้ใช้สั่ง 25 ก.ย. 2026 "ฆ่าให้หมด")
+-- เดิมเลือกจาก Wen ต่อวินาทีที่จดไว้ บอสเกิดใหม่ทุก 300 วิ ตัวคะแนนดีเลยว่างทันทุกรอบ ไฟล์สถิติ: Saneri 46 ไฟต์
+-- Shinora 42 Tengai 35 แต่ Giyen / Akazo / Obari / Datai / Nezura คนละ 1 ไฟต์ และตัวที่ตี 2 รอบไม่ตายถูกตัดถาวร
+-- เท่ากัน (ยังไม่ได้ไปตีทั้งคู่) เอาตัวที่ stream อยู่แล้วก่อน ไม่ต้องวาร์ปไปดู
 function Money.next()
 	local now = os.clock()
-	local best, bestScore
+	local best, bestAt
 	for _, t in ipairs(Money.targets()) do
-		local score = Money.score(t)
-		if score and now >= (farm.wait[t.name] or 0) then
-			if liveMobCount(t.name) > 0 then
-				score += 1e-6
-			end
-			if not bestScore or score > bestScore then
-				best, bestScore = t, score
+		if now >= (farm.wait[t.name] or 0) and (not t.ready or t.ready()) then
+			local at = (farm.fought[t.name] or 0) - (liveMobCount(t.name) > 0 and 1 or 0)
+			if not bestAt or at < bestAt then
+				best, bestAt = t, at
 			end
 		end
 	end
@@ -14570,6 +14681,7 @@ local function farmLoop(mine)
 			and not (farm.untilDone and farm.untilDone())
 	end
 	farm.wait = {}
+	farm.fought = {}
 	-- ไม่ล้างข้ามรอบ: Craft ยืมลูปนี้ทีละช่วงสั้น ๆ ล้างทุกครั้ง = กลับไปตายกับยามใบเดิมซ้ำ
 	farm.sealedSkip = farm.sealedSkip or {}
 	farm.kills, farm.earned = 0, 0
@@ -14648,7 +14760,7 @@ local function farmLoop(mine)
 		end
 		farm.note = not canSell and why or nil
 
-		if canSell and Money.coinValue() >= Money.SellAt then
+		if canSell and (Money.coinValue() >= Money.SellAt or select(2, Money.extraGear()) >= Money.GearSellAt) then
 			Runner.haltAttack()
 			Money.sell(say)
 		end
@@ -14659,7 +14771,8 @@ local function farmLoop(mine)
 			task.wait(3)
 		else
 			local fightAt, deathsAt = os.clock(), farm.deaths
-			local result = Money.fight(t, alive, say)
+			local result = (t.fight or Money.fight)(t, alive, say)
+			farm.fought[t.name] = os.clock()
 			Runner.haltAttack()
 			autoAttack.target = nil
 			if result == "killed" or result == "stuck" then
@@ -16289,18 +16402,14 @@ local function setSwitch(key, state)
 end
 
 -- ตีจริงด้วย Insta Kill โหมดทันที (ผู้ใช้สั่ง ไม่ต้องได้ของ) ตีบอสด้วย + Kill Aura ตามม็อบ + Auto Skill
+-- คืนฟังก์ชันคืนค่า Insta Kill (สวิตช์/โหมด/บอส) ให้ climb เรียกทุกทางที่ออก
+-- เดิมปิดแค่ใน endRun: รอบที่จบเพราะหัวใจหมดไม่ผ่านตรงนั้น Insta Kill ค้างเปิดโหมดทันทีกลับไปแมพหลัก
+-- (ผู้ใช้เจอ 25 ก.ย.: Money Farm ตีดาบไม่ออกเลย เหลือแต่สกิล)
 local function combatOn()
-	local mode = Game.persist.choiceRows["โหมด Insta Kill"]
-	local boss = Game.persist.choiceRows["บอส"]
-	if mode then
-		pcall(mode.restore, 2)
-	end
-	if boss then
-		pcall(boss.restore, 2)
-	end
-	setSwitch("Insta Kill", true)
+	local instaOff = Runner.instaForGuards()
 	setSwitch("Kill Aura", true)
 	setSwitch("Auto Skill", true)
+	return instaOff
 end
 
 -- ออกจากรอบด้วยการตาย (หอคอยไม่มีปุ่มออกตอนยังมีชีวิต) ตายไม่เสียแต้ม หัวใจหมดแล้วเซิร์ฟพาไปโซนร้าน
@@ -16375,7 +16484,7 @@ local function releaseUnder()
 end
 
 local function climb()
-	combatOn()
+	local instaOff = combatOn()
 	beginRunLog()
 	local lastMap = workspace:GetAttribute("MinigameMap")
 	local pauseUntil = 0
@@ -16388,6 +16497,7 @@ local function climb()
 		if floor > stopAt() then
 			releaseUnder()
 			endRun()
+			instaOff()
 			return
 		end
 		-- ย้ายแมพ (ทุก 10 ชั้น) เซิร์ฟเช็กว่าตัวเราอยู่ใกล้แท่นเกิดหลัง 3.5 วิ ห้ามวาร์ปไปไหนช่วงนั้น
@@ -16432,6 +16542,7 @@ local function climb()
 		task.wait(0.3)
 	end
 	releaseUnder()
+	instaOff()
 end
 
 -- สูตร V2 ฝั่งหอคอยที่ทำได้ตอนนี้ (มีของฐาน Mythic Scraps Silk แต้มครบ) เลือกตัวที่เป็นของฐานของเซ็ต Nightfall ก่อน
