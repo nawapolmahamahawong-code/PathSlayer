@@ -163,6 +163,46 @@ Game.WearGroups = { "Head", "Face", "Ear", "Neck", "Back", "Waist", "Haori", "Ou
 -- ไม่เอา Mounts / Misc / Style (Horse, Clan Skills, Combat) มันคือระบบของเกม ไม่ใช่ของในกระเป๋า
 Game.MaterialGroups = { "Materials", "Potions", "Schematics", "Gourds", "Evil Art Orbs", "Fishing", "Quest Items" }
 
+-- แบบพิมพ์เซ็ต Nightfall: แหล่งได้ไม่มีในตารางดรอป/ร้านของเกมเลย (ItemSources ว่าง) ทุกชิ้นเป็นปริศนาในแมพ
+-- ข้อมูลจากสคริปต์เกม (WorldEvents.*, Dialogues ของ Tobei / Hatsu / Togane) แล้วลองเก็บจริงทุกทาง 24 ก.ย. 2026
+-- how: study = กดค้าง Study ที่ของตั้งโชว์ (StudyProp) · sickles = ดึงคันโยก 10 อันก่อนแล้ว Study
+-- serpent = ไล่ลองกุญแจงูกับกล่อง · gauntlet = ตีรูปปั้น 3 ตัว · trade = แลกของกับ NPC · capstone = Togane วาดให้
+Game.SetSchematics = {
+	["Nightfall Katana Schematic"] = { set = "Nightfall", how = "study", item = "Nightfall Katana",
+		at = Vector3.new(-570, 815, 112), short = "Study ที่ดาบตั้งโชว์" },
+	["Nightfall Mask Schematic"] = { set = "Nightfall", how = "study", item = "Nightfall Mask",
+		at = Vector3.new(-1629, 1229, 1143), short = "Study ที่หน้ากากตั้งโชว์" },
+	["Nightfall Axe and Mace Schematic"] = { set = "Nightfall", how = "study", item = "Nightfall Axe and Mace",
+		at = Vector3.new(1083, 1584, -811), short = "Study ที่ขวาน-กระบองตั้งโชว์" },
+	["Nightfall Scythe Schematic"] = { set = "Nightfall", how = "study", item = "Nightfall Scythe",
+		at = Vector3.new(-1205, 969, -3187), short = "Study ที่เคียวใน Iceveil" },
+	["Nightfall Claws Schematic"] = { set = "Nightfall", how = "study", item = "Nightfall Claws",
+		at = Vector3.new(-1816, -44, 438), short = "Study ที่กรงเล็บในถ้ำใต้ดิน" },
+	["Nightfall Sickles Schematic"] = { set = "Nightfall", how = "sickles", item = "Nightfall Sickles",
+		at = Vector3.new(-1025, 812, 631), short = "ดึงคันโยก 10 อัน แล้ว Study ในท่อ" },
+	["Nightfall Serpent Katana Schematic"] = { set = "Nightfall", how = "serpent",
+		short = "ไล่ลองกุญแจงูกับกล่องจนเจอดอกจริง" },
+	["Nightfall Gauntlet Schematic"] = { set = "Nightfall", how = "gauntlet",
+		short = "ตีรูปปั้น 3 ตัว (ดาบ / สกิล / มือเปล่า)" },
+	["Nightfall Cape Schematic"] = { set = "Nightfall", how = "trade", give = "Lost Cape", npc = "Weaver Hatsu",
+		key = "Cape", short = "เอา Lost Cape ให้ Weaver Hatsu" },
+	["Nightfall Top Schematic"] = { set = "Nightfall", how = "capstone", short = "Togane วาดให้เมื่อครบ 9 แบบ" },
+	["Nightfall Bottom Schematic"] = { set = "Nightfall", how = "capstone", short = "Togane วาดให้เมื่อครบ 9 แบบ" },
+}
+
+-- คำอธิบายเต็มในกล่องข้อมูลของแต่ละวิธี
+Game.SchematicSteps = {
+	study = "วาร์ปไปที่ของตั้งโชว์ แล้วกดค้าง Study 3 วิ ได้แบบพิมพ์ทันที",
+	sickles = "ดึงคันโยก Sickles Levers ครบ 10 อันทั่วแมพ (กดค้าง 3 วิ) ฝาท่อระบายน้ำที่ (-1025, 834, 582) เปิด"
+		.. " แล้วลงไป Study เคียวในท่อ",
+	serpent = "กุญแจงูวางริมน้ำ 23 ดอก มีดอกจริงดอกเดียว เก็บทีละดอกไปไขกล่องที่ (899, 879, 739)"
+		.. " ผิดดอกขึ้น \"The key snaps in the lock\" กุญแจหาย ไล่ลองจนเจอ",
+	gauntlet = "คุยกับ Stonemason Tobei (Hidden Mist) ให้รูปปั้นตื่น แล้วตีรูปปั้นสามตัวจนตาสว่างเต็ม:"
+		.. " Weapon = ตีด้วยดาบ · Power = ใช้สกิลปราณ · Fighting = ต่อยด้วย Combat (มือเปล่า) แล้วกลับไปรับแบบจาก Tobei",
+	trade = "เอาของเก่าไปให้ NPC วาดแบบให้ Lost Cape ได้จากตกปลาด้วย Legendary Fishing Rod หรือหีบ Lost Chest 0.9%",
+	capstone = "Blacksmith Togane (Hidden Mist) วาดแบบ Top กับ Bottom ให้พร้อมกัน เมื่อมีแบบ Nightfall ครบ 9 ชิ้น",
+}
+
 -- โมดูลไอเทมรวมกว่า 300 ตัว require ครั้งเดียวแล้วแคช ไม่งั้นทุกครั้งที่รีเฟรชร้านจะ require ซ้ำ
 -- mode = "gear" (อาวุธ + ของสวมใส่) หรือ "material" แคชแยกกัน
 local itemCache
@@ -174,12 +214,15 @@ local function allWeaponItems(mode)
 	end
 	local list = {}
 	local items = ReplicatedStorage:FindFirstChild("Items")
-	local sets = mode == "material" and { Game.MaterialGroups } or { Game.WeaponGroups, Game.WearGroups }
+	local sets = mode == "material" and { Game.MaterialGroups }
+		or mode == "nightfall" and { { "Schematics" } }
+		or { Game.WeaponGroups, Game.WearGroups }
 	for _, groups in ipairs(sets) do
 		for _, folderName in ipairs(groups) do
 			local folder = items and items:FindFirstChild(folderName)
 			for _, m in ipairs(folder and folder:GetChildren() or {}) do
-				if m:IsA("ModuleScript") then
+				local guide = Game.SetSchematics[m.Name]
+				if m:IsA("ModuleScript") and (mode ~= "nightfall" or (guide and guide.set == "Nightfall")) then
 					list[#list + 1] = {
 						name = m.Name,
 						group = folderName,
@@ -909,6 +952,38 @@ function Game.planText(station, o)
 	return table.concat(parts, " · ")
 end
 
+-- แถวแบบพิมพ์เซ็ต: ไม่มีร้าน/ดรอป ใช้ข้อมูล Game.SetSchematics แทน ของที่ตีได้จากแบบนี้โชว์ในกล่องข้อมูล
+function Game.schematicRow(row, guide, wallet)
+	row.source = "schematic"
+	row.guide = guide
+	row.result = row.name:gsub(" Schematic$", "")
+	if row.have > 0 then
+		row.locked, row.owned, row.reason = true, true, "มีแล้ว ✓"
+		return
+	end
+	if guide.how == "trade" and (wallet[guide.give] or 0) == 0 then
+		row.locked = true
+		row.reason = "ต้องมี " .. guide.give .. " ก่อน (ตกปลา Legendary / Lost Chest)"
+		return
+	end
+	if guide.how == "capstone" then
+		local Series = require(ReplicatedStorage.CAM.Global.Series)
+		local missing = 0
+		for _, name in ipairs(Series.CapstoneGate(guide.set)) do
+			if (wallet[name] or 0) == 0 then
+				missing += 1
+			end
+		end
+		if missing > 0 then
+			row.locked = true
+			row.reason = string.format("ขาดแบบ %s อีก %d ชิ้น (ต้องครบ 9)", guide.set, missing)
+			return
+		end
+	end
+	row.farmable = true
+	row.reason = guide.short
+end
+
 function Game.listings(mode)
 	local wallet = Game.wallet()
 	local level = Game.level()
@@ -950,6 +1025,13 @@ function Game.listings(mode)
 		end
 		row.have = wallet[item.name] or 0
 		row.wear = item.wear
+
+		local guide = mode == "nightfall" and Game.SetSchematics[item.name]
+		if guide then
+			Game.schematicRow(row, guide, wallet)
+			out[#out + 1] = row
+			continue
+		end
 
 		if route then
 			-- ฟาร์มม็อบ/บอสจนดรอป ไม่ต้องใช้เงิน เลยข้ามการเช็กราคาข้างล่าง (cost ว่าง)
@@ -1616,6 +1698,7 @@ do
 			hint = "กด เปิด เพื่อเลือกเควสหรือปราณ แล้วกดเริ่มในหน้านั้น" },
 		{ page = "items", key = "gear", title = "อาวุธและของสวมใส่" },
 		{ page = "items", key = "material", title = "วัตถุดิบและของใช้" },
+		{ page = "items", key = "set", title = "เซ็ตท็อปเกม" },
 		{ page = "items", key = "loot", title = "เก็บของ" },
 		{ page = "settings", key = "webhook", title = "แจ้งเตือน Discord",
 			hint = "ส่งสรุปการฆ่า ของหายาก และเควสที่จบเข้าห้อง Discord" },
@@ -1714,6 +1797,8 @@ local Layout = {
 			help = "แท็บ แนะนำ / ทำซ้ำได้ / ครั้งเดียว / บอส / ปราณ · ติ๊กได้หลายเควส บอกรางวัลทุกอัน" },
 		["Get Materials"] = { page = "items", section = "material", card = "material", order = 1,
 			help = "แร่ เศษเหล็ก ด้าย ยา แบบพิมพ์ ออร์บ ของตกปลา ของเควส 104 ชิ้น · ใส่จำนวนได้" },
+		["Get Nightfall Schematic"] = { page = "items", section = "set", card = "nightfall", order = 1,
+			help = "แบบพิมพ์เซ็ต Nightfall 11 ชิ้น · Study / คันโยก / กุญแจงู / รูปปั้น / แลก · ติ๊กหลายชิ้นได้" },
 		["Get Weapons"] = { page = "items", section = "gear", card = "shop", order = 1,
 			help = "อาวุธและของสวมใส่ทุกชิ้น · ร้าน / ดรอป / หีบ / คราฟต์ พร้อมแหล่งได้ทุกทาง" },
 		["Auto-Breathing"] = { page = "quest", section = "quest", card = "breath", order = 2,
@@ -2392,6 +2477,45 @@ function Detail.item(box, data)
 	local wallet = Game.wallet()
 	local def = data.def or {}
 
+	-- แบบพิมพ์เซ็ต: ไม่มีแหล่งในตารางเกม บอกวิธีที่สคริปต์ทำ + ของที่ตีได้จากแบบนี้แทน
+	if data.guide then
+		if data.owned then
+			box.note("มีแบบนี้แล้ว", "ตีของได้ที่ Blacksmith Togane (แบบไม่หายตอนตี)", Theme.Good)
+		elseif data.locked then
+			box.note("กด GET ตอนนี้ไม่ได้", data.reason or "-", Theme.Warn)
+		else
+			box.note("กด GET แล้วสคริปต์จะ", Game.SchematicSteps[data.guide.how] or data.reason, Theme.Good)
+		end
+		if data.guide.at then
+			local p = data.guide.at
+			box.note("ตำแหน่ง", string.format("(%d, %d, %d)", p.X, p.Y, p.Z), Theme.Text)
+		end
+		local ok, defs = pcall(require, ReplicatedStorage.CAM.Global.Collectibles.Items)
+		local made = ok and defs[data.result]
+		local stats = {}
+		local src = made and (made.Stats or made.ActiveToolStats) or {}
+		for stat, v in pairs(src) do
+			stats[#stats + 1] = { string.format("%s +%s", stat, tostring(v)), Theme.Accent }
+		end
+		table.sort(stats, function(a, b)
+			return a[1] < b[1]
+		end)
+		box.section("ตีแล้วได้ " .. data.result .. " (Tier 1 · Tier 3 คูณ 1.3)", stats)
+		local chips = {}
+		for _, c in ipairs(Game.recipesFor(data.result)) do
+			if not (c.recipe.required and c.recipe.required[1] and c.recipe.required[1].name == data.result) then
+				for _, input in ipairs(Game.recipeInputs(c.recipe)) do
+					if not input.keep then
+						chips[#chips + 1] = Detail.have(input.name, wallet[input.name] or 0, input.amount)
+					end
+				end
+				break
+			end
+		end
+		box.section("วัตถุดิบตอนตี (มี/ต้องใช้)", chips)
+		return
+	end
+
 	if data.locked then
 		box.note("กด GET ตอนนี้ไม่ได้", data.reason or "-", Theme.Warn)
 	else
@@ -2616,7 +2740,7 @@ local function buildShopRow(data, order)
 		Size = UDim2.new(0.5, -100, 0, 32),
 		BackgroundTransparency = 1,
 		Text = right .. (data.note and ("  ·  " .. data.note) or ""),
-		TextColor3 = data.locked and Theme.Warn or Theme.Good,
+		TextColor3 = (data.owned and Theme.Good) or (data.locked and Theme.Warn) or Theme.Good,
 		TextSize = 13,
 		FontFace = font(Enum.FontWeight.Medium),
 		TextXAlignment = Enum.TextXAlignment.Right,
@@ -2709,6 +2833,10 @@ local function applyShopFilter()
 			r.kinds.craft = r.kinds.craft or #Game.recipesFor(d.name) > 0
 		end
 		local src, okSrc = shopFilter.src, true
+		-- แผงแบบพิมพ์เซ็ตซ่อนแท็บแหล่งได้ (ไม่มีร้าน/ดรอป) โชว์ทุกชิ้นพร้อมสถานะ มีแล้ว / ยังขาดอะไร
+		if shopFilter.mode == "nightfall" then
+			src = "ทั้งหมด"
+		end
 		if src == "หาได้ตอนนี้" then
 			okSrc = not d.locked
 		elseif src == "ซื้อได้" then
@@ -2874,7 +3002,10 @@ function shopFilter.setMode(mode)
 		end
 	end
 	local types = { "ทุกประเภท" }
-	local sets = mode == "material" and { Game.MaterialGroups } or { Game.WeaponGroups, Game.WearGroups }
+	-- แบบพิมพ์เซ็ตเป็นหมวดเดียว ไม่ต้องมีเม็ดประเภท
+	local sets = mode == "material" and { Game.MaterialGroups }
+		or mode == "nightfall" and {}
+		or { Game.WeaponGroups, Game.WearGroups }
 	for _, groups in ipairs(sets) do
 		for _, group in ipairs(groups) do
 			types[#types + 1] = Game.TypeThai[group]
@@ -2887,12 +3018,26 @@ function shopFilter.setMode(mode)
 	end, true)
 
 	local material = mode == "material"
-	shopUI.title.Text = material and "Get Materials / วัตถุดิบ" or "Get Weapons / ไอเทม"
+	shopUI.title.Text = material and "Get Materials / วัตถุดิบ"
+		or mode == "nightfall" and "Get Nightfall Schematic / แบบพิมพ์เซ็ต"
+		or "Get Weapons / ไอเทม"
 	shopUI.search.PlaceholderText = material and "ค้นหาชื่อของหรือแหล่งได้ เช่น Silk Thread, Demon Horns, Hoyuzo…"
+		or mode == "nightfall" and "ค้นหาชื่อแบบหรือวิธี เช่น Katana, Study, กุญแจ…"
 		or "ค้นหาชื่อของ ประเภท หรือแหล่งได้ เช่น Rengu, Katana, คอ…"
 	shopFilter.qtyBox.Visible = material
 	buyBtn.Position = UDim2.new(0, material and 124 or 0, 1, 0)
 	buyBtn.Size = UDim2.new(1, material and -124 or 0, 0, 34)
+
+	-- แบบพิมพ์เซ็ต: แท็บแหล่งได้ / ประเภท / ความหายาก ไม่มีความหมาย (11 ชิ้น Mythic หมวดเดียว ไม่มีร้าน)
+	-- ซ่อนทั้งสามแถวแล้วดันรายการขึ้นไปแทนที่ เลข 82 = ตำแหน่งแถวแท็บ, -138 = 82 + ปุ่ม GET/สถานะ 56
+	local plain = mode == "nightfall"
+	shopUI.filterRow.Visible = not plain
+	shopFilter.wearRow.Visible = not plain
+	if shopFilter.rarityRow then
+		shopFilter.rarityRow.Visible = not plain
+		shopUI.list.Position = UDim2.fromOffset(0, plain and 82 or 174)
+		shopUI.list.Size = UDim2.new(1, 0, 1, plain and -138 or -230)
+	end
 end
 shopFilter.setMode("gear")
 
@@ -2915,6 +3060,7 @@ do
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}) })
 
+	shopFilter.rarityRow = row
 	local rarities = require(ReplicatedStorage.CAM.Global.Rarities)
 	for tier, name in ipairs(rarities.Order) do
 		local color = RarityColor[tier] or Theme.Muted
@@ -3056,7 +3202,9 @@ local function runShopQueue()
 			-- (เจอจริงสมัยปุ่ม BUY: สถานะค้าง "กำลังซื้อ Fancy Katana…")
 			-- วัตถุดิบไปทาง Runner.obtain เสมอแม้ซื้อได้ มันวนซื้อครั้งละ 99 จนครบจำนวน Game.buy ซื้อรอบเดียว
 			local done, ok, err, secsLeft
-			if target.farmable or shopFilter.mode == "material" then
+			if target.source == "schematic" then
+				done, ok, err = pcall(Runner.schematic, target.name)
+			elseif target.farmable or shopFilter.mode == "material" then
 				-- จำนวนเป้าหมายตั้งครั้งแรกที่เริ่มชิ้นนี้ กลับมาทำต่อหลังสลับไปชิ้นอื่นไม่ต้องบวกเพิ่มอีกรอบ
 				goal[target.name] = goal[target.name] or (Game.wallet()[target.name] or 0) + shopFilter.qty()
 				done, ok, err, secsLeft = pcall(Runner.obtain, target.name, goal[target.name])
@@ -5379,6 +5527,7 @@ local function shopModeRow(name, desc, order, mode)
 end
 local shopFeature = shopModeRow("Get Weapons", "หาอาวุธและของสวมใส่ทุกชิ้นในเกม ซื้อ ฟาร์ม หรือตีที่ช่างให้เอง", 1, "gear")
 local materialFeature = shopModeRow("Get Materials", "วัตถุดิบ ยา แบบพิมพ์ ออร์บ ของตกปลา ของเควส", 1, "material")
+local nightfallFeature = shopModeRow("Get Nightfall Schematic", "แบบพิมพ์เซ็ต Nightfall", 1, "nightfall")
 
 local questFeature = featureRow(
 	"Auto-Quest",
@@ -5405,6 +5554,7 @@ local mobFeature = featureRow(
 track(shopUI.closeButton.MouseButton1Click:Connect(function()
 	shopFeature.setOpen(false)
 	materialFeature.setOpen(false)
+	nightfallFeature.setOpen(false)
 end))
 track(questUI.closeButton.MouseButton1Click:Connect(function()
 	questFeature.setOpen(false)
@@ -8204,6 +8354,490 @@ function Runner.deposit(step, index, total)
 		end
 	end
 	return true
+end
+end)()
+
+-- แบบพิมพ์เซ็ต (Get Nightfall Schematic) -------------------------------------
+-- ทุกวิธีข้างล่างลองเก็บจริงครบแล้ว 24 ก.ย. 2026 (ได้ 8 แบบ) บทเรียนที่ใช้ร่วมกัน:
+--   prompt กดค้าง (Study 3 วิ, คันโยก 3 วิ, กุญแจ 0.5 วิ) ต้อง InputHoldBegin/End ตามเวลาจริง
+--   fireproximityprompt ข้ามการกดค้าง เซิร์ฟไม่ให้ของ (ลองที่ Study 6 วิ ไม่ได้อะไร)
+--   ของอยู่ไกลต้อง RequestStreamAroundAsync ก่อน ไม่งั้นมีแค่โครงโมเดล ไม่มี prompt
+--   ต้องตรึงตัวทุกเฟรมระหว่างกดค้าง Money-Farm ดึงตัวกลับไปตีม็อบกลางคัน (ระยะหลุด 866-1390 stud) hold พัง
+;(function()
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+
+local Puzzle = {
+	-- Workspace.Map.Puzzles.Sickles Levers (สแกนตอนเขียน) ต้องดึงครบ 10 อัน เซิร์ฟตั้ง attribute SicklesSewerOpen ให้ผู้เล่น
+	Levers = {
+		Vector3.new(1941, 1323, -225), Vector3.new(758, 928, -365), Vector3.new(859, 1230, 477),
+		Vector3.new(-1420, 159, 523), Vector3.new(1868, 690, -734), Vector3.new(-1692, 125, 603),
+		Vector3.new(-1249, 1383, -1762), Vector3.new(654, 1052, -2165), Vector3.new(2755, 970, -821),
+		Vector3.new(1053, 1552, -787),
+	},
+	SerpentBox = Vector3.new(899, 879, 739),
+	-- กุญแจ 23 ดอกริมน้ำ Mistfall stream มาทีละกลุ่ม วาร์ปไล่จุดพวกนี้ให้เห็นครบ
+	KeySweep = {
+		Vector3.new(-345, 733, 1168), Vector3.new(-142, 733, 1088), Vector3.new(-58, 735, 911),
+		Vector3.new(-213, 733, 844), Vector3.new(-89, 734, 758), Vector3.new(-320, 734, 666),
+		Vector3.new(-389, 733, 603), Vector3.new(-217, 733, 461), Vector3.new(-483, 733, 545),
+		Vector3.new(-692, 733, 552), Vector3.new(-766, 746, 279), Vector3.new(-169, 733, 199),
+	},
+	Statues = {
+		Weapon = Vector3.new(-1382, 1010, 1109),
+		Power = Vector3.new(-697, 1387, -1914),
+		Fighting = Vector3.new(2083, 1544, -216),
+	},
+	-- ตีรูปปั้นจริง: Weapon ครบใน 37 วิ, Power 65 วิ, Fighting 45 วิ (หมัดละ ~1.4%) เผื่อเป็นสองเท่า
+	StatueTimeout = 150,
+	-- มุมยืนที่ลองต่อกันถ้า prompt ไม่ติด คันโยกบางอันติดผนัง ยืนหน้าเดียวกดไม่ติด 3 รอบ ย้ายข้างแล้วติด
+	Offsets = {
+		Vector3.new(0, 0.5, 3.5), Vector3.new(3.5, 0.5, 0), Vector3.new(0, 0.5, -3.5),
+		Vector3.new(-3.5, 0.5, 0), Vector3.new(0, 4, 0),
+	},
+	SkillKeys = { Enum.KeyCode.Z, Enum.KeyCode.X, Enum.KeyCode.C, Enum.KeyCode.V },
+	Tobei = Vector3.new(1876, 659, -206),
+	Togane = Vector3.new(1732, 694, -764),
+}
+
+local function have(name)
+	return (Game.wallet()[name] or 0) > 0
+end
+
+local function stream(pos)
+	local done = false
+	task.spawn(function()
+		pcall(function()
+			LocalPlayer:RequestStreamAroundAsync(pos, 4)
+		end)
+		done = true
+	end)
+	-- บางครั้งไม่คืนเลย (เจอตอนทดสอบกุญแจ สคริปต์ค้างทั้งตัว) รอไม่เกิน 4 วิ
+	local untilT = os.clock() + 4
+	while not done and os.clock() < untilT do
+		task.wait(0.1)
+	end
+end
+
+local pin = {}
+local function pinTo(cf)
+	pin.cf = cf
+	if not pin.conn then
+		pin.conn = RunService.Heartbeat:Connect(function()
+			local _, hrp = selfParts()
+			if hrp and pin.cf then
+				hrp.CFrame = pin.cf
+				hrp.AssemblyLinearVelocity = Vector3.zero
+			end
+		end)
+	end
+end
+-- ต้องปลดทุกทางออก เคยลืมปลดตอนสคริปต์ทดสอบพัง ตัวละครค้างที่รูปปั้นวาร์ปไปไหนไม่ได้อีกเลย
+local function unpin()
+	pin.cf = nil
+	if pin.conn then
+		pin.conn:Disconnect()
+		pin.conn = nil
+	end
+end
+
+local function promptPos(prompt)
+	local p = prompt.Parent
+	if p:IsA("BasePart") then
+		return p.Position
+	elseif p:IsA("Attachment") then
+		return p.WorldPosition
+	end
+	return p:GetPivot().Position
+end
+
+-- คืน true ถ้า prompt ยิง Triggered (ฝั่ง client) ลองทีละมุมยืน
+local function hold(prompt)
+	-- line of sight เช็กแค่ฝั่ง client ปิดได้ คันโยกหลายอันมีกิ่งไม้บัง prompt ไม่ขึ้น
+	prompt.RequiresLineOfSight = false
+	for _, off in ipairs(Puzzle.Offsets) do
+		if Runner.cancel or not prompt.Parent then
+			return false
+		end
+		local p = promptPos(prompt)
+		pinTo(CFrame.lookAt(p + off, p))
+		task.wait(1.2)
+		local fired = false
+		local conn = prompt.Triggered:Connect(function()
+			fired = true
+		end)
+		prompt:InputHoldBegin()
+		task.wait(prompt.HoldDuration + 0.5)
+		prompt:InputHoldEnd()
+		task.wait(1)
+		conn:Disconnect()
+		if fired then
+			return true
+		end
+	end
+	return false
+end
+
+local function waitHave(name, seconds)
+	local untilT = os.clock() + seconds
+	while not have(name) and os.clock() < untilT do
+		task.wait(0.2)
+	end
+	return have(name)
+end
+
+local function npcSpot(name)
+	for _, region in ipairs(ReplicatedStorage.Ouwland.Content:GetChildren()) do
+		local npcs = region:FindFirstChild("Npcs")
+		local m = npcs and npcs:FindFirstChild(name, true)
+		if m and m:IsA("ModuleScript") then
+			local ok, def = pcall(require, m)
+			local s = ok and type(def) == "table" and def.Spawns and def.Spawns[1]
+			if typeof(s) == "CFrame" then
+				return s.Position
+			elseif typeof(s) == "Vector3" then
+				return s
+			end
+		end
+	end
+end
+
+local function goNpc(name, fallback)
+	local at = npcSpot(name) or fallback
+	if not at then
+		return false
+	end
+	stream(at)
+	pinTo(CFrame.new(at + Vector3.new(0, 1, 5), at))
+	task.wait(1.5)
+	return true
+end
+
+local function tagged(tag, test)
+	for _, inst in ipairs(CollectionService:GetTagged(tag)) do
+		if test(inst) then
+			return inst
+		end
+	end
+end
+
+local Methods = {}
+
+function Methods.study(guide, schem)
+	stream(guide.at)
+	pinTo(CFrame.new(guide.at + Vector3.new(0, 4, 0)))
+	local prompt
+	local untilT = os.clock() + 8
+	repeat
+		task.wait(0.3)
+		local prop = tagged("StudyProp", function(p)
+			return p:GetAttribute("Item") == guide.item
+		end)
+		prompt = prop and prop:FindFirstChildWhichIsA("ProximityPrompt", true)
+	until prompt or os.clock() > untilT
+	if not prompt then
+		return false, "ของตั้งโชว์ของ " .. guide.item .. " ไม่โหลด"
+	end
+	for _ = 1, 3 do
+		if have(schem) or Runner.cancel then
+			break
+		end
+		report("Study " .. guide.item, Theme.Accent)
+		hold(prompt)
+		waitHave(schem, 3)
+	end
+	return have(schem), "กด Study แล้วไม่ได้แบบ"
+end
+
+function Methods.sickles(guide, schem)
+	if not LocalPlayer:GetAttribute("SicklesSewerOpen") then
+		for i, pos in ipairs(Puzzle.Levers) do
+			if Runner.cancel then
+				return false, "ยกเลิกแล้ว"
+			end
+			report(string.format("ดึงคันโยก %d/%d", i, #Puzzle.Levers), Theme.Accent)
+			stream(pos)
+			pinTo(CFrame.new(pos + Vector3.new(0, 4, 3)))
+			local lever
+			local untilT = os.clock() + 8
+			repeat
+				task.wait(0.3)
+				lever = tagged("SicklesLever", function(l)
+					local a = l:FindFirstChild("A_")
+					return (l:GetPivot().Position - pos).Magnitude < 3 and a ~= nil and a:FindFirstChild("LeverMain") ~= nil
+				end)
+			until lever or os.clock() > untilT
+			local a = lever and lever:FindFirstChild("A_")
+			local prompt = lever and lever:FindFirstChildWhichIsA("ProximityPrompt", true)
+			-- On = ดึงแล้ว (จำฝั่ง client) ดึงซ้ำไม่ได้ prompt ปิดอยู่
+			if prompt and not a:GetAttribute("On") then
+				-- ติดแบบสุ่ม วัดจริง 10 อันรอบแรกติด 6 ต้องวนมุมยืนซ้ำ
+				for _ = 1, 2 do
+					if a:GetAttribute("On") or hold(prompt) then
+						break
+					end
+				end
+			end
+		end
+		local untilT = os.clock() + 5
+		while not LocalPlayer:GetAttribute("SicklesSewerOpen") and os.clock() < untilT do
+			task.wait(0.2)
+		end
+		if not LocalPlayer:GetAttribute("SicklesSewerOpen") then
+			return false, "ดึงคันโยกแล้วท่อยังไม่เปิด (บางอันยังไม่ติด) กด GET อีกรอบเพื่อไล่ใหม่"
+		end
+	end
+	return Methods.study(guide, schem)
+end
+
+function Methods.serpent(_, schem)
+	-- เก็บตำแหน่งกุญแจทั้งหมดก่อน ลองทีละดอก ดอกจริงรอบทดสอบคือ Key8 ไม่รู้ว่าสุ่มใหม่ไหม เลยไม่ฝังชื่อไว้
+	local keys = {}
+	for _, p in ipairs(Puzzle.KeySweep) do
+		stream(p)
+		pinTo(CFrame.new(p + Vector3.new(0, 30, 0)))
+		task.wait(0.4)
+		for _, k in ipairs(CollectionService:GetTagged("SerpentKey")) do
+			keys[k.Name] = k.Position
+		end
+	end
+	local order = {}
+	for name, pos in pairs(keys) do
+		order[#order + 1] = { name = name, pos = pos }
+	end
+	table.sort(order, function(a, b)
+		return a.name < b.name
+	end)
+	if #order == 0 then
+		return false, "หากุญแจงูไม่เจอ"
+	end
+	Runner.triedKeys = Runner.triedKeys or {}
+	for i, k in ipairs(order) do
+		if have(schem) or Runner.cancel then
+			break
+		end
+		if not Runner.triedKeys[k.name] then
+			report(string.format("ลองกุญแจงู %d/%d (%s)", i, #order, k.name), Theme.Accent)
+			if not have("Serpent Key") then
+				stream(k.pos)
+				pinTo(CFrame.new(k.pos + Vector3.new(0, 4, 0)))
+				task.wait(1)
+				local key = tagged("SerpentKey", function(x)
+					return (x.Position - k.pos).Magnitude < 1
+				end)
+				local prompt = key and key:FindFirstChildWhichIsA("ProximityPrompt", true)
+				if prompt then
+					hold(prompt)
+					waitHave("Serpent Key", 2)
+				end
+			end
+			if have("Serpent Key") then
+				stream(Puzzle.SerpentBox)
+				pinTo(CFrame.new(Puzzle.SerpentBox + Vector3.new(0, 4, 0)))
+				task.wait(1.5)
+				local box = CollectionService:GetTagged("SerpentBox")[1]
+				local prompt = box and box:FindFirstChildWhichIsA("ProximityPrompt", true)
+				if not prompt then
+					return false, "กล่องงูไม่โหลด"
+				end
+				hold(prompt)
+				waitHave(schem, 3)
+				-- กุญแจผิดดอกหักทิ้ง ("The key snaps in the lock") จำไว้ไม่ลองซ้ำในรอบเกมนี้
+				Runner.triedKeys[k.name] = true
+				if have("Serpent Key") and not have(schem) then
+					return false, "กล่องไม่รับกุญแจ (ยืนไม่ถึงหรือเซิร์ฟปฏิเสธ)"
+				end
+			end
+		end
+	end
+	return have(schem), "ลองกุญแจครบทุกดอกแล้วไม่ได้แบบ"
+end
+
+-- toolbar ที่มีไอเทม Combat (มือเปล่า) คืนเลขช่อง ไม่มีก็ใส่ช่องว่าง คืน true ตัวที่สองถ้าใส่เอง (ต้องถอดคืน)
+-- รูปปั้น Fighting นับเฉพาะหมัดตอนถือ Combat ถอดทุกอย่าง (ช่อง 0) ต่อยแล้วไม่ขยับเลย 75 วิ
+local ToolbarNames = { "One", "Two", "Three", "Four", "Five" }
+local function combatId()
+	local entry = equippedSlot().Inventory.Inventory:FindFirstChild("Combat")
+	local id = entry and entry:FindFirstChild("Id")
+	return id and id.Value
+end
+local function combatSlot()
+	local id = combatId()
+	if not id then
+		return nil
+	end
+	local bar = equippedSlot().Inventory.Toolbar
+	for i, n in ipairs(ToolbarNames) do
+		if bar[n].Value == id then
+			return i, false
+		end
+	end
+	for i, n in ipairs(ToolbarNames) do
+		if bar[n].Value == 0 then
+			SignalEvent.ToServer("Toolbar_Equip", n, id)
+			local untilT = os.clock() + 3
+			while bar[n].Value ~= id and os.clock() < untilT do
+				task.wait(0.1)
+			end
+			return bar[n].Value == id and i or nil, true
+		end
+	end
+	return nil
+end
+
+function Methods.gauntlet(_, schem)
+	local GSC = require(ReplicatedStorage.CAM.Client.Controllers.GauntletStatuesController)
+	local ratios = {}
+	local original = GSC.handle
+	-- เซิร์ฟส่งความคืบหน้าแต่ละตัว (Type, Ratio 0-1) มาทาง WorldEvents.GauntletStatue ทุกครั้งที่ตีโดน
+	GSC.handle = function(p)
+		ratios[p.Type] = p.Ratio
+		return original(p)
+	end
+	local cam = workspace.CurrentCamera
+	local camType = cam.CameraType
+	local tempCombat
+	local ok, res, why = pcall(function()
+		if not goNpc("Stonemason Tobei", Puzzle.Tobei) then
+			return false, "หา Stonemason Tobei ไม่เจอ"
+		end
+		SignalEvent.ToServer("GauntletStatuesBegin")
+		task.wait(1.5)
+		for _, kind in ipairs({ "Weapon", "Power", "Fighting" }) do
+			if Runner.cancel then
+				return false, "ยกเลิกแล้ว"
+			end
+			local at = Puzzle.Statues[kind]
+			stream(at)
+			pinTo(CFrame.new(at + Vector3.new(0, 8, 0)))
+			task.wait(1.5)
+			local statue = tagged("GauntletStatue", function(s)
+				return s:GetAttribute("type") == kind
+			end)
+			if not statue then
+				return false, "รูปปั้น " .. kind .. " ไม่โหลด"
+			end
+			local spos = statue:GetPivot().Position
+			local look = statue:GetPivot().LookVector
+			local stand = spos + look * 4
+			pinTo(CFrame.lookAt(stand, Vector3.new(spos.X, stand.Y, spos.Z)))
+			if kind == "Fighting" then
+				local slot, added = combatSlot()
+				tempCombat = tempCombat or added
+				if not slot then
+					return false, "ใส่ Combat (มือเปล่า) ขึ้น toolbar ไม่ได้ toolbar เต็ม"
+				end
+				equipSlot(slot)
+			else
+				equipSlot(primarySlot())
+			end
+			task.wait(1)
+			-- คลิกต้องโดนตัวรูปปั้นบนจอ ล็อกกล้องมองรูปปั้นจากหลังตัวเรา
+			cam.CameraType = Enum.CameraType.Scriptable
+			local untilT = os.clock() + Puzzle.StatueTimeout
+			local k = 0
+			while (ratios[kind] or 0) < 1 and os.clock() < untilT and not Runner.cancel do
+				cam.CFrame = CFrame.new(stand + look * 8 + Vector3.new(0, 3, 0), spos)
+				report(string.format("ตีรูปปั้น %s %d%%", kind, math.floor((ratios[kind] or 0) * 100)), Theme.Accent)
+				if kind == "Power" then
+					k = k % #Puzzle.SkillKeys + 1
+					local p = cam:WorldToViewportPoint(spos)
+					VIM:SendMouseMoveEvent(p.X, p.Y, game)
+					VIM:SendKeyEvent(true, Puzzle.SkillKeys[k], false, game)
+					task.wait(0.1)
+					VIM:SendKeyEvent(false, Puzzle.SkillKeys[k], false, game)
+					task.wait(1.2)
+				else
+					swingAt(spos)
+					task.wait(0.3)
+				end
+			end
+			cam.CameraType = camType
+			if (ratios[kind] or 0) < 1 then
+				return false, string.format("ตีรูปปั้น %s ไม่ครบใน %d วิ (%d%%)", kind, Puzzle.StatueTimeout,
+					math.floor((ratios[kind] or 0) * 100))
+			end
+		end
+		goNpc("Stonemason Tobei", Puzzle.Tobei)
+		SignalEvent.ToServer("GauntletGiveSchematic")
+		return waitHave(schem, 4), "Tobei ไม่ให้แบบ (รูปปั้นอาจยังตื่นไม่ครบ)"
+	end)
+	GSC.handle = original
+	cam.CameraType = camType
+	equipSlot(primarySlot())
+	if tempCombat then
+		local id = combatId()
+		for _, n in ipairs(ToolbarNames) do
+			if id and equippedSlot().Inventory.Toolbar[n].Value == id then
+				SignalEvent.ToServer("Toolbar_Equip", n, 0)
+			end
+		end
+	end
+	if not ok then
+		return false, tostring(res)
+	end
+	return res, why
+end
+
+function Methods.trade(guide, schem)
+	if not have(guide.give) then
+		return false, "ต้องมี " .. guide.give .. " ก่อน"
+	end
+	if not goNpc(guide.npc) then
+		return false, "หา " .. guide.npc .. " ไม่เจอ"
+	end
+	-- ตรงกับปุ่ม "Hand it over" ในบทพูด (SeriesTradeActions.CapeTrade)
+	SignalEvent.ToServer("SeriesTrade", guide.key)
+	return waitHave(schem, 4), guide.npc .. " ไม่รับของ"
+end
+
+function Methods.capstone(guide, schem)
+	if not goNpc("Blacksmith Togane", Puzzle.Togane) then
+		return false, "หา Blacksmith Togane ไม่เจอ"
+	end
+	-- ปุ่ม "The set drawings" -> ชื่อเซ็ต (SeriesCapstoneActions) ได้ Top + Bottom พร้อมกัน
+	SignalEvent.ToServer("SeriesCapstone", guide.set)
+	return waitHave(schem, 4), "Togane ไม่ให้แบบ (แบบอื่นในเซ็ตยังไม่ครบ?)"
+end
+
+function Runner.schematic(name)
+	local guide = Game.SetSchematics[name]
+	if not guide or not Methods[guide.how] then
+		return false, "ยังไม่รู้วิธีหา " .. name
+	end
+	if have(name) then
+		return true
+	end
+	-- ลูปสู้ / Kill Aura / Auto Skill เขียน CFrame กับถือดาบแย่งตลอด ปิดก่อนแล้วคืนทีหลัง เหมือน Runner.fish
+	attackRow.set(false)
+	mobOnlyRow.set(false)
+	autoAttack.on = false
+	local auraWasOn = Runner.auraOn()
+	if auraWasOn then
+		Runner.setAura(false)
+	end
+	local skillWasOn = Runner.skillOn and Runner.skillOn()
+	if skillWasOn then
+		Runner.setSkill(false)
+	end
+	local ok, res, why = pcall(Methods[guide.how], guide, name)
+	unpin()
+	if auraWasOn then
+		Runner.setAura(true)
+	end
+	if skillWasOn then
+		Runner.setSkill(true)
+	end
+	if not ok then
+		return false, tostring(res)
+	end
+	if Runner.cancel then
+		return false, "ยกเลิกแล้ว"
+	end
+	if res then
+		return true
+	end
+	return false, why
 end
 end)()
 
