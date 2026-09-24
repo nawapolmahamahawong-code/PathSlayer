@@ -14759,8 +14759,13 @@ local Ouwi = {
 	MythicPrice = 30000,
 	-- ทุกสูตร V2 ที่ Togane ฝั่งหอคอย: 90,000 แต้ม + Mythic Ore 10 + Scraps 500 + Silk 300
 	V2Mythic = 10,
-	-- ผู้ใช้กำหนดสูงสุด 80 (ชั้นลึกกว่า 50 ม็อบโตแบบทวีคูณ Waves.DeepFloor)
+	-- ชั้นที่จบรอบเอง: สไลด์ 10-200 ทีละ 5 (ผู้ใช้สั่ง 200 · เกมไม่มีเพดานชั้นใน MinigameSettings เลยใช้ตามผู้ใช้)
+	-- ชั้นลึกกว่า 50 ม็อบโตแบบทวีคูณ (Waves.DeepFloor 50, DeepRateDoubleFloors 15) ตั้งสูงเสี่ยงหัวใจหมดก่อนถึง
+	-- ค่าเดิมเก็บเป็นลำดับปุ่ม { 30, 40, 50, 60, 70, 80 } แปลงให้ครั้งแรก
 	StopChoices = { 30, 40, 50, 60, 70, 80 },
+	StopMin = 10,
+	StopMax = 200,
+	StopStep = 5,
 	stopFloor = 70,
 	-- ของที่แลกด้วยแต้มตอนจบรอบ (ติ๊กหลายอย่าง = แบ่งแต้มเท่ากัน) ชื่อ/ราคาจาก Shop.itemsforsale ฝั่งหอคอย
 	Rewards = {
@@ -15532,13 +15537,125 @@ switchRow("ดันเจี้ยน", "Ouwigahara = หอคอยไต่�
 	onChoice = function() end,
 })
 
-switchRow("ยอมแพ้ที่ชั้น", "เคลียร์ชั้นนี้แล้วจบรอบเอง ได้หีบ Cache ทุก 10 ชั้น", 7, function() end, {
-	choices = { "30", "40", "50", "60", "70", "80" },
-	selected = 5,
-	onChoice = function(i)
-		Ouwi.stopFloor = Ouwi.StopChoices[i]
-	end,
-})
+-- สไลด์ชั้นที่จบรอบ: ลาก / คลิกบนราง / ปุ่ม − + ทีละ 5 · จำค่าใน config (stopFloor) ข้ามเซิร์ฟได้
+do
+	local data = persistData()
+	local oldIdx = data.choices and data.choices["ยอมแพ้ที่ชั้น"]
+	if type(data.stopFloor) == "number" then
+		Ouwi.stopFloor = data.stopFloor
+	elseif type(oldIdx) == "number" and Ouwi.StopChoices[oldIdx] then
+		Ouwi.stopFloor = Ouwi.StopChoices[oldIdx]
+	end
+	Ouwi.stopFloor = math.clamp(Ouwi.stopFloor, Ouwi.StopMin, Ouwi.StopMax)
+
+	local frame, _, descLabel = placeRow("switch", "ยอมแพ้ที่ชั้น", 7)
+	descLabel.Size = UDim2.new(1, -270, 0, 15)
+	local W = 170
+	local box = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -12, 0.5, 0),
+		Size = UDim2.fromOffset(W + 90, 28),
+		BackgroundTransparency = 1,
+		Parent = frame,
+	})
+	local function smallBtn(text, x)
+		return new("TextButton", {
+			Position = UDim2.fromOffset(x, 2),
+			Size = UDim2.fromOffset(24, 24),
+			BackgroundColor3 = Theme.Raised,
+			AutoButtonColor = false,
+			Text = text,
+			TextColor3 = Theme.Text,
+			TextSize = 15,
+			FontFace = font(Enum.FontWeight.Bold),
+			Parent = box,
+		}, { capsule(), stroke() })
+	end
+	local minus = smallBtn("−", 0)
+	local rail = new("TextButton", {
+		Position = UDim2.fromOffset(30, 11),
+		Size = UDim2.fromOffset(W - 30, 6),
+		BackgroundColor3 = Theme.Raised,
+		AutoButtonColor = false,
+		Text = "",
+		Parent = box,
+	}, { capsule() })
+	local fill = new("Frame", {
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = Theme.Accent,
+		BorderSizePixel = 0,
+		Parent = rail,
+	}, { capsule() })
+	local knob = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0, 0.5),
+		Size = UDim2.fromOffset(16, 16),
+		BackgroundColor3 = Theme.On,
+		Parent = rail,
+	}, { capsule(), stroke(Theme.Accent, 1.5) })
+	local plus = smallBtn("+", W + 6)
+	local valueLabel = new("TextLabel", {
+		Position = UDim2.fromOffset(W + 34, 0),
+		Size = UDim2.fromOffset(56, 28),
+		BackgroundColor3 = Theme.Raised,
+		Text = "",
+		TextColor3 = Theme.Text,
+		TextSize = 15,
+		FontFace = font(Enum.FontWeight.Bold),
+		Parent = box,
+	}, { capsule() })
+
+	local function paint()
+		local v = Ouwi.stopFloor
+		local a = (v - Ouwi.StopMin) / (Ouwi.StopMax - Ouwi.StopMin)
+		fill.Size = UDim2.fromScale(a, 1)
+		knob.Position = UDim2.fromScale(a, 0.5)
+		valueLabel.Text = tostring(v)
+		-- เตือนเป็นสี: ลึกกว่า 50 ม็อบโตเร็ว · เกิน 100 เสี่ยงมาก
+		valueLabel.TextColor3 = v > 100 and Theme.Danger or (v > 50 and Theme.Warn or Theme.Text)
+		descLabel.Text = string.format("จบรอบที่ชั้น %d · หีบ Cache %d ใบ%s", v, math.floor(v / 10),
+			v > 50 and " · เกินชั้น 50 ม็อบโตแบบทวีคูณ" or "")
+		descLabel.TextColor3 = v > 50 and Theme.Warn or Theme.Dim
+	end
+	local function set(v)
+		v = math.clamp(math.floor((v + Ouwi.StopStep / 2) / Ouwi.StopStep) * Ouwi.StopStep, Ouwi.StopMin, Ouwi.StopMax)
+		if v ~= Ouwi.stopFloor then
+			Ouwi.stopFloor = v
+			persistData().stopFloor = v
+			Game.save()
+		end
+		paint()
+	end
+	local function fromX(x)
+		local a = math.clamp((x - rail.AbsolutePosition.X) / math.max(rail.AbsoluteSize.X, 1), 0, 1)
+		set(Ouwi.StopMin + a * (Ouwi.StopMax - Ouwi.StopMin))
+	end
+	local dragging = false
+	track(rail.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			fromX(input.Position.X)
+		end
+	end))
+	track(UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			fromX(input.Position.X)
+		end
+	end))
+	track(UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end))
+	track(minus.MouseButton1Click:Connect(function()
+		set(Ouwi.stopFloor - Ouwi.StopStep)
+	end))
+	track(plus.MouseButton1Click:Connect(function()
+		set(Ouwi.stopFloor + Ouwi.StopStep)
+	end))
+	paint()
+	Ouwi.setStopFloor = set
+end
 
 -- ค่าเริ่มต้นไม่เปิด: ผู้ใช้สั่งให้ติ๊กเลือกได้ว่าไม่เอากล่องนี้ (แต้มควรไปแลก Wen / Mythic ตามที่ตั้ง)
 switchRow("เปิด Ouwigahara Chest", "กล่องโซนร้านที่ใช้ 30,000 แต้มเปิด · ปิดไว้ = ไม่กด เก็บแต้มไว้แลกของ", 10, function(on)
