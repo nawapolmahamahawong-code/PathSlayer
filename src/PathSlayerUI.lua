@@ -14951,10 +14951,12 @@ function FinalSel.checkpoints()
 	if not (folder and hrp) then
 		return false, "ไม่เจอ MountainCheckpoints"
 	end
-	-- เริ่มด่านซ้ำทุก 2 นาทีถ้าธงยังไม่นับ (หมดเวลา / ตกด่าน) ค่าเดา ยังไม่รู้เวลาจำกัดของด่าน
-	if os.clock() - (FinalSel.trialAt or -math.huge) > 120 then
-		FinalSel.trialAt = os.clock()
+	-- ปุ่ม "Im ready" ของ Lavato (QuestActions.StartMountainTrial) ส่งแค่ StartMountainTrial ถ้ายังไม่มีด่านวิ่งอยู่
+	-- ด่านที่วิ่งอยู่มี MountainTrialEndsAt บนตัวผู้เล่น หมดเวลาแล้วหาย เริ่มใหม่ได้
+	if LocalPlayer:GetAttribute("MountainTrialEndsAt") == nil then
 		FinalSel.talk("Lavato")
+		SignalEvent.ToServer("StartMountainTrial")
+		task.wait(1)
 	end
 	for i = 1, #folder:GetChildren() do
 		local cp = folder:FindFirstChild("Checkpoint" .. i)
@@ -14970,6 +14972,123 @@ function FinalSel.checkpoints()
 			task.wait(1)
 		end
 	end
+	return true
+end
+
+-- The Dungeon = Parkour Dungeon (ถอดโค้ด CAM.Global.Training["Parkour Dungeon"].Server ดู 25 ก.ย. 2026):
+--   เข้าได้ต้องมีสกิล Double Jump + Wall Climb (prompt Train ที่ Debree["Parkour Dungeon"].Ref)
+--   ตอน Stop เซิร์ฟให้เครดิตเมื่อ ยืนห่าง Final ไม่เกิน 75 และดึงสวิตช์ครบทุกตัวใน Switchs (7 ตัว)
+--   สวิตช์นับจาก training_signaler "StateChanged" + โมเดลสวิตช์ ตอนตัวละครห่างสวิตช์ไม่เกิน 20
+-- เลยไม่ต้องปีนจริง วาร์ปไปข้างสวิตช์ทีละตัวส่งเอง แล้วไปยืนที่ Final ส่ง Stop
+function FinalSel.dungeon()
+	-- ไม่มีสกิลสองตัวนี้ prompt Train ไม่เปิดด่านเลย สวิตช์ / Stop ที่ส่งไปเซิร์ฟทิ้งหมด
+	-- ส่ง QuestProgress("The Dungeon", "Complete Dungeon") ตรง ๆ ก็ไม่รับ (ลองแล้ว ตัวนับค้าง 0)
+	local slot = equippedSlot()
+	local tree = slot and slot:FindFirstChild("SkillTreeUnlockedList")
+	for _, skill in ipairs({ "Double Jump", "Wall Climb" }) do
+		if not (tree and tree:FindFirstChild(skill, true)) then
+			report("The Dungeon ต้องมีสกิล Double Jump + Wall Climb (ยังไม่ได้ปลด " .. skill .. ") · สอบรอบนี้ไปต่อไม่ได้",
+				Theme.Danger)
+			task.wait(10)
+			return true
+		end
+	end
+	local _, hrp = selfParts()
+	local dungeon = workspace.Debree:FindFirstChild("Parkour Dungeon")
+	local prompt = dungeon and dungeon:FindFirstChild("Ref") and dungeon.Ref:FindFirstChildWhichIsA("ProximityPrompt")
+	if prompt and hrp then
+		report("เข้า Parkour Dungeon (ต้องมี Double Jump + Wall Climb)", Theme.Accent)
+		firePromptAt(prompt)
+		-- เกมเล่นฉากตัดแล้ววาร์ปเข้าแมพเอง (WipeTransition + TransitionWait) ค่าเผื่อ ยังไม่ได้วัด
+		task.wait(4)
+	end
+	-- Final อยู่ปลายแมพ ยังไม่ stream มาตอนยืนนอกด่าน (เจอจริง: "ไม่เจอแมพ Parkour" ทั้งที่ Switchs มี)
+	-- ไปยืนที่สวิตช์ตัวสูงสุด (ปลายทาง) ให้ stream ก่อนค่อยหา
+	local map = workspace.Map.DetachedMaps:FindFirstChild("ParkourTraining")
+	local switches = map and map:FindFirstChild("Switchs")
+	if not (switches and hrp) then
+		return false, "ไม่เจอแมพ Parkour"
+	end
+	local list = switches:GetChildren()
+	for i, sw in ipairs(list) do
+		if Runner.cancel then
+			return false, "ยกเลิกแล้ว"
+		end
+		local pos = sw:GetPivot().Position
+		report(string.format("Parkour · สวิตช์ %d/%d", i, #list), Theme.Accent)
+		placeAt(hrp, CFrame.new(pos + Vector3.new(0, 3, 4), pos), "fs-parkour")
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		task.wait(0.6)
+		SignalEvent.ToServer("training_signaler", "StateChanged", sw)
+		task.wait(0.4)
+	end
+	local final
+	for _ = 1, 20 do
+		final = map:FindFirstChild("Final", true)
+		if final and final:IsA("BasePart") then
+			break
+		end
+		task.wait(0.25)
+	end
+	if not final then
+		SignalEvent.ToServer("training_signaler", "Stop")
+		return false, "ไม่เจอจุด Final ของ Parkour"
+	end
+	report("Parkour · ไปจุด Final", Theme.Accent)
+	placeAt(hrp, CFrame.new(final.Position + Vector3.new(0, 4, 0)), "fs-parkour")
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	task.wait(0.6)
+	firetouchinterest(hrp, final, 0)
+	task.wait(0.1)
+	firetouchinterest(hrp, final, 1)
+	task.wait(1)
+	SignalEvent.ToServer("training_signaler", "Stop")
+	task.wait(4)
+	return true
+end
+
+-- Rescue and Hold the Zone (ถอดโค้ด Minigames Place.ZoneRescue ดู 25 ก.ย. 2026) เซิร์ฟคุมทั้งหมด:
+--   Capture the Zone: ยืนในวงรอบ RescueZonePos (attribute บนผู้เล่น) ความคืบหน้าขึ้นทีละ 0.25 วิ
+--     ออกนอกวง = รีเป็น 0 ระหว่างนั้นเกมปล่อยม็อบ ZoneDemon มาเป็นระลอก (Kill Aura ตีให้โดยไม่ต้องขยับ)
+--   Rescue the Civilian: ยึดวงเสร็จ เกิดโมเดล RescueCivilian มี prompt Rescue (ค้าง 5 วิ) กดแล้วแบกบนตัว
+--   Return to Levi: แบกไปถึงห่าง Levi ไม่เกิน 12 เซิร์ฟนับให้เอง
+function FinalSel.zone(taskName)
+	local _, hrp = selfParts()
+	if not hrp then
+		return false, "ไม่พบตัวละคร"
+	end
+	local levi = FinalSel.content().npcs.Levi
+	local state = LocalPlayer:GetAttribute("RescueZoneState")
+	if state == "Carrying" then
+		report("แบก Civilian ไปส่ง Levi", Theme.Accent)
+		placeAt(hrp, CFrame.new(levi + Vector3.new(0, 3, 4), levi), "fs-zone")
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		task.wait(1)
+		return true
+	end
+	if taskName == "Rescue the Civilian" or state == "Captured" then
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if d:IsA("ProximityPrompt") and d.ActionText == "Rescue" and d.Enabled then
+				report("ช่วย Civilian (ค้างปุ่ม 5 วิ)", Theme.Accent)
+				firePromptAt(d)
+				task.wait(1)
+				return true
+			end
+		end
+	end
+	local pos = LocalPlayer:GetAttribute("RescueZonePos")
+	if typeof(pos) ~= "Vector3" then
+		report("รอเกมเปิดวง Zone", Theme.Muted)
+		task.wait(1)
+		return true
+	end
+	if (hrp.Position - pos).Magnitude > 6 then
+		placeAt(hrp, CFrame.new(pos + Vector3.new(0, 3, 0)), "fs-zone")
+		hrp.AssemblyLinearVelocity = Vector3.zero
+	end
+	report(string.format("ยึดวง Zone · %s · %s", tostring(state), tostring(LocalPlayer:GetAttribute("RescueZoneProgress") or "")),
+		Theme.Accent)
+	task.wait(0.5)
 	return true
 end
 
@@ -15026,6 +15145,10 @@ function FinalSel.step(key)
 		return true
 	elseif t.name == "Checkpoints" then
 		return FinalSel.checkpoints()
+	elseif t.spec.Type == "Dungeon" then
+		return FinalSel.dungeon()
+	elseif key == "Rescue and Hold the Zone" then
+		return FinalSel.zone(t.name)
 	end
 	for _, mob in ipairs(data.mobs) do
 		if t.name:find(mob.name, 1, true) then
