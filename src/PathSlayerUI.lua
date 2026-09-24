@@ -8102,8 +8102,9 @@ Runner.Sealed = {
 	-- ตายซ้ำที่ใบเดิมเกินนี้ = ยามหนักเกินตัวละครตอนนี้ ข้ามไปหาใบอื่น (T1 ยามเบากว่า) แล้วค่อยกลับมา
 	MaxDeaths = 2,
 	DeathSkipFor = 600,
-	-- ไม่เห็นยามแล้วแต่หีบยังล็อกเกินนี้ = ยามอีกตัวยังไม่ stream หรือหีบค้าง ไปหีบอื่นก่อน ค่าเผื่อ ยังไม่ได้วัด
-	StuckAfter = 20,
+	-- ไม่เห็นยามแล้วแต่หีบยังล็อกเกินนี้ = หีบค้าง ไปหีบอื่น · วาร์ปถึงแล้วยามรอบหีบ stream เข้ามาใน ~2 วิ
+	-- (สแกนแบบขอ stream เห็นหีบทันทีหลังขอ) เดิม 20 วิ ผู้ใช้เห็นยืนรอหีบเปล่านานเกิน
+	StuckAfter = 8,
 	SkipFor = 120,
 	-- หีบที่คนอื่นเคลียร์ยามแล้ว รอเขาเปิดหรือหีบหาย (T3 ใบที่เจอค้างอยู่ ~1 ชม. ก่อนมีคนเปิด) ข้ามยาว
 	TakenSkipFor = 1500,
@@ -14622,8 +14623,11 @@ function Money.sealed(chest, alive, say)
 			Runner.haltAttack()
 			goToSpawn(pos)
 			lockedSince = lockedSince or os.clock()
+			-- ล็อกอยู่แต่ไม่มียามให้ฆ่า เปิดไม่ได้ (ผู้ใช้เจอ 25 ก.ย. หีบในหิมะไม่มีมอน) ข้ามยาวแบบใบที่คนอื่นเคลียร์
+			-- เดิมข้ามแค่ 2 นาที วนกลับมายืนรอใบเดิม 20 วิซ้ำทุกรอบ
 			if os.clock() - lockedSince > Runner.Sealed.StuckAfter then
-				farm.sealedSkip[chest] = os.clock() + Runner.Sealed.SkipFor
+				farm.sealedSkip[chest] = os.clock() + Runner.Sealed.TakenSkipFor
+				say("หีบแดง " .. id .. " ไม่มียามให้ฆ่า ข้าม")
 				break
 			end
 			say("รอหีบแดง " .. id .. " ปลดล็อก")
@@ -14636,39 +14640,36 @@ function Money.sealed(chest, alive, say)
 end
 
 -- หีบแดงหนึ่งใบต่อบอสหนึ่งตัว (ผู้ใช้สั่ง 25 ก.ย. 2026): ฆ่าบอสเสร็จ → หาหีบแดงทั้งแมพ ฆ่ายาม เปิด 1 ใบ → บอสตัวถัดไป
--- เดิมเคลียร์เฉพาะหีบที่ stream อยู่รอบตัวและทำก่อนบอสทุกรอบ หีบไกลไม่เคยเห็น
--- ไม่เห็นหีบรอบตัว = วาร์ปไล่จุดเกิดของหีบทุกแบบ (Game.chestEvents) ให้ stream เข้ามา เจอใบแรกก็เคลียร์เลย
--- ทั้งแมพไม่มี = หีบเกิดใหม่ทุก 25 นาที (RespawnTime 1500) ไม่ต้องไล่ซ้ำทุกบอส พัก SealedSweepEvery แล้วค่อยไล่อีก
-Money.SealedSweepEvery = 300
+-- หาโดยไม่วาร์ป: ขอ stream ทีละจุดเกิด (RequestStreamAroundAsync) แล้วดู workspace.Chests ทันที
+-- วัด 25 ก.ย.: ครบ 32 จุดใน 2.5 วิ เห็นหีบ 3 ใบ · เดิมวาร์ปไปรอจุดละ 3 วิ รวม ~96 วิ ผู้ใช้บอกช้ามาก
+-- เร็วพอจะหาใหม่ทุกบอส ไม่ต้องพักรอบเหมือนเดิม ไม่เจอใบที่เปิดได้ก็ไปตีบอสต่อเลย
 function Money.sealedRound(alive, say)
 	local chest = Money.nextSealed()
-	if not chest and os.clock() >= (farm.sealedSweepAt or 0) then
-		local spots, seen = {}, {}
-		for _, e in pairs(Game.chestEvents()) do
-			for _, pos in ipairs(e.spawns) do
-				-- T1/T2/T3 ใช้จุดเกิดชุดเดียวกันบางจุด ปัดเป็นช่อง 10 stud กันแวะซ้ำ
-				local key = string.format("%d,%d,%d", pos.X // 10, pos.Y // 10, pos.Z // 10)
-				if not seen[key] then
-					seen[key] = true
-					spots[#spots + 1] = pos
+	if not chest then
+		if not Money.sealedSpots then
+			local spots, seen = {}, {}
+			for _, e in pairs(Game.chestEvents()) do
+				for _, pos in ipairs(e.spawns) do
+					-- T1/T2/T3 ใช้จุดเกิดชุดเดียวกันบางจุด ปัดเป็นช่อง 10 stud กันขอซ้ำ
+					local key = string.format("%d,%d,%d", pos.X // 10, pos.Y // 10, pos.Z // 10)
+					if not seen[key] then
+						seen[key] = true
+						spots[#spots + 1] = pos
+					end
 				end
 			end
+			Money.sealedSpots = spots
 		end
-		for i, pos in ipairs(spots) do
+		say(string.format("หาหีบแดงทั้งแมพ %d จุด", #Money.sealedSpots))
+		for _, pos in ipairs(Money.sealedSpots) do
 			if not alive() then
 				return
 			end
-			say(string.format("หาหีบแดงทั้งแมพ จุด %d/%d", i, #spots))
-			goToSpawn(pos)
-			task.wait(Runner.Sealed.StreamWait)
-			chest = Money.nextSealed()
-			if chest then
-				break
-			end
+			pcall(function()
+				LocalPlayer:RequestStreamAroundAsync(pos, 3)
+			end)
 		end
-		if not chest then
-			farm.sealedSweepAt = os.clock() + Money.SealedSweepEvery
-		end
+		chest = Money.nextSealed()
 	end
 	if chest then
 		Money.sealed(chest, alive, say)
