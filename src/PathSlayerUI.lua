@@ -15957,65 +15957,293 @@ Game.enterTower = enterTower
 
 -- ฝั่งหอคอย --------------------------------------------------------------
 
--- คะแนนการ์ด: ผู้ใช้สั่งเน้นแต้มสูงสุด (ตายแล้วแต้มยังอยู่ เอาไปแลกเงิน/ของได้) แต่ต้องรอดถึงชั้นที่ตั้ง
--- เลยให้ชีวิตเพิ่มสูงสุด รองลงมาการ์ดแต้ม/ตัวคูณแต้ม สเตตัสป้องกันมีค่ามากขึ้นเมื่อชั้นลึก
-local function cardScore(c, floor)
-	local t = c:GetAttribute("Type")
-	local title = tostring(c:GetAttribute("Title") or "")
-	local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-	local hpPct = hum and hum.MaxHealth > 0 and hum.Health / hum.MaxHealth or 1
-	if t == "ExtraLife" or t == "Revive" then
-		return 150
-	elseif t == "Points" or t == "Fortune" then
-		return (tonumber(c:GetAttribute("Points")) or 50) / 4
-	elseif t == "Event" then
-		-- เดิมพัน/จับเวลาเสียแต้มได้ มือเปล่า/ห้ามสกิลทำ Insta Kill ตีไม่ได้
-		for _, bad in ipairs({ "Wager", "Time Attack", "Tribute", "Bare Hands", "Iron Discipline" }) do
-			if title:find(bad) then
-				return -100
+-- เลือกการ์ด: ทุกใบตีค่าเป็น "แต้มที่คาดว่าจะได้เพิ่มจนจบรอบ" แล้วเอาใบที่มากสุด ไม่เลือก Skip เด็ดขาด (ผู้ใช้สั่ง 25 ก.ย.)
+-- สูตรแต้มจากโค้ดเกม (Ouwigahara.Score.ForKill): แต้มฐาน x โบนัสชั้น (เต็ม x3 ที่ชั้น 15) x 0.6 ตอนเล่นคนเดียว
+--   x ตัวคูณอีเวนต์ทุกใบคูณกัน (เพดาน x4) x สัดส่วนเลือดที่เราตีเข้าไปเอง
+-- ไกด์ผู้เล่น (allthings.how / slayers2-game.wiki) ตรงกับที่โค้ดบอก: ตัวคูณ "ทุกชั้น" ชนะ "ชั้นถัดไป"
+-- Streak / Ascension / Boss Rush / Lucky Draw เอาเร็วที่สุด เพราะคูณทุกชั้นที่เหลือรวมถึงเพดาน Fortune (25 x แต้มม็อบ)
+-- รอบ 25 ก.ย. ถึงชั้น 60 ได้ 48,148 มีตัวคูณทั้งรอบแค่ Iron Tower ใบเดียว เพราะตัวเดิมให้คะแนนตัวคูณทั้งรอบ
+-- เท่าตัวคูณชั้นเดียว (Streak ได้ 0 ไม่เคยถูกเลือก) แล้วเลือก Skip ทุกครั้งที่มืออีเวนต์มีแต่ใบเสี่ยง
+local Cards = {
+	-- แต้มฆ่าต่อชั้นที่ตัวคูณ x1 ก่อนวัดได้ในรอบนี้ · รอบ 25 ก.ย.: 48,148 ที่ชั้น 60 เป็นการ์ด Trophy/Fortune ~29,000
+	-- เหลือแต้มฆ่า ~19,000 / 60 ชั้น ≈ 320 ชั้นลึกได้มากกว่าชั้นตื้น เลยเริ่มที่ 500 (ตอนโบนัสชั้นเต็ม)
+	StartBase = 500,
+	-- เล่นคนเดียวได้มือตัวคูณเพิ่มทุกชั้น (SoloEventPicks) ส่วนใหญ่ x1.15-1.5 เดาค่ากลาง ยังไม่ได้วัด
+	FloorEventMult = 1.3,
+	MultCap = 4,
+	-- Insta Kill โหมดทันทีได้แต้มตามดาเมจที่ตีเข้าไปจริง วัด 25 ก.ย. ชั้น 54: Elite 7-10% บอส (ฆ่าที่ 80%) ~20%
+	EliteShare = 0.1,
+	BossShare = 0.2,
+	-- Time Attack ให้เวลา 75 วิ (Events.Floor.TimeAttack.Begin)
+	TimeAttackSecs = 75,
+	-- ได้เลือกเพิ่ม 1 ครั้ง: มือปกติรอบ 25 ก.ย. ส่วนใหญ่มี Trophy 150-750 / Fortune ถึง 875
+	PickWorth = 500,
+	-- ได้การ์ดเพิ่มในมือ 1 ใบ (ยังเลือกได้ครั้งเดียว) ช่วยแค่เพิ่มโอกาสเจอใบดี เดาไว้ 30% ของการได้เลือกเพิ่ม
+	ExtraCardWorth = 150,
+	RerollWorth = 100,
+	-- ใบดีสุดในมือยังน้อยกว่า Trophy ใบเล็กสุด (75) และมีตั๋ว = รีโรล
+	RerollBelow = 75,
+	-- ชั้นเดียวที่เสี่ยงกับวิธีตีของเรา: ห้ามอาวุธ/ห้ามสกิล (ตัวเดิมตีตก -100 ว่าตีไม่ได้ ยังไม่ได้ลองจริง)
+	-- เลือดครึ่ง/เลือดลด ชั้นลึกโดนทีเดียวหัวใจหาย · ยังเลือกได้ถ้ามือนั้นมีแต่ใบพวกนี้ (ห้าม Skip)
+	Risk = { BareHands = 0.4, IronDiscipline = 0.4, GlassFloor = 0.7, BleedingFloor = 0.7, BloodMoon = 0.8 },
+	base = nil,
+	floor = nil,
+	clean = 0,
+	floors = 0,
+	deaths = 0,
+}
+
+-- นิยามอีเวนต์ของเกมอยู่ฝั่ง ReplicatedStorage require ได้จาก client (ลองครบ 90+ ตัว 25 ก.ย.) ครอบ pcall ไว้
+-- เผื่ออัปเดตแล้วมีตัวไหนไปแตะ ServerStorage ตอนโหลด ตัวเดียวพังไม่ควรทำให้เลือกการ์ดไม่ได้ทั้งรอบ
+local function eventDefs()
+	if not Cards.defs then
+		Cards.defs = {}
+		for _, m in ipairs(ReplicatedStorage["Minigames Place"].Minigames.Ouwigahara.Events:GetDescendants()) do
+			if m:IsA("ModuleScript") then
+				local ok, def = pcall(require, m)
+				if ok and type(def) == "table" then
+					Cards.defs[m.Name] = def
+				end
 			end
 		end
-		local mult = tonumber(title:match("x(%d+%.?%d*)")) or 1
-		return (mult - 1) * 150
-	elseif t == "Stat" then
-		if title:find("Health") or title:find("Reduction") then
-			return floor >= 40 and 45 or 30
-		elseif title:find("Damage") or title:find("Attack Speed") then
-			return 35
-		end
-		return 8
-	elseif t == "Heal" then
-		return hpPct < 0.5 and 80 or 1
-	elseif t == "Potion" then
-		return 20
-	elseif t == "Weapon" or t == "Forge" then
-		return 15
-	elseif t == "Skip" then
-		return 0
+		Cards.settings = require(ReplicatedStorage.CAM.Global.MinigameSettings).Settings.Ouwigahara
+		fixIdentity()
 	end
-	return 4
+	return Cards.defs
+end
+
+-- ตัวคูณของชั้น atFloor: ใบทั้งรอบไม่มี Until · ใบชั้นเดียวมี Until = ชั้นที่มีผล
+-- มือการ์ดขึ้นหลังเคลียร์ชั้น N ตอน MinigameFloor ยังเป็น N ใบที่เลือกได้ Until N+1 เกมลบตอนจบชั้นนั้น
+-- (เห็น The Horde Until=60 ระหว่างสู้ชั้น 60 · Gold Rush Until=68 หายตอนมือหลังชั้น 68 ขึ้น)
+local function heldMult(atFloor)
+	local defs = eventDefs()
+	local run, floorMult = 1, 1
+	local held = LocalPlayer:FindFirstChild("MinigameObtained")
+	for _, c in ipairs(held and held:GetChildren() or {}) do
+		local def = defs[tostring(c:GetAttribute("Event"))]
+		local m = def and def.Score and def.Score.Multiplier
+		if m then
+			-- Streak ใบเดียวที่เป็นฟังก์ชัน อ่าน run.Streak ฝั่งเซิร์ฟไม่ได้ นับชั้นไม่ตายเอง
+			if type(m) == "function" then
+				m = 1 + math.min(Cards.clean, 10) * 0.05
+			end
+			local untilFloor = c:GetAttribute("Until")
+			if untilFloor == nil then
+				run *= m
+			elseif untilFloor == atFloor then
+				floorMult *= m
+			end
+		end
+	end
+	return run, floorMult
+end
+
+-- แต้มที่เกมจ่ายต่อการฆ่าเต็มตัวในชั้นถัดไป (Score.ForKill) ใช้กับการ์ดที่อิงแต้มม็อบ (Wager, Headhunter, Bounty)
+local function forKill(tier, s)
+	local cfg = Cards.settings
+	local bonus = math.min(1 + s.floor * cfg.FloorScoreBonus, cfg.FloorScoreBonusCap)
+	return cfg.KillPoints[tier] * bonus * cfg.SoloPointsScale * math.min(s.run * s.next, Cards.MultCap)
+end
+
+-- จดแต้มฆ่าจริงของแต่ละชั้น (แต้มที่ขึ้น - แต้มจากการ์ด) หารตัวคูณของชั้นนั้น เป็นฐานตีค่าตัวคูณ
+-- ชั้นที่มี Wager / Time Attack / Tribute ไม่เอา แต้มขึ้นลงเป็นก้อนไม่เกี่ยวกับการฆ่า
+local function trackFloor(floor)
+	local pts = LocalPlayer:GetAttribute("RunPoints") or 0
+	if Cards.floor ~= floor then
+		if Cards.floor and not Cards.noisy then
+			local killPts = pts - Cards.startPts - Cards.granted
+			if killPts > 0 then
+				local perX1 = killPts / math.min(Cards.multSeen, Cards.MultCap)
+				Cards.base = Cards.base and Cards.base * 0.7 + perX1 * 0.3 or perX1
+			end
+			local secs = os.clock() - Cards.startAt
+			Cards.secs = Cards.secs and Cards.secs * 0.7 + secs * 0.3 or secs
+		end
+		if Cards.floor then
+			Cards.floors += 1
+			Cards.clean = Cards.died and 0 or Cards.clean + 1
+		end
+		-- ชั้นแรกหลังโหลดสคริปต์เริ่มนับกลางชั้น ไม่เอา (ครั้งแรกที่ลองได้ฐาน 47 จากครึ่งชั้น 67 ของจริงหลักร้อย)
+		Cards.noisy = Cards.floor == nil
+		Cards.floor, Cards.startPts, Cards.startAt = floor, pts, os.clock()
+		Cards.granted, Cards.died, Cards.multSeen = 0, false, 1
+	end
+	local run, floorMult = heldMult(floor)
+	Cards.multSeen = math.max(Cards.multSeen, run * floorMult)
+end
+
+local function cardValue(c, s)
+	local t = c:GetAttribute("Type")
+	local lifeLeft = s.perFloor * s.left
+	if t == "Skip" then
+		return -math.huge
+	elseif t == "Points" or t == "Fortune" then
+		return tonumber(c:GetAttribute("Points")) or 0
+	elseif t == "ExtraLife" or t == "Revive" then
+		-- หัวใจมีค่าเท่าแต้มของชั้นที่เหลือที่มันช่วยให้ไต่ต่อได้ ยิ่งเหลือน้อยยิ่งคุ้ม
+		return lifeLeft * (s.hearts <= 1 and 0.5 or s.hearts == 2 and 0.15 or 0.05)
+	elseif t == "Stat" then
+		-- Insta Kill ตีหมัดเดียวก็ฆ่า ดาเมจช่วยแค่บอส (ต้องตีให้ถึง 20%) · เลือด/ลดดาเมจช่วยให้ไม่เสียหัวใจชั้นลึก
+		-- ดูจากชื่อสเตตัสจริง เดิมหาคำว่า "Reduction" ในชื่อการ์ด Cooldown Reduction ติดไปด้วย แล้วเลือกมันทิ้ง Fortune +1750
+		local stat = tostring(c:GetAttribute("Stat"))
+		if stat == "Max Health" or stat == "Damage Reduction Factor" then
+			return lifeLeft * (s.floor >= 40 and 0.02 or 0.01)
+		elseif stat:find("Damage") or stat == "Attack Speed Factor" then
+			return lifeLeft * 0.01
+		end
+		return lifeLeft * 0.003
+	elseif t == "Heal" then
+		return s.hp < 0.5 and s.perFloor * 0.5 or 5
+	elseif t == "Reroll" then
+		return Cards.RerollWorth * 2
+	elseif t == "Potion" then
+		return 40
+	elseif t == "SwapMap" or t == "SkipFloor" then
+		return 5
+	elseif t ~= "Event" then
+		-- Weapon / Forge / Skill / Clan / Trade: ไม่เพิ่มแต้ม Insta Kill ไม่ได้ใช้
+		return 30
+	end
+
+	local name = tostring(c:GetAttribute("Event"))
+	local def = eventDefs()[name] or {}
+	local m = def.Score and def.Score.Multiplier
+	local cap, E = Cards.MultCap, Cards.FloorEventMult
+	if name == "Streak" then
+		-- เริ่มจาก 0 เพิ่ม 5% ทุกชั้นที่ไม่ตาย เต็ม 50% ที่ 10 ชั้น เฉลี่ยตลอดชั้นที่เหลือ
+		local sum = 0
+		for k = 1, s.left do
+			sum += math.min(k, 10)
+		end
+		m = 1 + 0.05 * sum / math.max(s.left, 1)
+	end
+	if type(m) == "number" then
+		local v
+		if def.Floors == nil then
+			v = s.base * s.left * (math.min(s.run * m * E, cap) - math.min(s.run * E, cap))
+		else
+			v = s.base * (math.min(s.run * s.next * m, cap) - math.min(s.run * s.next, cap))
+		end
+		if name == "BossRush" then
+			v += s.left * forKill("Boss", s) * Cards.BossShare
+		elseif name == "Ascension" then
+			v += s.left * forKill("Elite", s) * Cards.EliteShare
+		elseif name == "Champion" then
+			v += forKill("Boss", s) * Cards.BossShare
+		end
+		-- เพดาน x4 เต็มแล้วตัวคูณเพิ่มไม่ได้อะไร แต่ยังดีกว่า Skip ให้ค่าบวกเล็กน้อยไว้
+		return math.max(v, 1) * (Cards.Risk[name] or 1)
+	end
+
+	if name == "Wager" then
+		-- วางเดิมพัน 1/4 ของแต้ม (ไม่เกิน 50 ตัว) รอดชั้นหน้าได้คืนสองเท่า = กำไรเท่าเดิมพัน ตายเสียเดิมพัน
+		local stake = math.min(math.floor(s.pts * 0.25), 50 * forKill("Normal", s))
+		return stake * (1 - 2 * s.pDie)
+	elseif name == "TimeAttack" then
+		-- เคลียร์ใน 75 วิ ได้ครึ่งหนึ่งของแต้มชั้นนั้นเพิ่ม ไม่ทันเสียครึ่ง · เวลาต่อชั้นจากที่วัดในรอบนี้
+		local p = math.clamp((Cards.TimeAttackSecs - (Cards.secs or Cards.TimeAttackSecs)) / 30, 0, 1)
+		return s.base * s.run * s.next * 0.5 * (2 * p - 1)
+	elseif name == "Headhunter" then
+		return 2 * forKill("Boss", s) * Cards.BossShare
+	elseif name == "Bounty" then
+		local elites = 1 + math.floor(s.floor / Cards.settings.Waves.EliteOneMoreEveryFloors)
+		return elites * forKill("Elite", s) * Cards.EliteShare
+	elseif name == "ForbiddenArt" then
+		return s.left * forKill("Elite", s) * Cards.EliteShare
+	elseif name == "LuckyDraw" then
+		-- การ์ดหายากขึ้นทุกมือที่เหลือ (Fortune/Supreme Trophy เป็นใบหายาก)
+		return s.left * 60
+	elseif name == "LoadedDice" then
+		return s.left * Cards.RerollWorth * 0.3
+	elseif name == "JackpotFloor" then
+		return Cards.PickWorth * 2
+	elseif name == "Mulligan" then
+		return Cards.PickWorth + Cards.RerollWorth * 2
+	elseif name == "TicketPack" then
+		return Cards.ExtraCardWorth + Cards.RerollWorth
+	elseif name == "BloodPact" then
+		return Cards.ExtraCardWorth * 2 * (s.hearts <= 1 and 0.5 or 1)
+	elseif name == "CheapSeats" then
+		return Cards.ExtraCardWorth * 0.5
+	elseif name == "RushHour" then
+		return Cards.ExtraCardWorth * ((Cards.secs or 99) < Cards.TimeAttackSecs and 1 or 0.2)
+	elseif name == "Tribute" then
+		return Cards.ExtraCardWorth * 2 - 500
+	elseif name == "TollGate" then
+		return Cards.ExtraCardWorth * 2 - lifeLeft * (s.hearts <= 2 and 0.15 or 0.05)
+	elseif name == "Sacrifice" then
+		return Cards.ExtraCardWorth * 2
+	elseif name == "Reincarnation" then
+		-- ฟื้นได้ครั้งเดียวแต่หลังจากนั้นไม่มีการ์ดให้อีกเลย (หมด Trophy/Fortune ทั้งรอบที่เหลือ)
+		return -100
+	end
+	return def.Floors == nil and 30 or 20
 end
 
 local function pickCards()
 	local offers = LocalPlayer:FindFirstChild("OuwigaharaOffers")
 	local cards = offers and offers:GetChildren() or {}
-	if #cards == 0 then
+	-- Picked = เลือกไปแล้ว มือนี้รอลบหรือรอมือถัดไป (เลือกหลายใบ) ส่งซ้ำเซิร์ฟทิ้งเฉยๆ
+	if #cards == 0 or offers:GetAttribute("Picked") then
 		return
 	end
 	local floor = workspace:GetAttribute("MinigameFloor") or 1
-	local best, bestScore
+	local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+	local run, nextMult = heldMult(floor + 1)
+	local cfg = Cards.settings
+	-- สคริปต์โหลดใหม่กลางรอบ ประวัติตายหาย เริ่มจากหัวใจที่เสียไปแล้ว (โหมด Normal เริ่ม 3 ดวง)
+	if Cards.floors == 0 then
+		Cards.floors = floor - 1
+		Cards.deaths = math.max(3 - (LocalPlayer:GetAttribute("Hearts") or 3), 0)
+	end
+	-- โอกาสตายต่อชั้นจากที่เสียหัวใจจริงในรอบนี้ (+ค่าเริ่มกันหารศูนย์)
+	local pDie = math.clamp((Cards.deaths + 0.5) / (Cards.floors + 5), 0.02, 0.5)
+	local hearts = LocalPlayer:GetAttribute("Hearts") or 1
+	local s = {
+		floor = floor,
+		-- ชั้นที่คาดว่าจะไต่ได้อีกจริง ไม่ใช่ถึงชั้นที่ตั้ง (ตั้งไว้ 200 ได้) · เดิมใช้ถึงชั้นที่ตั้ง ชั้น 65 เหลือ 135 ชั้น
+		-- สเตตัสได้ค่าเกิน Fortune +1750
+		left = math.max(math.min(stopAt() - floor, hearts / pDie), 0),
+		base = Cards.base or Cards.StartBase * math.min(1 + floor * cfg.FloorScoreBonus, cfg.FloorScoreBonusCap)
+			/ cfg.FloorScoreBonusCap,
+		run = run,
+		next = nextMult,
+		hearts = hearts,
+		hp = hum and hum.MaxHealth > 0 and hum.Health / hum.MaxHealth or 1,
+		pts = LocalPlayer:GetAttribute("RunPoints") or 0,
+		pDie = pDie,
+	}
+	s.perFloor = s.base * math.min(run * Cards.FloorEventMult, Cards.MultCap)
+	local best, bestValue
+	-- _G.PathSlayerCardTrace เปิดไว้ตอนดีบักเท่านั้น จดค่าทุกใบในมือไว้เทียบว่าเลือกถูกไหม
+	local trace = _G.PathSlayerCardTrace
+	local seen = trace and {}
 	for _, c in ipairs(cards) do
-		local s = cardScore(c, floor)
-		if not bestScore or s > bestScore then
-			best, bestScore = c, s
+		local v = cardValue(c, s)
+		if seen then
+			seen[#seen + 1] = string.format("%s=%d", tostring(c:GetAttribute("Title")), math.max(math.floor(v), -1))
+		end
+		if not bestValue or v > bestValue then
+			best, bestValue = c, v
 		end
 	end
-	-- ของใน hand ไม่คุ้มเลย (คะแนน < 5) มีรีโรลเหลือใช้รีโรลก่อน
-	if bestScore < 5 and (offers:GetAttribute("Rerolls") or 0) > 0 then
+	if trace then
+		trace[#trace + 1] = string.format("ชั้น %d เหลือ~%.0f ฐาน %.0f x%.2f/%.2f หัวใจ %d · %s", floor, s.left, s.base,
+			run, nextMult, s.hearts, table.concat(seen, " | "))
+	end
+	if bestValue < Cards.RerollBelow and (offers:GetAttribute("Rerolls") or 0) > 0 then
 		SignalEvent.ToServer("OuwigaharaRequest", { action = "Reroll" })
 		task.wait(0.8)
 		return
 	end
+	local t = best:GetAttribute("Type")
+	if t == "Points" or t == "Fortune" then
+		Cards.granted += tonumber(best:GetAttribute("Points")) or 0
+	elseif t == "Event" then
+		local name = best:GetAttribute("Event")
+		Cards.noisy = Cards.noisy or name == "Wager" or name == "TimeAttack" or name == "Tribute"
+	end
+	Ouwi.lastPick = string.format("%s (~%s)", tostring(best:GetAttribute("Title")), comma(math.floor(bestValue)))
 	SignalEvent.ToServer("OuwigaharaRequest", { action = "Pick", id = best.Name })
 	task.wait(0.8)
 end
@@ -16180,8 +16408,11 @@ local function climb()
 			Ouwi.deaths[#Ouwi.deaths + 1] = string.format("ชั้น %s · Y %s · %s · ม็อบใกล้สุด %s", tostring(floor),
 				me and tostring(math.floor(me.Position.Y)) or "?", killAura and killAura.underConn and "ใต้ดิน" or "บนพื้น",
 				near and near.Name or "-")
+			Cards.died = true
+			Cards.deaths += 1
 		end
 		hearts = nowHearts
+		trackFloor(floor)
 		pickCards()
 		autoSkip()
 		local _, hrp = selfParts()
@@ -16193,9 +16424,11 @@ local function climb()
 		elseif os.clock() <= pauseUntil and killAura then
 			killAura.underRoot = nil
 		end
-		say(string.format("ชั้น %d/%d · แต้ม %s · หัวใจ %s · ม็อบเหลือ %s", floor, stopAt(),
-			comma(LocalPlayer:GetAttribute("RunPoints") or 0), tostring(LocalPlayer:GetAttribute("Hearts") or "?"),
-			tostring(workspace:GetAttribute("MinigameEnemiesLeft") or "?")))
+		local runMult, floorMult = heldMult(floor)
+		say(string.format("ชั้น %d/%d · แต้ม %s · x%.2f · หัวใจ %s · ม็อบเหลือ %s · การ์ดล่าสุด %s", floor, stopAt(),
+			comma(LocalPlayer:GetAttribute("RunPoints") or 0), math.min(runMult * floorMult, Cards.MultCap),
+			tostring(LocalPlayer:GetAttribute("Hearts") or "?"),
+			tostring(workspace:GetAttribute("MinigameEnemiesLeft") or "?"), Ouwi.lastPick or "-"))
 		task.wait(0.3)
 	end
 	releaseUnder()
