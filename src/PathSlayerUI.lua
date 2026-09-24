@@ -2007,8 +2007,6 @@ local Layout = {
 			help = "ข้ามช่วงพัก 10 วิระหว่างชั้นทันที ไต่เร็วขึ้น" },
 		["Auto-Retry"] = { page = "quest", section = "quest", card = "dungeon", child = 5, title = "Auto-Retry",
 			help = "จบรอบ เก็บหีบ แลกของครบแล้ว ออกไปเล่นรอบใหม่เอง · ปิด = รออยู่ในโซนร้านหลังแลกของเสร็จ" },
-		["ตีอาวุธ V2 เอง"] = { page = "quest", section = "quest", card = "dungeon", child = 7, title = "ตีอาวุธ V2 เอง",
-			help = "จบรอบแล้วตีอาวุธ V2 ที่ Togane เองถ้าแต้ม 90,000 + ของฐานครบ (ใช้แต้มหมด) · ปิด = ไม่ตี เอาแต้มไปแลกตามที่ติ๊ก" },
 		["เปิด Ouwigahara Chest"] = { page = "quest", section = "quest", card = "dungeon", child = 6,
 			title = "เปิด Ouwigahara Chest (30,000 แต้ม)",
 			help = "กล่องโซนร้านหลังจบรอบที่ใช้แต้มเปิด · ปิดไว้ = ไม่กด เก็บแต้มไว้แลกของ" },
@@ -15875,7 +15873,7 @@ track(closeBtn.MouseButton1Click:Connect(unload))
 -- หอคอย Ouwigahara อยู่คนละเซิร์ฟ (PlaceId 75556147183481) เข้าทางประตูหน้า Hidden Mist (-1605, 1014, 1142)
 -- สคริปต์ตามไปเองด้วย queue_on_teleport + สวิตช์นี้จำไว้ในไฟล์ config เลยทำต่อทันทีที่โหลดขึ้นมาอีกฝั่ง
 -- วงจร: เข้าประตู → Ready Up → ไต่ชั้นด้วย Insta Kill + เลือกการ์ดแต้มสูงสุด → จบที่ชั้นที่ตั้ง (70)
--- → เปิดหีบ Cache → ตีอาวุธ V2 ที่ Togane (เฉพาะคิว Craft สั่ง หรือเปิดสวิตช์ ตีอาวุธ V2 เอง)
+-- → เปิดหีบ Cache → ตีอาวุธ V2 ที่ Togane (เฉพาะรอบที่คิว Get Nightfall Craft สั่ง)
 -- → แลกแต้มเป็น Mythic Ore / Wen ที่ Zeni → Leave กลับ (ปิด Auto-Retry = รอในร้าน)
 -- แต้ม (RunPoints) อยู่แค่ในเซิร์ฟหอคอยรอบนั้น ออกแล้วหาย ต้องใช้ให้หมดก่อน Leave เสมอ
 -- ตัวเลขทดสอบจริง 24 ก.ย. 2026 (Insta Kill ทันที + Kill Aura): ชั้น 7-16 ใน 4 นาที แต้มรวม 4,830 ไม่เสียหัวใจ
@@ -15914,8 +15912,6 @@ local Ouwi = {
 	-- จบรอบแล้วออกไปเข้าประตูเล่นรอบใหม่เอง · ปิด = เก็บหีบ แลกของเสร็จแล้วรออยู่ในโซนร้าน (ผู้ใช้สั่ง 25 ก.ย. 2026)
 	-- ค่าเริ่มต้นเปิด = แบบเดิมก่อนมีสวิตช์นี้
 	autoRetry = Game.persist.data.switches["Auto-Retry"] ~= false,
-	-- จบรอบแล้วตีอาวุธ V2 ที่ Togane เองถ้าแต้ม (90,000) กับของฐานครบ · ค่าเริ่มต้นปิด ต้องติ๊กเอง
-	autoV2 = Game.persist.data.switches["ตีอาวุธ V2 เอง"] == true,
 	on = false,
 	loop = 0,
 }
@@ -16555,48 +16551,6 @@ local function climb()
 	instaOff()
 end
 
--- สูตร V2 ฝั่งหอคอยที่ทำได้ตอนนี้ (มีของฐาน Mythic Scraps Silk แต้มครบ) เลือกตัวที่เป็นของฐานของเซ็ต Nightfall ก่อน
-local function craftableV2(points)
-	local w = Game.wallet()
-	local best
-	for id, r in pairs(Crafting and Crafting.Definitions or {}) do
-		local price = r.price or {}
-		if r.station == "Ouwigahara" and price.RunPoints and not price.Wen and points >= price.RunPoints then
-			local ok = true
-			for _, input in ipairs(Game.recipeInputs(r)) do
-				if input.name ~= "RunPoints" and (w[input.name] or 0) < input.amount then
-					ok = false
-				end
-			end
-			if ok then
-				local forNightfall = false
-				for _, c in pairs(Crafting.Definitions) do
-					local first = c.required and c.required[1]
-					if first and first.name == r.result and tostring(c.result):find("^Nightfall") then
-						forNightfall = true
-					end
-				end
-				if not best or (forNightfall and not best.nf) then
-					best = { id = id, recipe = r, nf = forNightfall }
-				end
-			end
-		end
-	end
-	return best
-end
-
--- มีของฐานของสูตร V2 ในกระเป๋าไหม (จะได้เก็บ Mythic Ore ไว้ตี)
-local function wantsMythic()
-	local w = Game.wallet()
-	for _, r in pairs(Crafting and Crafting.Definitions or {}) do
-		local first = r.required and r.required[1]
-		if r.station == "Ouwigahara" and first and (w[first.name] or 0) > 0 and first.name ~= r.result then
-			return true
-		end
-	end
-	return false
-end
-
 local function buyAt(where, item, count)
 	if count <= 0 then
 		return true
@@ -16700,10 +16654,8 @@ local function shops()
 		if ready then
 			v2 = { id = goal.recipe, recipe = r }
 		end
-	-- รอบปกติตีเองเฉพาะตอนผู้ใช้เปิดสวิตช์ "ตีอาวุธ V2 เอง" · เดิมตีทุกครั้งที่แต้มกับของครบ ผู้ใช้ไม่รู้ตัว
-	-- เสีย 90,000 แต้ม + Scythe + Mythic 10 ไปกับ Damascus Scythe (25 ก.ย. 2026) แต้มที่ตั้งใจแลก Wen/Mythic หายหมด
-	elseif not goal and Ouwi.autoV2 then
-		v2 = craftableV2(points)
+	-- รอบปกติไม่ตีเด็ดขาด ตีอาวุธเป็นงานของคิว Get Nightfall Craft เท่านั้น (ผู้ใช้สั่ง 25 ก.ย. 2026)
+	-- เดิมรอบปกติตีเองทุกครั้งที่แต้มกับของครบ เสีย 90,000 แต้ม + Scythe + Mythic 10 ไปกับ Damascus Scythe
 	end
 	if v2 then
 		say("ตี " .. v2.recipe.result .. " ที่ Togane")
@@ -17064,13 +17016,6 @@ local retryRow = switchRow("Auto-Retry", "จบรอบ เก็บหีบ 
 end)
 if Ouwi.autoRetry then
 	retryRow.set(true)
-end
-
-local v2Row = switchRow("ตีอาวุธ V2 เอง", "จบรอบแล้วตีอาวุธ V2 ที่ Togane เองถ้าแต้ม 90,000 + ของฐานครบ · ปิด = ไม่ตี", 12, function(on)
-	Ouwi.autoV2 = on
-end)
-if Ouwi.autoV2 then
-	v2Row.set(true)
 end
 
 switchRow("แลกแต้มเป็น", "ติ๊กหลายอย่าง = แบ่งแต้มเท่ากัน · ไม่ติ๊กเลย = ไม่แลก เปิดหีบแล้วกลับไปรันรอบใหม่", 8, function() end, {
