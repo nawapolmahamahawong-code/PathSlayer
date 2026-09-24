@@ -1999,6 +1999,9 @@ local Layout = {
 		["ยอมแพ้ที่ชั้น"] = { page = "quest", section = "quest", card = "dungeon", child = 2, title = "ยอมแพ้ที่ชั้น" },
 		["Auto-Skip"] = { page = "quest", section = "quest", card = "dungeon", child = 4, title = "Auto-Skip",
 			help = "ข้ามช่วงพัก 10 วิระหว่างชั้นทันที ไต่เร็วขึ้น" },
+		["เปิด Ouwigahara Chest"] = { page = "quest", section = "quest", card = "dungeon", child = 5,
+			title = "เปิด Ouwigahara Chest (30,000 แต้ม)",
+			help = "กล่องโซนร้านหลังจบรอบที่ใช้แต้มเปิด · ปิดไว้ = ไม่กด เก็บแต้มไว้แลกของ" },
 		["แลกแต้มเป็น"] = { page = "quest", section = "quest", card = "dungeon", child = 3,
 			title = "แลกแต้มเป็น (ติ๊กหลายอย่าง = แบ่งเท่ากัน)" },
 		["Auto-Final-Selection"] = { page = "quest", section = "quest", card = "finalsel", order = 3,
@@ -7240,11 +7243,13 @@ function killAura.pinUnder(root)
 			p.CanCollide = false
 		end
 		hum.PlatformStand = true
-		-- ม็อบตาย/หายระหว่างรอเป้าถัดไป ค้างอยู่ที่เดิม ตอนนี้ตัวทะลุพื้นได้ ปล่อยไว้จะร่วงลงใต้แมพ
+		-- ม็อบตาย/หายระหว่างรอเป้าถัดไป: ลอยค้างที่เดิมด้วยการล้างความเร็วทุกเฟรม (ร่วงแค่ ~0.3 stud/วิ) ไม่เขียน CFrame ทับ
+		-- เดิมเขียน underLast ทับทุกเฟรม: หอคอยย้ายแมพ เซิร์ฟวาร์ปเราไปแท่นเกิดแมพใหม่ แต่ตรงนี้ดึงกลับจุดเดิมทุกเฟรม
+		-- แมพเก่าถูกลบ ตัวตกลงใต้แมพตาย (ผู้ใช้เสียหัวใจ 3 ดวงในชั้น 1 และอีกดวงแถวชั้น 30)
 		if r and r.Parent and r.Position.Y > Combat.WorldFloorY then
 			killAura.underLast = CFrame.new(r.Position - Vector3.new(0, killAura.depth(), 0)) * killAura.LayFaceUp
+			me.CFrame = killAura.underLast
 		end
-		me.CFrame = killAura.underLast or me.CFrame
 		me.AssemblyLinearVelocity = Vector3.zero
 		me.AssemblyAngularVelocity = Vector3.zero
 	end))
@@ -7479,6 +7484,9 @@ end
 -- แต่ละชิ้นมี LootDropPrompt "Claim" ระยะ 10 กดแล้วหายภายใน 0.6 วิ ของเข้า Inventory ตรง ๆ
 -- วัดจากหีบ Zuko: ได้ Black Kumo Haori กับ One-Horned Imp Mask
 local Loot = {
+	-- หีบที่เปิดด้วยแต้มหอคอย (Ouwigahara Chest "Open (30,000 points)" ที่โซนร้านหลังจบรอบ) เปิดเฉพาะผู้ใช้ติ๊กไว้
+	-- ผู้ใช้เจอ: Auto-Chest ไปกดเองทั้งที่แต้มไม่พอ ขึ้น "Not enough points" และถ้าพอจะกินแต้มที่ควรไปแลก Wen
+	pointChests = false,
 	-- หีบที่อยู่ไกลกว่านี้ไม่ใช่ของบอสที่เพิ่งฆ่า อาจเป็นหีบอีเวนต์อีกฟากแมพ
 	ChestRadius = 250,
 	-- ยังไม่ได้วัดว่าหีบโผล่ช้ากว่าบอสตายกี่วิ 3 วิคือค่าเผื่อ รอเฉพาะเควสบอส (ฆ่า 1 ตัว)
@@ -7522,7 +7530,8 @@ local function closedChests(origin)
 	for _, chest in ipairs(folder and folder:GetChildren() or {}) do
 		local prompt = chest:FindFirstChild("ChestPrompt", true)
 		local pos = prompt and promptPoint(prompt)
-		if pos and chest:GetAttribute("IsOpen") == false and prompt.Enabled
+		local costsPoints = tostring(prompt.ActionText):lower():find("point") ~= nil
+		if pos and chest:GetAttribute("IsOpen") == false and prompt.Enabled and (Loot.pointChests or not costsPoints)
 			and (pos - origin).Magnitude <= Loot.ChestRadius then
 			list[#list + 1] = { model = chest, prompt = prompt }
 		end
@@ -15063,12 +15072,15 @@ local function climb()
 			return
 		end
 		-- ย้ายแมพ (ทุก 10 ชั้น) เซิร์ฟเช็กว่าตัวเราอยู่ใกล้แท่นเกิดหลัง 3.5 วิ ห้ามวาร์ปไปไหนช่วงนั้น
-		-- ต้องปล่อยจากใต้ดินด้วย ไม่งั้นถูกตรึงไว้ใต้ม็อบตัวเก่าที่แมพเดิม
+		-- ห้ามปล่อยจากใต้ดินตรงนี้ (เปิดชนคืนตอนตัวยังจมใต้แมพเก่าที่กำลังถูกลบ = ร่วงตาย) แค่ทิ้งเป้าเดิม
+		-- ตัวลอยค้างให้เซิร์ฟวาร์ปไปแท่นเกิด พ้นช่วงพักแล้วค่อยตรึงใต้ม็อบแมพใหม่
 		local map = workspace:GetAttribute("MinigameMap")
 		if map ~= lastMap then
 			lastMap = map
 			pauseUntil = os.clock() + 4
-			releaseUnder()
+			if killAura then
+				killAura.underRoot = nil
+			end
 		end
 		pickCards()
 		autoSkip()
@@ -15078,8 +15090,8 @@ local function climb()
 			if enemy then
 				holdUnder(enemy.HumanoidRootPart)
 			end
-		elseif os.clock() <= pauseUntil then
-			releaseUnder()
+		elseif os.clock() <= pauseUntil and killAura then
+			killAura.underRoot = nil
 		end
 		say(string.format("ชั้น %d/%d · แต้ม %s · หัวใจ %s · ม็อบเหลือ %s", floor, stopAt(),
 			comma(LocalPlayer:GetAttribute("RunPoints") or 0), tostring(LocalPlayer:GetAttribute("Hearts") or "?"),
@@ -15178,7 +15190,8 @@ local function shops()
 		for _, d in ipairs(workspace:GetDescendants()) do
 			if d:IsA("ProximityPrompt") and d.Enabled and d.Parent and (d.Parent:IsA("BasePart") or d.Parent:IsA("Attachment")) then
 				local pos = d.Parent:IsA("BasePart") and d.Parent.Position or d.Parent.WorldPosition
-				if (pos - Ouwi.Caches).Magnitude < 40 and d.ActionText ~= "Chat" then
+				local paid = tostring(d.ActionText):lower():find("point") ~= nil
+				if (pos - Ouwi.Caches).Magnitude < 40 and d.ActionText ~= "Chat" and (Loot.pointChests or not paid) then
 					prompt = d
 					break
 				end
@@ -15433,6 +15446,11 @@ switchRow("ยอมแพ้ที่ชั้น", "เคลียร์ช�
 		Ouwi.stopFloor = Ouwi.StopChoices[i]
 	end,
 })
+
+-- ค่าเริ่มต้นไม่เปิด: ผู้ใช้สั่งให้ติ๊กเลือกได้ว่าไม่เอากล่องนี้ (แต้มควรไปแลก Wen / Mythic ตามที่ตั้ง)
+switchRow("เปิด Ouwigahara Chest", "กล่องโซนร้านที่ใช้ 30,000 แต้มเปิด · ปิดไว้ = ไม่กด เก็บแต้มไว้แลกของ", 10, function(on)
+	Loot.pointChests = on
+end)
 
 local skipRow = switchRow("Auto-Skip", "ข้ามช่วงพัก 10 วิระหว่างชั้นทันที ไต่เร็วขึ้น", 9, function(on)
 	Ouwi.autoSkip = on
