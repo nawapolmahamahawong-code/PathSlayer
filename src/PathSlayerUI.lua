@@ -9645,23 +9645,42 @@ function Runner.craftRecipe(id, carry)
 		jobs[#jobs + 1] = j
 	end
 
-	-- วนทำงานที่พร้อม · งานที่รอบอสเกิดพักไว้ · งานที่ต้องลงดันเจี้ยน (Wen ไม่พอซื้อ) เก็บไว้ไปรวบทีเดียวตอนท้าย
+	-- วนทำงานที่พร้อม · งานที่รอบอสเกิดพักไว้ · งานที่ต้องลงดันเจี้ยน (Wen ไม่พอซื้อ) พักไว้ ไปรวบทีเดียวตอนท้าย
 	local waitUntil, tower = {}, nil
-	local pending = {}
+	local pending, deferred = {}, {}
 	for _, j in ipairs(jobs) do
 		if not j.done() then
 			pending[#pending + 1] = j
 		end
 	end
+	-- งานคั่นตอนเหลือแต่รอบอสเกิด: ฟาร์มบอสตัวอื่น (ลูป Auto-Money-Farm) ได้ Wen จาก Coin Pouch + Mythic Ore
+	-- กับวัสดุเซ็ตจากหีบบอส ถึงเวลาเกิดแล้วกลับไป · ผู้ใช้เจอจริง: ยืนรอ Rengu 5 นาทีเพราะ Scraps / Silk
+	-- ต้องรอ Wen (1,000 ชิ้น = 500,000 Wen) งานอื่นเลยไม่เหลือ
+	local function farmOthers(deadline)
+		local w0 = wallet().Wen or 0
+		say(string.format("รอบอสเกิดอีก %d วิ · ไปฟาร์มบอสตัวอื่นก่อน", math.floor(deadline - os.clock())))
+		local ok, why = Runner.moneyUntil(function()
+			return os.clock() >= deadline
+		end, function(t)
+			say(string.format("รอบอสเกิดอีก %d วิ · ฟาร์มบอสตัวอื่น Wen +%s · %s", math.max(0, math.floor(deadline - os.clock())),
+				comma((wallet().Wen or 0) - w0), t))
+		end)
+		return ok, why
+	end
 	local current
 	local prevYield = Runner.canYield
-	Runner.canYield = function()
+	-- Runner.farm ถามก่อนยืนรอบอสเกิด: มีงานอื่นพร้อม หรือฟาร์มบอสตัวอื่นคั่นได้ = ตอบ true
+	-- ยกเว้นแบบพิมพ์ Top/Bottom (capstone ถามด้วยชื่อแบบ) ไม่งั้นวนฟาร์มคั่นทุก 20 วิไม่จบ
+	Runner.canYield = function(item)
 		for _, j in ipairs(pending) do
 			if j ~= current and (waitUntil[j] or 0) <= os.clock() then
 				return true
 			end
 		end
-		return prevYield ~= nil and prevYield() or false
+		if type(item) == "string" and not item:find("Schematic$") then
+			return true
+		end
+		return prevYield ~= nil and prevYield(item) or false
 	end
 	local function finish(...)
 		Runner.canYield = prevYield
@@ -9679,44 +9698,75 @@ function Runner.craftRecipe(id, carry)
 				soonest = j
 			end
 		end
-		-- ทุกงานรอบอสเกิดหมด: ไปยืนรอตัวที่เกิดก่อน (canYield ตอบ false เพราะไม่มีงานอื่นพร้อม)
-		job = job or soonest
-		waitUntil[job] = nil
-		current = job
-		local deadline = soonest and soonest ~= job and waitUntil[soonest] or nil
-		local okRun, ok, why, extra = pcall(job.run, deadline)
-		current = nil
-		if not okRun then
-			return finish(false, tostring(ok))
-		end
-		if why == Runner.RESPAWN and not Runner.cancel then
-			waitUntil[job] = os.clock() + math.max(10, tonumber(extra) or 60)
-			say(string.format("บอสของ %s ตาย รอเกิดใหม่ ~%d วิ · ไปหาของอื่นก่อน", job.name,
-				math.floor(waitUntil[job] - os.clock())))
-		elseif why == Runner.TOWER then
-			tower = tower or extra
-			table.remove(pending, table.find(pending, job))
-		elseif job.done() then
-			table.remove(pending, table.find(pending, job))
-		elseif not ok then
-			return finish(false, why, extra)
-		elseif not (job.filler and deadline) then
-			-- บอกว่าสำเร็จแต่ของยังไม่ครบ วนต่อได้แค่ 3 ครั้งกันค้าง (ฟาร์มวัสดุเซ็ตที่หยุดเพราะถึงเวลากลับไปตีบอสไม่นับ)
-			job.tries = (job.tries or 0) + 1
-			if job.tries >= 3 then
-				return finish(false, job.name .. " หาแล้วของไม่เพิ่ม")
+		if not job and soonest and waitUntil[soonest] - os.clock() > 20 then
+			-- ไม่มีอะไรทำนอกจากรอ: ฟาร์มบอสตัวอื่นจนถึงเวลาเกิด แล้วลองงานที่พักไว้เพราะเงินไม่พออีกรอบ
+			local ok, why = farmOthers(waitUntil[soonest])
+			if not ok and not Runner.cancel and os.clock() < waitUntil[soonest] then
+				return finish(false, why)
+			end
+			for _, j in ipairs(deferred) do
+				pending[#pending + 1] = j
+			end
+			table.clear(deferred)
+		else
+			-- เหลือไม่ถึง 20 วิ ไปยืนรอที่จุดเกิดเลย (canYield ตอบ true ก็แค่วนกลับมาที่นี่)
+			job = job or soonest
+			waitUntil[job] = nil
+			current = job
+			local deadline = soonest and soonest ~= job and waitUntil[soonest] or nil
+			local okRun, ok, why, extra = pcall(job.run, deadline)
+			current = nil
+			if not okRun then
+				return finish(false, tostring(ok))
+			end
+			if why == Runner.RESPAWN and not Runner.cancel then
+				waitUntil[job] = os.clock() + math.max(10, tonumber(extra) or 60)
+				say(string.format("บอสของ %s ตาย รอเกิดใหม่ ~%d วิ · ไปหาของอื่นก่อน", job.name,
+					math.floor(waitUntil[job] - os.clock())))
+			elseif why == Runner.TOWER then
+				tower = tower or extra
+				table.remove(pending, table.find(pending, job))
+				deferred[#deferred + 1] = job
+			elseif job.done() then
+				table.remove(pending, table.find(pending, job))
+			elseif not ok then
+				return finish(false, why, extra)
+			elseif not (job.filler and deadline) then
+				-- บอกว่าสำเร็จแต่ของยังไม่ครบ วนต่อได้แค่ 3 ครั้งกันค้าง (ฟาร์มวัสดุเซ็ตที่หยุดเพราะถึงเวลากลับไปตีบอสไม่นับ)
+				job.tries = (job.tries or 0) + 1
+				if job.tries >= 3 then
+					return finish(false, job.name .. " หาแล้วของไม่เพิ่ม")
+				end
 			end
 		end
 		task.wait(0.2)
 	end
+	-- งานที่พักไว้แต่ตอนนี้ครบแล้ว (ฟาร์มบอสคั่นได้เงินพอซื้อ) ไม่ต้องลงดันเจี้ยน
+	local stillShort = false
+	for _, j in ipairs(deferred) do
+		stillShort = stillShort or not j.done()
+	end
+	if not stillShort then
+		tower = nil
+	end
 	Runner.canYield = prevYield
+	-- ลงดันเจี้ยนรอบไหนก่อน: ของที่ต้องพกเข้าไปอัปดาบฐานครบ = รอบอัปดาบ (แต้มที่เหลือเป็น Wen อยู่แล้ว)
+	-- ยังขาด (Wen ไม่พอซื้อ Scraps / Silk ของสูตรอัป) = รอบ Wen ก่อน
+	if v2 and itemCount(e.base) < 1 then
+		local ready = true
+		for _, m in ipairs(Game.recipeInputs(v2.recipe)) do
+			if m.name ~= "RunPoints" and m.name ~= "Mythic Refinement Ore" and itemCount(m.name) < m.amount then
+				ready = false
+			end
+		end
+		if ready then
+			say(string.format("2/4 อัป %s → %s ในดันเจี้ยน (90,000 แต้ม + Mythic Ore ขาดก็แลกแต้มให้)",
+				v2.recipe.required[1].name, e.base))
+			return false, Runner.TOWER, { kind = "v2", recipe = v2.id }
+		end
+	end
 	if tower then
 		return false, Runner.TOWER, tower
-	end
-	if v2 and itemCount(e.base) < 1 then
-		say(string.format("2/4 อัป %s → %s ในดันเจี้ยน (90,000 แต้ม + Mythic Ore ขาดก็แลกแต้มให้)",
-			v2.recipe.required[1].name, e.base))
-		return false, Runner.TOWER, { kind = "v2", recipe = v2.id }
 	end
 	if Runner.cancel then
 		return false, "ยกเลิกแล้ว"
