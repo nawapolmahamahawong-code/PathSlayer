@@ -14779,14 +14779,272 @@ function FinalSel.scout()
 	return #out
 end
 
+-- ในสนามสอบ: เควสต่อกันเป็นสาย เกมใส่เควสถัดไป (NextQuest) ให้เองตอนจบ ไม่ต้องไปรับจากหน้าคุย
+-- นิยามอยู่ที่ ReplicatedStorage["Minigames Place"].Content["Final Selection"] (อ่านจากเกม 25 ก.ย. 2026):
+--   Locate Rem → Help Rem (เก็บ Apple/Banana/Grapes) → Find Vael → Defeat Demons for Vael (Lesser Demon)
+--   → Find Klien → Speak with Klien (เก็บ Nichirin Katana) → Find Rika → Treat Klien (Bandage 25 Wen ร้าน Rika)
+--   → Find Mizuto → Defeat Lost (ใต้บ่อน้ำ Y -125 + Submerged Key) → The Dungeon (Parkour Dungeon)
+--   → Find Lavato → Mountain Survival (Checkpoints) → Rescue and Hold the Zone → Find Steve → Defeat the Hand Demon
+-- ยังไม่รู้วิธีทำ: Parkour Dungeon / Checkpoints / Capture the Zone / Rescue the Civilian ไม่มี TaskSpecs บอก
+-- ถึงงานพวกนี้หยุดรอให้ผู้เล่นทำเอง จบแล้วรันต่อเอง
+FinalSel.Arena = workspace:GetAttribute("MinigameKey") == "FinalSelection"
+-- บ่อของ Lost อยู่ Y -125 ต่ำกว่าพื้นกันตกของแมพหลัก (Combat.WorldFloorY 0) ในสนามนี้พื้นจริงอยู่ Y 0-70
+FinalSel.FloorY = -300
+-- ของเควส (Bandage) ซื้อที่ Rika ครั้งละชิ้น prompt Purchase เปิดหลังจบ Find Rika
+FinalSel.ShopWait = 1.5
+
+function FinalSel.content()
+	if FinalSel.data then
+		return FinalSel.data
+	end
+	local root = ReplicatedStorage:FindFirstChild("Minigames Place")
+	local content = root and root.Content:FindFirstChild("Final Selection")
+	if not content then
+		return nil
+	end
+	local data = { quests = {}, npcs = {}, mobs = {}, answers = {} }
+	for _, m in ipairs(content.NpcContents.Dialogues.Quests:GetChildren()) do
+		for name, q in pairs(require(m)) do
+			data.quests[name] = q
+		end
+	end
+	for _, m in ipairs(content.Npcs:GetChildren()) do
+		local def = require(m)
+		local spawn = def.Spawns and def.Spawns[1]
+		if spawn then
+			data.npcs[def.Name] = typeof(spawn) == "CFrame" and spawn.Position or spawn
+		elseif def.SendOver and def.SendOver.Spawning then
+			data.mobs[#data.mobs + 1] = { name = def.Name, center = def.SendOver.Spawning.Center }
+		end
+	end
+	-- คำตอบที่เดินเรื่องต่อของทุก NPC ("Ill find your fruits", "Treat his wounds" ...) ทุกอันที่ไม่ใช่ Close
+	-- ส่งเป็นรายการให้ walkDialogue หน้าคุยแต่ละหน้ามีคำตอบที่ใช้ได้แค่อันเดียวอยู่แล้ว
+	data.answers[1] = "Locate Rem"
+	for _, m in ipairs(content.NpcContents.Dialogues.Yap:GetChildren()) do
+		for _, line in pairs(require(m)) do
+			if type(line.Answers) == "table" then
+				for text in pairs(line.Answers) do
+					if text ~= "Close" then
+						data.answers[#data.answers + 1] = text
+					end
+				end
+			end
+		end
+	end
+	FinalSel.data = data
+	return data
+end
+
+function FinalSel.held()
+	local quests = questFolder()
+	local holder = quests and quests:FindFirstChild("Holder")
+	local q = holder and holder:GetChildren()[1]
+	if not q then
+		return nil
+	end
+	local str = q:FindFirstChild("QuestString")
+	return str and str.Value or q.Name
+end
+
+-- หน้าคุยที่ค้างอยู่ (บทมาถึงสนาม / NPC แจ้งจบงาน) กดต่อจนปิด
+function FinalSel.clearDialogue()
+	if dialogueActual() then
+		walkDialogue(FinalSel.content().answers, os.clock() + 15)
+		local closeBy = os.clock() + 3
+		while dialogueActual() and os.clock() < closeBy do
+			task.wait(0.2)
+		end
+	end
+end
+
+function FinalSel.talk(npcName)
+	local pos = FinalSel.content().npcs[npcName]
+	local _, hrp = selfParts()
+	if not (pos and hrp) then
+		return false, "ไม่รู้ตำแหน่ง " .. npcName
+	end
+	report("วาร์ปไปคุยกับ " .. npcName, Theme.Accent)
+	placeAt(hrp, CFrame.new(pos + Vector3.new(0, 3, 5), pos), "fs-talk")
+	local npc
+	for _ = 1, 40 do
+		npc = findLiveNpc(npcName)
+		if npc or Runner.cancel then
+			break
+		end
+		task.wait(0.3)
+	end
+	if not npc then
+		return false, npcName .. " ยังไม่ stream เข้ามา"
+	end
+	local at = npc:GetPivot().Position
+	placeAt(hrp, CFrame.new(at + Vector3.new(0, 0, 4), at), "fs-talk")
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	task.wait(0.8)
+	FinalSel.clearDialogue()
+	fireproximityprompt(npc:FindFirstChildWhichIsA("ProximityPrompt", true))
+	local openBy = os.clock() + 8
+	while os.clock() < openBy and not dialogueActual() do
+		task.wait(0.2)
+	end
+	if not dialogueActual() then
+		return false, "เปิดหน้าคุย " .. npcName .. " ไม่ขึ้น"
+	end
+	local ok, why = walkDialogue(FinalSel.content().answers, os.clock() + 30)
+	FinalSel.clearDialogue()
+	return ok, why
+end
+
+function FinalSel.buy(item)
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("ProximityPrompt") and d.ActionText == "Purchase" and d.ObjectText == item then
+			report("ซื้อ " .. item .. " ที่ร้าน Rika", Theme.Accent)
+			firePromptAt(d)
+			task.wait(FinalSel.ShopWait)
+			FinalSel.clearDialogue()
+			return true
+		end
+	end
+	return false, "ไม่เจอปุ่มซื้อ " .. item
+end
+
+function FinalSel.kill(mob, taskName, max)
+	local _, hrp = selfParts()
+	if hrp and (hrp.Position - mob.center).Magnitude > 60 then
+		goToSpawn(mob.center)
+	end
+	Runner.attackMob(mob.name)
+	local p = taskProgress(taskName) or 0
+	report(string.format("ฆ่า %s  %d/%d", mob.name, p, max), Theme.Accent)
+	task.wait(0.5)
+end
+
+-- ทำเควสที่ถืออยู่หนึ่งจังหวะ แล้วกลับไปอ่านสถานะใหม่ (เควสเปลี่ยนเองตอนจบ)
+function FinalSel.step(key)
+	local data = FinalSel.content()
+	local q = data.quests[key]
+	if not q then
+		return false, "ไม่รู้จักเควส " .. tostring(key)
+	end
+	local inst = q.QuestInstance
+	local tasks = {}
+	for _, t in ipairs(typeof(inst) == "Instance" and inst:FindFirstChild("Tasks") and inst.Tasks:GetChildren() or {}) do
+		local maxV = t:FindFirstChild("Max")
+		local spec = q.TaskSpecs and q.TaskSpecs[t.Name] or {}
+		local p = taskProgress(t.Name)
+		local max = maxV and maxV.Value or 1
+		if p == nil or p < max then
+			tasks[#tasks + 1] = { name = t.Name, spec = spec, max = max, progress = p }
+		end
+	end
+	-- งานคุยส่งของต้องมาหลังงานอื่นเสมอ (Markers.After) ไปคุยก่อน NPC ตอบแค่ "ยังไม่เสร็จ"
+	table.sort(tasks, function(a, b)
+		return (a.spec.Type == "Deliver" and 1 or 0) < (b.spec.Type == "Deliver" and 1 or 0)
+	end)
+	local t = tasks[1]
+	if not t then
+		task.wait(1)
+		return true
+	end
+	if t.spec.Type == "Pickup" then
+		return Runner.pickup({ pickup = t.name, max = t.max, anchor = t.spec.Positions and t.spec.Positions[1],
+			positions = t.spec.Positions, quest = key }, 1, 1)
+	elseif t.spec.Type == "Deliver" then
+		local need = t.spec.RequiredItem
+		if need and itemCount(need) < (t.spec.Count or 1) then
+			local ok, why = FinalSel.buy(need)
+			if not ok then
+				return false, why
+			end
+		end
+		return FinalSel.talk(t.spec.TargetNpc)
+	end
+	for _, mob in ipairs(data.mobs) do
+		if t.name:find(mob.name, 1, true) then
+			FinalSel.kill(mob, t.name, t.max)
+			return true
+		end
+	end
+	Runner.haltAttack()
+	report(string.format("%s · งาน \"%s\" สคริปต์ยังทำไม่เป็น ทำเองก่อน จบแล้วรันต่อเอง", key, t.name), Theme.Warn)
+	task.wait(2)
+	return true
+end
+
+function FinalSel.run(alive)
+	Combat.WorldFloorY = FinalSel.FloorY
+	Runner.active = true
+	Runner.cancel = false
+	local auraWas = Runner.auraOn()
+	Runner.setAura(true)
+	local fails = 0
+	while alive() do
+		local key = FinalSel.held()
+		if not key then
+			Runner.haltAttack()
+			if dialogueActual() then
+				FinalSel.clearDialogue()
+			else
+				report("ไม่มีเควสค้าง · รอเกมให้เควสถัดไป / จบสนาม", Theme.Muted)
+				task.wait(2)
+			end
+		else
+			local ok, why = FinalSel.step(key)
+			if not ok and alive() then
+				fails += 1
+				report(string.format("%s · ติด: %s (ลองใหม่ %d)", key, tostring(why), fails), Theme.Warn)
+				task.wait(2)
+			else
+				fails = 0
+			end
+		end
+		task.wait(0.2)
+	end
+	Runner.haltAttack()
+	autoAttack.target = nil
+	if not auraWas then
+		Runner.setAura(false)
+	end
+	Runner.active = false
+end
+
 do
 	local loop = 0
 	local row = switchRow("Auto-Final-Selection", "ปิดอยู่", 3, function(on, row)
 		loop += 1
 		if not on then
+			if FinalSel.Arena then
+				Runner.stop()
+			end
 			return
 		end
 		local mine = loop
+		if FinalSel.Arena then
+			task.spawn(function()
+				local prevSink = Runner.statusSink
+				-- จดทุกข้อความลงไฟล์ด้วย ในสนามดู console ของ executor ไม่ได้ ตามรอยจากไฟล์นี้แทน
+				local lines = {}
+				local function log(text)
+					lines[#lines + 1] = os.date("%X ") .. text
+					if #lines > 200 then
+						table.remove(lines, 1)
+					end
+					pcall(writefile, "PathSlayer/fs_log.txt", table.concat(lines, "\n"))
+				end
+				Runner.statusSink = function(text)
+					row.setDesc(text)
+					log(text)
+				end
+				local ok, err = pcall(FinalSel.run, function()
+					return loop == mine and screen.Parent ~= nil and not Runner.cancel
+				end)
+				Runner.statusSink = prevSink
+				Runner.active = false
+				local why = ok and ("หยุดแล้ว (cancel=" .. tostring(Runner.cancel) .. ")") or ("ผิดพลาด: " .. tostring(err):sub(1, 160))
+				log(why)
+				row.setDesc(why)
+			end)
+			return
+		end
 		task.spawn(function()
 			local waiting = false
 			local lastLeft = FinalSel.left()
@@ -14830,7 +15088,8 @@ do
 		end)
 	end)
 	-- เพิ่งโดนส่งมาอีกเซิร์ฟ (สนามสอบ): เก็บข้อมูลลงไฟล์ บอกในแถว
-	if game.PlaceId ~= FinalSel.MainPlace then
+	-- สนามสอบเก็บข้อมูลครบแล้ว (ดูหัว FinalSel.content) และไม่มี Ouwland ให้ scout อ่าน พังทุกครั้ง
+	if game.PlaceId ~= FinalSel.MainPlace and not FinalSel.Arena then
 		task.delay(5, function()
 			local okS, n = pcall(FinalSel.scout)
 			row.setDesc(okS and ("อยู่เซิร์ฟสนามสอบ · เก็บข้อมูลสนาม " .. n .. " บรรทัดลง " .. FinalSel.ScoutFile)
