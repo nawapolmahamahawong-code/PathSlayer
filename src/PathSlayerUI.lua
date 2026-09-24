@@ -2990,19 +2990,51 @@ local function runShopQueue()
 	-- (getconnections():Fire() ของ executor) จะพังด้วย "thread is not yieldable"
 	task.spawn(function()
 		local got, skipped, lastErr = {}, {}, nil
+		-- ชื่อ -> os.clock() ที่ม็อบแหล่งดรอปน่าจะเกิดใหม่ ระหว่างนั้นไปทำชิ้นอื่นในคิว
+		local waitUntil = {}
+		local goal = {}
+		local function ready(name)
+			return not skipped[name] and (waitUntil[name] or 0) <= os.clock()
+		end
+		-- Runner.farm ถามก่อนยืนรอเกิดใหม่: มีชิ้นอื่นที่ทำได้ตอนนี้ไหม ถ้ามีก็คืนคิว
+		Runner.canYield = function(current)
+			for _, name in ipairs(shopQueue) do
+				if name ~= current and ready(name) then
+					return true
+				end
+			end
+			return false
+		end
 		while not Runner.cancel do
 			-- อ่านคิวใหม่ทุกชิ้น ผู้ใช้ติ๊กเพิ่มหรือเอาออกระหว่างรันได้
 			-- ของที่ต้องรอร้านมา (Black Marketer) อาจรอเป็นชั่วโมง ทำชิ้นอื่นในคิวให้หมดก่อน
-			local target
-			for pass = 1, 2 do
-				for _, name in ipairs(shopQueue) do
-					if not skipped[name] and not target then
-						for _, r in ipairs(shopRows) do
-							if r.data.name == name and (pass == 2 or r.data.source ~= "vendor") then
-								target = r.data
+			local function pick(usable)
+				for pass = 1, 2 do
+					for _, name in ipairs(shopQueue) do
+						if usable(name) then
+							for _, r in ipairs(shopRows) do
+								if r.data.name == name and (pass == 2 or r.data.source ~= "vendor") then
+									return r.data
+								end
 							end
 						end
 					end
+				end
+			end
+			local target = pick(ready)
+			if not target then
+				-- ทุกชิ้นรอม็อบเกิดใหม่อยู่ ไปรอตัวที่จะเกิดก่อน (farm ยืนรอที่จุดเกิดเองเพราะ canYield = false)
+				local soonest
+				for _, name in ipairs(shopQueue) do
+					if not skipped[name] and (not soonest or (waitUntil[name] or 0) < (waitUntil[soonest] or 0)) then
+						soonest = name
+					end
+				end
+				target = soonest and pick(function(name)
+					return name == soonest
+				end)
+				if soonest then
+					waitUntil[soonest] = nil
 				end
 			end
 			if not target then
@@ -3014,9 +3046,11 @@ local function runShopQueue()
 			-- ครอบ pcall เสมอ ถ้าพังกลางทาง Runner.active จะค้างเป็น true แล้วปุ่มเงียบไปจนกว่าจะรีโหลด
 			-- (เจอจริงสมัยปุ่ม BUY: สถานะค้าง "กำลังซื้อ Fancy Katana…")
 			-- วัตถุดิบไปทาง Runner.obtain เสมอแม้ซื้อได้ มันวนซื้อครั้งละ 99 จนครบจำนวน Game.buy ซื้อรอบเดียว
-			local done, ok, err
+			local done, ok, err, secsLeft
 			if target.farmable or shopFilter.mode == "material" then
-				done, ok, err = pcall(Runner.obtain, target.name, (Game.wallet()[target.name] or 0) + shopFilter.qty())
+				-- จำนวนเป้าหมายตั้งครั้งแรกที่เริ่มชิ้นนี้ กลับมาทำต่อหลังสลับไปชิ้นอื่นไม่ต้องบวกเพิ่มอีกรอบ
+				goal[target.name] = goal[target.name] or (Game.wallet()[target.name] or 0) + shopFilter.qty()
+				done, ok, err, secsLeft = pcall(Runner.obtain, target.name, goal[target.name])
 			else
 				done, ok, err = pcall(Game.buy, target)
 			end
@@ -3024,7 +3058,10 @@ local function runShopQueue()
 				ok, err = false, ok
 			end
 
-			if ok then
+			if err == Runner.RESPAWN and not Runner.cancel then
+				-- ไม่ใช่พลาด ม็อบตายรอเกิด กลับมาอีกทีตอนใกล้เกิด (อย่างน้อย 10 วิ กันวนสลับถี่)
+				waitUntil[target.name] = os.clock() + math.max(10, tonumber(secsLeft) or 60)
+			elseif ok then
 				got[#got + 1] = target.name
 				local at = table.find(shopQueue, target.name)
 				if at then
@@ -3039,6 +3076,7 @@ local function runShopQueue()
 			end
 		end
 		shopUI.progress = nil
+		Runner.canYield = nil
 
 		if Runner.setAura and not auraWasOn then
 			Runner.setAura(false)
@@ -5038,6 +5076,8 @@ function Game.mobs()
 						code = send.Settings and send.Settings.NpcCode,
 						-- ม็อบ stream เข้ามาเฉพาะตอนอยู่ใกล้ ต้องรู้ว่าจะวาร์ปไปรอที่ไหนก่อน
 						center = spawning.Center or (spawning.Locations and spawning.Locations[1]),
+						-- วิที่ตัวตายแล้วเกิดใหม่ (Bandit 30, บอส 300) คิวใช้ตัดสินว่าจะไปทำชิ้นอื่นก่อนนานแค่ไหน
+						respawn = spawning.SpawnTime,
 					})
 				end
 			end
@@ -5096,6 +5136,7 @@ function Game.mobs()
 			tier = def.tier or tierOf(maxHealth),
 			code = def.code,
 			center = def.center,
+			respawn = def.respawn,
 		}
 	end
 
@@ -7270,6 +7311,9 @@ end
 -- ฆ่าม็อบแหล่งดรอปไปเรื่อย ๆ แล้วเก็บของที่ตกเป็นระยะ จนมีไอเทมครบ need ชิ้น
 -- ของดรอปเป็น LootDrop ที่ต้องกด Claim เอง เลยหยุดลูปสู้ชั่วคราวตอนเก็บ ไม่งั้นมันดึงตัวกลับไปหาม็อบ
 -- code = รหัสม็อบ (NpcCode) ถ้าไม่ส่งมาใช้ FarmSources (ไอเทมรับเควสปราณ)
+-- ค่าคืนพิเศษของ Runner.farm: ม็อบตายหมดรอเกิดใหม่ ตามด้วยวิที่เหลือโดยประมาณ ไม่ใช่ความล้มเหลว
+Runner.RESPAWN = "__respawn"
+
 function Runner.farm(item, need, code)
 	code = code or Runner.FarmSources[item]
 	local mob
@@ -7293,7 +7337,7 @@ function Runner.farm(item, need, code)
 	startAttack()
 	-- Webhook บอกในข้อความฆ่าบอสว่าของที่ตามหาดรอปหรือยัง
 	Runner.farmTarget = item
-	local emptySince
+	local emptySince, sawAlive
 	while not Runner.cancel do
 		local have = itemCount(item)
 		if have >= need then
@@ -7321,6 +7365,17 @@ function Runner.farm(item, need, code)
 
 		if liveMobCount(mob.name) == 0 then
 			emptySince = emptySince or os.clock()
+			-- ผู้เล่นแจ้ง: ติ๊ก Reaper's Outfit กับ Stone Haori ไว้ ฆ่า Gyorei ตายแล้วยืนรอเกิดใหม่ 300 วิ
+			-- ไม่ไปตีอีกตัวในคิว คืนให้คิวเลือกชิ้นอื่นแทน (Runner.canYield ตั้งโดยคิวที่มีงานอื่นรออยู่)
+			-- 5 วิ = เผื่อของดรอปโผล่หลังตายให้รอบบนเก็บก่อน
+			-- ยังไม่เคยเห็นตัวเลยรอบนี้ใช้ 10 วิ เพิ่งวาร์ปมาม็อบยังไม่ stream เข้า นับว่าตายไม่ได้
+			local giveUpAfter = sawAlive and 5 or 10
+			if os.clock() - emptySince > giveUpAfter and Runner.canYield and Runner.canYield(item) then
+				stopAttack()
+				autoAttack.target = nil
+				Runner.farmTarget = nil
+				return false, Runner.RESPAWN, (mob.respawn or 300) - (os.clock() - emptySince)
+			end
 			if os.clock() - emptySince > 3 then
 				goToSpawn(mob.center)
 				-- บอสใหญ่เกิดใหม่ทุก 300 วิ บางตัวออกเฉพาะกลางคืน (OnlyAtNight) บอกให้รู้ว่ารออะไรอยู่
@@ -7329,6 +7384,7 @@ function Runner.farm(item, need, code)
 			end
 		else
 			emptySince = nil
+			sawAlive = true
 		end
 		task.wait(1)
 	end
@@ -7617,9 +7673,10 @@ function Runner.obtain(name, need)
 			end
 		else
 			for _, input in ipairs(Game.recipeInputs(how.recipe)) do
-				local ok, why = Runner.obtain(input.name, input.amount)
+				-- ค่าที่สามคือวิรอเกิดใหม่ตอน why = Runner.RESPAWN ส่งต่อให้คิวรู้ว่าจะกลับมาเมื่อไร
+				local ok, why, extra = Runner.obtain(input.name, input.amount)
 				if not ok then
-					return false, why
+					return false, why, extra
 				end
 			end
 			-- วัตถุดิบที่หามาทีหลังอาจกินของที่หามาก่อน (ซื้อด้วย Wen ก้อนเดียวกัน) วนกลับไปวางแผนใหม่ถ้าไม่ครบ
