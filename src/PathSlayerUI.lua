@@ -7594,7 +7594,8 @@ local function closedChests(origin)
 	for _, chest in ipairs(folder and folder:GetChildren() or {}) do
 		local prompt = chest:FindFirstChild("ChestPrompt", true)
 		local pos = prompt and promptPoint(prompt)
-		local costsPoints = tostring(prompt.ActionText):lower():find("point") ~= nil
+		-- บางหีบใน Chests ไม่มี ChestPrompt (เจอตอนกดคราฟในดันเจี้ยน) prompt เป็น nil ต้องเช็กก่อนอ่าน ActionText
+		local costsPoints = prompt ~= nil and tostring(prompt.ActionText):lower():find("point") ~= nil
 		if pos and chest:GetAttribute("IsOpen") == false and prompt.Enabled and (Loot.pointChests or not costsPoints)
 			and (pos - origin).Magnitude <= Loot.ChestRadius then
 			list[#list + 1] = { model = chest, prompt = prompt }
