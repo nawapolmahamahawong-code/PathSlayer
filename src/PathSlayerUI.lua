@@ -7523,10 +7523,21 @@ function Runner.obtain(name, need)
 		end
 		local how = o.how[name]
 		if how.kind == "shop" then
+			-- ราคาที่เป็นของ (ยาของ Meku = Demon Horns 2 + Wen) ต้องมีในกระเป๋าก่อน แผนรู้ว่าต้องฟาร์ม แต่เดิมซื้อเลย
+			-- เจอจริง: เควส Restock the Infirmary ซื้อยาได้สองชนิด Horns หมด ขวดที่สามเซิร์ฟเงียบ ("เงินไม่ลด")
+			local count = math.min(need - have, 99)
+			for _, p in ipairs(priceParts(how.listing.Price)) do
+				if not Game.Currencies[p.currency] and itemCount(p.currency) < p.amount * count then
+					local ok, why = Runner.obtain(p.currency, p.amount * count)
+					if not ok then
+						return false, why
+					end
+				end
+			end
 			report(string.format("ซื้อ %s  %d/%d", name, have, need), Theme.Accent)
 			-- ครั้งละไม่เกิน 99 ตามที่เซิร์ฟรับ (Shop.SanitizeAmount)
 			local row = { name = name, source = "shop", cost = priceParts(how.listing.Price) }
-			local ok, msg = Game.buy(row, math.min(need - have, 99))
+			local ok, msg = Game.buy(row, count)
 			if not ok then
 				return false, msg
 			end
@@ -7966,10 +7977,24 @@ function Runner.deposit(step, index, total)
 			end
 			local before = taskProgress(row.task)
 			report(string.format("%sใส่ลัง %s  %d/%d", prefix, row.item, before, row.max), Theme.Accent)
-			SignalEvent.ToServer("QuestProgress", step.deposit, row.task)
-			if not waitFor(function()
-				return (taskProgress(row.task) or row.max) > before
-			end, 3) then
+			-- วาร์ปข้ามแมพมาจากร้าน (Meku -> ลังของ Shiori ~2,000 stud) แล้วยิงหลังรอ 0.8 วิ เซิร์ฟยังเห็นเราที่เดิม
+			-- ลังไม่รับ ทั้งที่ยิงซ้ำตอนยืนนิ่งแล้วผ่าน (0 -> 1) เลยลองซ้ำ วางตัวใหม่แล้วรอเพิ่มก่อนยอมแพ้
+			local took = false
+			for attempt = 1, 3 do
+				if attempt > 1 then
+					placeAt(hrp, CFrame.new(step.position + Vector3.new(0, 3, 3), step.position), "deposit")
+					hrp.AssemblyLinearVelocity = Vector3.zero
+					task.wait(1.5)
+				end
+				SignalEvent.ToServer("QuestProgress", step.deposit, row.task)
+				took = waitFor(function()
+					return (taskProgress(row.task) or row.max) > before
+				end, 3)
+				if took then
+					break
+				end
+			end
+			if not took then
 				return false, "ลังไม่รับ " .. row.item .. " (ยืนไม่ถึงจุดวาง หรือเซิร์ฟปฏิเสธ)"
 			end
 			task.wait(0.15)
