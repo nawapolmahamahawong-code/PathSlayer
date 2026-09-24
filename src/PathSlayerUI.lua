@@ -1919,6 +1919,8 @@ do
 		{ page = "quest", key = "quest", title = "ทำเควสอัตโนมัติ",
 			hint = "กด เปิด เพื่อเลือกเควสหรือปราณ แล้วกดเริ่มในหน้านั้น" },
 		{ page = "items", key = "gear", title = "อาวุธและของสวมใส่" },
+		{ page = "items", key = "upgrade", title = "อัปเกรดอุปกรณ์ (Refine)",
+			hint = "ตีเสริมอาวุธ / ของสวมใส่ / เบ็ดในกระเป๋า เลือกระดับเป้าหมาย สคริปต์ตีวนให้จนถึง" },
 		{ page = "items", key = "material", title = "วัตถุดิบและของใช้" },
 		{ page = "items", key = "set", title = "เซ็ตท็อปเกม" },
 		{ page = "items", key = "loot", title = "เก็บของ" },
@@ -2042,6 +2044,8 @@ local Layout = {
 			help = "ตีชิ้นเซ็ต Nightfall แบบโต๊ะช่าง · ขาดแบบ วัสดุ หรือเงิน หาให้เองจนตีได้ · ติ๊กหลายชิ้นได้" },
 		["Get Nightfall Schematic"] = { page = "items", section = "set", card = "nightfall", order = 1,
 			help = "แบบพิมพ์เซ็ต Nightfall 11 ชิ้น · Study / คันโยก / กุญแจงู / รูปปั้น / แลก · ติ๊กหลายชิ้นได้" },
+		["Upgrade อุปกรณ์"] = { page = "items", section = "upgrade", card = "refine", order = 1,
+			help = "เลือกของ (แยกที่ใส่อยู่ / ในกระเป๋า) ตั้งระดับ +1 ถึง +10 ดูโอกาส ค่าใช้จ่าย ของที่ขาด แล้วกดอัป" },
 		["Get Weapons"] = { page = "items", section = "gear", card = "shop", order = 1,
 			help = "อาวุธและของสวมใส่ทุกชิ้น · ร้าน / ดรอป / หีบ / คราฟต์ พร้อมแหล่งได้ทุกทาง" },
 		["Auto-Breathing"] = { page = "quest", section = "quest", card = "breath", order = 2,
@@ -6928,26 +6932,80 @@ end
 -- ลองย้ายไปคลิกกลางจอแทนแล้ว ดาเมจไม่เข้าเลย (Bandit ค้างที่ 37/45 ทั้งยก)
 -- ปัญหาเดิมคือบางทีม็อบอยู่หลังหน้าต่าง PathSlayer แล้วคลิกไปโดนสวิตช์ตัวเอง
 -- เลยดับ ScreenGui แค่ช่วงคลิก (~70ms) เฉพาะตอนที่จุดนั้นทับหน้าต่างจริง
-local function swingAt(worldPos)
-	local p = workspace.CurrentCamera:WorldToViewportPoint(worldPos)
-	local pos, size = root.AbsolutePosition, root.AbsoluteSize
-	local overlaps = root.Visible
-		and p.X >= pos.X and p.X <= pos.X + size.X
-		and p.Y >= pos.Y and p.Y <= pos.Y + size.Y
+-- ผู้ใช้แจ้ง (24 ก.ย. 2026): ฟาร์มอยู่แล้วเปิดเมนูเกม / หน้าต่างเรา คลิกตีไปกดปุ่ม UI ของเกมที่ทับตัวม็อบด้วย
+-- (และกดปุ่ม เปิด/ปิด ของเราเอง แผงเปิดปิดเอง) เลยหาจุดบนตัวม็อบที่ไม่มีปุ่มอะไรทับก่อน ไม่มีเลยค่อยดับ GUI ที่ทับชั่วคลิก
+-- พิกัด: VIM ใช้พิกัดเต็มจอ (WorldToViewportPoint) · GetGuiObjectsAtPosition ใช้พิกัดหักแถบบน (GuiInset 58 px วัดจริง)
+local swingAt
+do
+local GuiService = game:GetService("GuiService")
+local SwingOffsets = {
+	Vector3.new(0, 0, 0), Vector3.new(0, 1.5, 0), Vector3.new(0, -1.5, 0), Vector3.new(0, 2.5, 0),
+	Vector3.new(1.2, 0, 0), Vector3.new(-1.2, 0, 0), Vector3.new(0, -2.5, 0),
+}
 
-	if overlaps then
+local function overSelf(x, y)
+	local pos, size = root.AbsolutePosition, root.AbsoluteSize
+	return screen.Enabled and root.Visible and x >= pos.X and x <= pos.X + size.X and y >= pos.Y and y <= pos.Y + size.Y
+end
+
+-- ปุ่ม/ช่องพิมพ์/เฟรมที่รับคลิก (Active) ของเกมที่อยู่ตรงจุดนั้น
+local function gameGuiAt(x, y)
+	local inset = GuiService:GetGuiInset()
+	local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	if not pg then
+		return nil
+	end
+	for _, o in ipairs(pg:GetGuiObjectsAtPosition(x - inset.X, y - inset.Y)) do
+		if o.Visible and (o:IsA("GuiButton") or o:IsA("TextBox") or o.Active) then
+			return o
+		end
+	end
+	return nil
+end
+
+function swingAt(worldPos)
+	local cam = workspace.CurrentCamera
+	local p, blockedBy
+	for _, off in ipairs(SwingOffsets) do
+		local v, onScreen = cam:WorldToViewportPoint(worldPos + off)
+		if onScreen or not p then
+			-- ปุ่มเกมใต้หน้าต่างเราก็นับ: ดับหน้าต่างเราแล้วคลิกทะลุไปโดนเมนูเกมข้างใต้ (เจอจริงตอนเปิด Inventory)
+			local g = gameGuiAt(v.X, v.Y)
+			local mine = overSelf(v.X, v.Y)
+			if not mine and not g then
+				p, blockedBy = v, nil
+				break
+			end
+			if not p then
+				p, blockedBy = v, g or "self"
+			end
+		end
+	end
+
+	-- ทุกจุดโดนทับ: หน้าต่างเราดับชั่วคลิก (~70ms) · ปุ่มเกม (ผู้เล่นเปิดเมนูเกมทับม็อบอยู่) ข้ามหมัดนี้ไป
+	-- ไม่ดับ GUI เกม เดิมทีคิดจะดับ แต่เมนูเกมจะกะพริบทุกหมัด ผู้เล่นใช้เมนูไม่ได้
+	local hidden = {}
+	if blockedBy == "self" then
 		screen.Enabled = false
+		hidden[#hidden + 1] = screen
+	elseif blockedBy then
+		local trace = _G.PathSlayerTrace
+		if trace then
+			trace[#trace + 1] = string.format("%.2f SWING skip %s", os.clock(), blockedBy:GetFullName())
+		end
+		return false
 	end
 	local trace = _G.PathSlayerTrace
 	if trace then
-		trace[#trace + 1] = string.format("%.2f SWING", os.clock())
+		trace[#trace + 1] = string.format("%.2f SWING %s", os.clock(), blockedBy and tostring(blockedBy) or "clear")
 	end
 	VIM:SendMouseButtonEvent(p.X, p.Y, 0, true, game, false)
 	task.wait(0.06)
 	VIM:SendMouseButtonEvent(p.X, p.Y, 0, false, game, false)
-	if overlaps then
-		screen.Enabled = true
+	for _, sg in ipairs(hidden) do
+		sg.Enabled = true
 	end
+end
 end
 
 -- เลือกม็อบที่ใกล้ที่สุด เรียงตามระยะล้วน
@@ -10542,6 +10600,928 @@ end)
 track(craftUI.closeButton.MouseButton1Click:Connect(function()
 	craftFeature.setOpen(false)
 end))
+end)()
+
+-- Upgrade อุปกรณ์ (Refine) ---------------------------------------------------
+-- ระบบเดียวกับหน้า Refiner Hagane ในเกม (CAM.Global.Refinement อ่าน 24 ก.ย. 2026):
+--   ระดับ 0-10 · แต่ละขั้นใช้ Wen + Refinement Ore (ขั้น 0-4) หรือ Mythic Refinement Ore (ขั้น 5-9)
+--   ผล: Success +1 · Great ข้ามได้ถึง +3 (GreatStep) · Fail ระดับตก · Refinement Guard กันระดับตก (เผาทีละใบ)
+--   Mythic ไม่พอ เซิร์ฟหลอม Refinement Ore 5 ก้อนแทนให้ 1 (ResolveOreCost)
+--   ยิง SignalFunction "RefinementRequest" { action = "Attempt", Id, UseGuard } ได้จากทุกที่ ไม่ต้องยืนหน้า Hagane
+--   (ทดสอบจริง: ห่าง Hagane 3,072 stud ตอบ { Ok = true, Level = 1, Outcome = "Success" })
+-- ไม่ใช้ Runner: ไม่ขยับตัวละคร เลยอัปไปพร้อมคิว Craft / ฟาร์มได้
+;(function()
+local Refinement = require(ReplicatedStorage.CAM.Global.Refinement)
+local Utility = require(ReplicatedStorage.CAM.Global.Utility)
+local Rarities = require(ReplicatedStorage.CAM.Global.Rarities)
+local okDefs, ItemDefs = pcall(require, ReplicatedStorage.CAM.Global.Collectibles.Items)
+ItemDefs = okDefs and ItemDefs or {}
+
+local function fixIdentity()
+	if setthreadidentity and Game.loadIdentity then
+		setthreadidentity(Game.loadIdentity)
+	end
+end
+
+local Up = {
+	Max = Refinement.MaxLevel or 10,
+	Guard = Refinement.GuardItem or "Refinement Guard",
+	-- เว้นระหว่างครั้ง เท่าจังหวะคนกดเร็ว ๆ ในหน้าเกม (พิธีกรรมตีในเกมยาว ~1 วิ กดข้ามได้)
+	Gap = 0.35,
+	Filters = { "ทั้งหมด", "อาวุธ", "ของสวมใส่", "เบ็ด" },
+	filter = "ทั้งหมด",
+	-- ชื่อช่อง toolbar ของเกม → เลขที่ผู้เล่นเห็น
+	Slots = { One = 1, Two = 2, Three = 3, Four = 4, Five = 5 },
+	OutcomeThai = {
+		Success = { "สำเร็จ", Theme.Good },
+		Great = { "สำเร็จใหญ่ ข้ามขั้น!", Theme.Accent },
+		Fail = { "พลาด ระดับตก", Theme.Danger },
+		Guarded = { "พลาด แต่ Guard กันระดับไว้", Theme.Accent2 },
+	},
+	target = {},
+	useGuard = false,
+	busy = false,
+	cancel = false,
+}
+
+local function data()
+	local d = Utility.GetData(LocalPlayer)
+	fixIdentity()
+	return d
+end
+
+-- ของที่อัปได้ทุกชิ้นในกระเป๋า (กฎเดียวกับหน้าเกม: IsRefinable ไม่ใช่ของเควส/ของยืม) แยกที่อยู่บน toolbar
+function Up.items()
+	local d = data()
+	local onBar = {}
+	for _, v in ipairs(d.Inventory.Toolbar:GetChildren()) do
+		if v:IsA("ValueBase") and v.Value ~= 0 then
+			onBar[v.Value] = Up.Slots[v.Name] or v.Name
+		end
+	end
+	local list = {}
+	for _, child in ipairs(d.Inventory.Inventory:GetChildren()) do
+		local id = child:FindFirstChild("Id")
+		if id and child:FindFirstChild("NoSave") == nil and child:FindFirstChild("QuestGrant") == nil
+			and Refinement.IsRefinable(child.Name) then
+			local def = ItemDefs[child.Name] or {}
+			local lvl = child:FindFirstChild("RefineLevel")
+			list[#list + 1] = {
+				name = child.Name,
+				id = id.Value,
+				level = lvl and lvl.Value or 0,
+				slot = onBar[id.Value],
+				kind = def.HasCombat == true and "อาวุธ" or (def.Stats == nil and "เบ็ด" or "ของสวมใส่"),
+			}
+		end
+	end
+	fixIdentity()
+	table.sort(list, function(a, b)
+		if (a.slot ~= nil) ~= (b.slot ~= nil) then
+			return a.slot ~= nil
+		end
+		if a.slot and b.slot then
+			return tostring(a.slot) < tostring(b.slot)
+		end
+		if a.level ~= b.level then
+			return a.level > b.level
+		end
+		if a.name ~= b.name then
+			return a.name < b.name
+		end
+		return a.id < b.id
+	end)
+	return list
+end
+
+function Up.levelOf(id)
+	local d = data()
+	for _, c in ipairs(d.Inventory.Inventory:GetChildren()) do
+		local i = c:FindFirstChild("Id")
+		if i and i.Value == id then
+			local r = c:FindFirstChild("RefineLevel")
+			return r and r.Value or 0
+		end
+	end
+	return nil
+end
+
+function Up.held(name)
+	local n = Refinement.GetHeldCount(data(), name)
+	fixIdentity()
+	return n
+end
+
+-- ขั้นนี้ใช้ Guard ไหม: ขั้นที่ไม่มีโอกาสพลาด (0→1) ไม่เผาใบ Guard ทิ้ง
+function Up.guardFor(level)
+	local rung = Refinement.GetRung(level, false)
+	return Up.useGuard and rung and rung.FailBp > 0 and Up.held(Up.Guard) > 0
+end
+
+-- ค่าใช้จ่ายของครั้งถัดไปจริง (รวมหลอม Refinement Ore แทน Mythic ที่ขาด) + ของที่ขาด
+function Up.cost(level)
+	local guard = Up.guardFor(level)
+	local rung = Refinement.GetRung(level, guard)
+	if not rung then
+		return nil
+	end
+	local d = data()
+	local ores = Refinement.ResolveOreCost(d, rung)
+	fixIdentity()
+	local need = { { name = "Wen", need = rung.Wen, have = d.Wen.Value } }
+	for name, n in pairs(ores) do
+		need[#need + 1] = { name = name, need = n, have = Up.held(name) }
+	end
+	if guard then
+		need[#need + 1] = { name = Up.Guard, need = 1, have = Up.held(Up.Guard) }
+	end
+	local missing = {}
+	for _, n in ipairs(need) do
+		if n.have < n.need then
+			missing[#missing + 1] = string.format("%s ขาด %s", n.name, comma(n.need - n.have))
+		end
+	end
+	return { rung = rung, guard = guard, need = need, missing = missing }
+end
+
+-- แผง ------------------------------------------------------------------------
+
+local ui = makePanel("Upgrade อุปกรณ์ / Refine", true)
+ui.search.Visible = false
+ui.walletBar = Game.walletBar(ui.panel, UDim2.fromOffset(0, 22), { "Wen", "Refinement Ore", "Mythic Refinement Ore", Up.Guard })
+-- ปุ่มกรองแบบหน้า Hagane (All / Weapons / Gear / Rods) ใต้แถบเงิน
+ui.filterRow.Position = UDim2.fromOffset(0, 48)
+ui.list.Position = UDim2.fromOffset(0, 80)
+ui.list.Size = UDim2.new(0.42, -6, 1, -136)
+local detail = new("ScrollingFrame", {
+	Position = UDim2.new(0.42, 6, 0, 48),
+	Size = UDim2.new(0.58, -6, 1, -104),
+	BackgroundColor3 = Theme.Row,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 3,
+	ScrollBarImageColor3 = Theme.Stroke,
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	Parent = ui.panel,
+}, {
+	corner(10),
+	new("UIPadding", {
+		PaddingTop = UDim.new(0, 12),
+		PaddingBottom = UDim.new(0, 12),
+		PaddingLeft = UDim.new(0, 12),
+		PaddingRight = UDim.new(0, 12),
+	}),
+	new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }),
+})
+
+local goLabel = new("TextLabel", {
+	Size = UDim2.new(1, 0, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "เลือกของทางซ้ายก่อน",
+	TextColor3 = Theme.Dim,
+	TextSize = 15,
+	FontFace = font(Enum.FontWeight.SemiBold),
+})
+local goBtn = new("TextButton", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.fromScale(0, 1),
+	Size = UDim2.new(1, 0, 0, 34),
+	BackgroundColor3 = Theme.Raised,
+	AutoButtonColor = false,
+	Text = "",
+	Parent = ui.panel,
+}, { capsule(), goLabel })
+
+local rows, selected = {}, nil
+local rebuild, showDetail
+
+local function selectedItem()
+	if not selected then
+		return nil
+	end
+	for _, it in ipairs(Up.items()) do
+		if it.id == selected then
+			return it
+		end
+	end
+	return nil
+end
+
+local function targetOf(it)
+	local t = Up.target[it.id]
+	if not t or t <= it.level then
+		t = math.min(it.level + 1, Up.Max)
+		Up.target[it.id] = t
+	end
+	return t
+end
+
+local function refreshGo()
+	local it = selectedItem()
+	if Up.busy then
+		goLabel.Text = "STOP"
+		tween(goBtn, { BackgroundColor3 = Theme.Danger }, FAST)
+		tween(goLabel, { TextColor3 = Theme.Text }, FAST)
+		return
+	end
+	local enabled = it ~= nil and it.level < Up.Max
+	goLabel.Text = not it and "เลือกของทางซ้ายก่อน"
+		or it.level >= Up.Max and ("+" .. Up.Max .. " สูงสุดแล้ว")
+		or string.format("UPGRADE  ·  %s  +%d → +%d", it.name, it.level, targetOf(it))
+	tween(goBtn, { BackgroundColor3 = enabled and Theme.On or Theme.Raised }, FAST)
+	tween(goLabel, { TextColor3 = enabled and Theme.Base or Theme.Dim }, FAST)
+end
+
+-- ชิ้นส่วนหน้ารายละเอียด ------------------------------------------------------
+
+local function label(parent, text, order, color, size, weight, wrap)
+	return new("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 14),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		TextWrapped = wrap ~= false,
+		BackgroundTransparency = 1,
+		RichText = true,
+		Text = text,
+		TextColor3 = color or Theme.Dim,
+		TextSize = size or 13,
+		FontFace = font(weight or Enum.FontWeight.Regular),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = order,
+		Parent = parent,
+	})
+end
+
+-- หัวหัวข้อ: แถบสีซ้าย + ชื่อหัวข้อตัวหนา แยกส่วนให้เห็นชัด (ผู้ใช้ขอ "แยกหัวข้อให้ชัดเจน")
+local function section(title, order, color)
+	local row = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 20),
+		BackgroundTransparency = 1,
+		LayoutOrder = order,
+		Parent = detail,
+	})
+	new("Frame", {
+		Position = UDim2.fromOffset(0, 3),
+		Size = UDim2.fromOffset(3, 14),
+		BackgroundColor3 = color or Theme.Accent,
+		BorderSizePixel = 0,
+		Parent = row,
+	}, { capsule() })
+	new("TextLabel", {
+		Position = UDim2.fromOffset(10, 0),
+		Size = UDim2.new(1, -10, 1, 0),
+		BackgroundTransparency = 1,
+		Text = title,
+		TextColor3 = Theme.Text,
+		TextSize = 14,
+		FontFace = font(Enum.FontWeight.Bold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = row,
+	})
+end
+
+-- การ์ดของ: ไอคอนเกม · ชื่อ · ต้องใช้ · มี (เขียวพอ / แดงขาด) แบบเดียวกับหน้าตีเซ็ต
+local function costCard(parent, order, i)
+	local ok = i.have >= i.need
+	local card = new("Frame", {
+		BackgroundColor3 = Theme.Raised,
+		LayoutOrder = order,
+		Parent = parent,
+	}, { corner(8), stroke(ok and Theme.Good or Theme.Danger, 1) })
+	card:FindFirstChildOfClass("UIStroke").Transparency = 0.55
+	local def = ItemDefs[i.name]
+	new("ImageLabel", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 6, 0.5, 0),
+		Size = UDim2.fromOffset(36, 36),
+		BackgroundColor3 = Theme.Base,
+		Image = Game.iconOf(i.name) or "",
+		ScaleType = Enum.ScaleType.Fit,
+		Parent = card,
+	}, { corner(6), stroke(RarityColor[def and def.Rarity or 1] or Theme.Stroke, 1) })
+	new("TextLabel", {
+		Position = UDim2.fromOffset(48, 5),
+		Size = UDim2.new(1, -52, 0, 15),
+		BackgroundTransparency = 1,
+		Text = i.name,
+		TextColor3 = Theme.Text,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = card,
+	})
+	new("TextLabel", {
+		Position = UDim2.fromOffset(48, 20),
+		Size = UDim2.new(1, -52, 0, 13),
+		BackgroundTransparency = 1,
+		Text = i.note or ("ต่อครั้ง ×" .. comma(i.need)),
+		TextColor3 = Theme.Dim,
+		TextSize = 12,
+		FontFace = font(Enum.FontWeight.Regular),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = card,
+	})
+	new("TextLabel", {
+		Position = UDim2.fromOffset(48, 33),
+		Size = UDim2.new(1, -52, 0, 13),
+		BackgroundTransparency = 1,
+		Text = string.format("มี %s%s", comma(i.have), ok and "  ✓" or string.format("  (ขาด %s)", comma(i.need - i.have))),
+		TextColor3 = ok and Theme.Good or Theme.Danger,
+		TextSize = 12,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = card,
+	})
+end
+
+local function grid(order)
+	return new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = order,
+		Parent = detail,
+	}, { new("UIGridLayout", {
+		CellSize = UDim2.new(0.5, -4, 0, 48),
+		CellPadding = UDim2.fromOffset(8, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}) })
+end
+
+-- แถบโอกาสสามสี (สำเร็จ / สำเร็จใหญ่ / พลาด) กว้างตามเปอร์เซ็นต์จริง แบบ OddsBar ของเกม
+local function oddsBar(rung, order)
+	local wrap = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 34),
+		BackgroundTransparency = 1,
+		LayoutOrder = order,
+		Parent = detail,
+	})
+	local bar = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 10),
+		BackgroundColor3 = Theme.Raised,
+		ClipsDescendants = true,
+		Parent = wrap,
+	}, { capsule(), new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal }) })
+	local parts = {
+		{ rung.SuccessBp, Theme.Good, "สำเร็จ" },
+		{ rung.GreatBp, Theme.Accent, "ข้ามขั้น" },
+		{ rung.FailBp, Theme.Danger, "พลาด" },
+	}
+	local texts = {}
+	for i, p in ipairs(parts) do
+		if p[1] > 0 then
+			new("Frame", {
+				Size = UDim2.new(p[1] / 10000, 0, 1, 0),
+				BackgroundColor3 = p[2],
+				BorderSizePixel = 0,
+				LayoutOrder = i,
+				Parent = bar,
+			})
+		end
+		texts[#texts + 1] = string.format('<font color="#%s">● %s %s%%</font>', p[2]:ToHex(), p[3], tostring(p[1] / 100))
+	end
+	new("TextLabel", {
+		Position = UDim2.fromOffset(0, 16),
+		Size = UDim2.new(1, 0, 0, 16),
+		BackgroundTransparency = 1,
+		RichText = true,
+		Text = table.concat(texts, "   "),
+		TextColor3 = Theme.Muted,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = wrap,
+	})
+end
+
+-- เลือกระดับเป้าหมาย +1..+10 ปุ่มระดับที่มีแล้วเป็นสีทึบ เป้าหมายขอบทอง ช่วงที่จะตีขอบจาง
+local function levelPicker(it, order)
+	local target = targetOf(it)
+	local row = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 30),
+		BackgroundTransparency = 1,
+		LayoutOrder = order,
+		Parent = detail,
+	}, { new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 4),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}) })
+	for lv = 1, Up.Max do
+		local have = lv <= it.level
+		local isTarget = lv == target
+		local inRange = lv > it.level and lv <= target
+		local b = new("TextButton", {
+			Size = UDim2.new(1 / Up.Max, -4, 1, 0),
+			BackgroundColor3 = have and Theme.Accent2 or (isTarget and Theme.Accent or Theme.Raised),
+			BackgroundTransparency = inRange and not isTarget and 0.55 or 0,
+			AutoButtonColor = false,
+			Text = "+" .. lv,
+			TextColor3 = (have or isTarget) and Theme.Base or Theme.Muted,
+			TextSize = 13,
+			FontFace = font(Enum.FontWeight.Bold),
+			LayoutOrder = lv,
+			Parent = row,
+		}, { corner(6) })
+		if inRange and not isTarget then
+			stroke(Theme.Accent, 1).Parent = b
+		end
+		track(b.MouseButton1Click:Connect(function()
+			if Up.busy then
+				return
+			end
+			if lv <= it.level then
+				ui.setStatus(string.format("%s อยู่ +%d แล้ว เลือกระดับที่สูงกว่านี้", it.name, it.level), Theme.Muted)
+				return
+			end
+			Up.target[it.id] = lv
+			showDetail()
+			refreshGo()
+		end))
+	end
+end
+
+-- ตารางทุกขั้นจากระดับตอนนี้ถึงเป้าหมาย: ค่าใช้จ่ายต่อครั้ง + โอกาส ดูรวดเดียวว่าขั้นไหนยาก
+local function ladder(it, target, order)
+	local box = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Theme.Base,
+		LayoutOrder = order,
+		Parent = detail,
+	}, {
+		corner(8),
+		new("UIPadding", {
+			PaddingTop = UDim.new(0, 6),
+			PaddingBottom = UDim.new(0, 6),
+			PaddingLeft = UDim.new(0, 8),
+			PaddingRight = UDim.new(0, 8),
+		}),
+		new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }),
+	})
+	-- หัวตารางใช้ช่องเดียวกับแถว ตัวอักษรไทยกว้างไม่เท่ากัน เว้นวรรคเอาเองแล้วคอลัมน์เบี้ยว
+	local head = new("Frame", { Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1, LayoutOrder = 0, Parent = box })
+	for _, h in ipairs({ { 0, "ขั้น" }, { 0.16, "Wen" }, { 0.37, "แร่ต่อครั้ง" }, { 0.7, "สำเร็จ" }, { 0.85, "พลาด" } }) do
+		new("TextLabel", {
+			Position = UDim2.new(h[1], 0, 0, 0),
+			Size = UDim2.new(0.2, 0, 1, 0),
+			BackgroundTransparency = 1,
+			Text = h[2],
+			TextColor3 = Theme.Dim,
+			TextSize = 12,
+			FontFace = font(Enum.FontWeight.SemiBold),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Parent = head,
+		})
+	end
+	local wenSum = 0
+	for lv = it.level, target - 1 do
+		local guard = Up.useGuard and (Refinement.GetRung(lv, false) or {}).FailBp > 0
+		local rung = Refinement.GetRung(lv, guard)
+		if rung then
+			wenSum += rung.Wen
+			local ok = (rung.SuccessBp + rung.GreatBp) / 100
+			local color = ok >= 50 and Theme.Good or (ok >= 10 and Theme.Accent or Theme.Danger)
+			local line = new("Frame", {
+				Size = UDim2.new(1, 0, 0, 20),
+				BackgroundTransparency = 1,
+				LayoutOrder = lv + 1,
+				Parent = box,
+			})
+			local function cell(x, w, text, c, align)
+				new("TextLabel", {
+					Position = UDim2.new(x, 0, 0, 0),
+					Size = UDim2.new(w, 0, 1, 0),
+					BackgroundTransparency = 1,
+					RichText = true,
+					Text = text,
+					TextColor3 = c or Theme.Muted,
+					TextSize = 12,
+					FontFace = font(Enum.FontWeight.SemiBold),
+					TextXAlignment = align or Enum.TextXAlignment.Left,
+					Parent = line,
+				})
+			end
+			cell(0, 0.16, string.format("+%d→+%d", lv, lv + 1), Theme.Text)
+			cell(0.16, 0.2, comma(rung.Wen))
+			new("ImageLabel", {
+				Position = UDim2.new(0.37, 0, 0, 2),
+				Size = UDim2.fromOffset(16, 16),
+				BackgroundTransparency = 1,
+				Image = Game.iconOf(rung.Ore) or "",
+				ScaleType = Enum.ScaleType.Fit,
+				Parent = line,
+			})
+			cell(0.37, 0.33, "     ×" .. rung.OreCount .. (rung.Ore:find("Mythic") and " Mythic" or " Ore"))
+			cell(0.7, 0.15, tostring(ok) .. "%", color)
+			cell(0.85, 0.15, tostring(rung.FailBp / 100) .. "%", rung.FailBp > 0 and Theme.Danger or Theme.Dim)
+		end
+	end
+	label(box, string.format("Wen ถ้าผ่านทุกขั้นครั้งแรก: %s · ขั้นที่โอกาสต่ำต้องตีหลายครั้ง พลาดแล้วระดับตกต้องตีซ้ำ",
+		comma(wenSum)), 99, Theme.Dim, 12)
+end
+
+function showDetail()
+	for _, c in ipairs(detail:GetChildren()) do
+		if c:IsA("GuiObject") then
+			c:Destroy()
+		end
+	end
+	local it = selectedItem()
+	if not it then
+		label(detail, "เลือกอาวุธ ของสวมใส่ หรือเบ็ดจากรายการทางซ้าย", 1, Theme.Muted, 14)
+		return
+	end
+	local def = ItemDefs[it.name] or {}
+	local rarityColor = RarityColor[def.Rarity or 1] or Theme.Muted
+
+	-- หัว: ไอคอน + ป้าย +ระดับ · ชื่อ · ความหายาก ประเภท · ใส่อยู่ช่องไหน
+	local head = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 58),
+		BackgroundTransparency = 1,
+		LayoutOrder = 1,
+		Parent = detail,
+	})
+	local icon = new("ImageLabel", {
+		Size = UDim2.fromOffset(56, 56),
+		BackgroundColor3 = Theme.Base,
+		Image = def.Icon or Game.iconOf(it.name) or "",
+		ScaleType = Enum.ScaleType.Fit,
+		Parent = head,
+	}, { corner(10), stroke(rarityColor, 1.5) })
+	if it.level > 0 then
+		new("TextLabel", {
+			Position = UDim2.fromOffset(3, 2),
+			Size = UDim2.fromOffset(26, 15),
+			BackgroundColor3 = Theme.Accent2,
+			Text = "+" .. it.level,
+			TextColor3 = Theme.Base,
+			TextSize = 12,
+			FontFace = font(Enum.FontWeight.Bold),
+			ZIndex = 2,
+			Parent = icon,
+		}, { capsule() })
+	end
+	new("TextLabel", {
+		Position = UDim2.fromOffset(66, 2),
+		Size = UDim2.new(1, -66, 0, 20),
+		BackgroundTransparency = 1,
+		Text = it.name .. (it.level > 0 and ("  +" .. it.level) or ""),
+		TextColor3 = Theme.Text,
+		TextSize = 17,
+		FontFace = font(Enum.FontWeight.Bold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = head,
+	})
+	new("TextLabel", {
+		Position = UDim2.fromOffset(66, 24),
+		Size = UDim2.new(1, -66, 0, 14),
+		BackgroundTransparency = 1,
+		RichText = true,
+		Text = string.format('<font color="#%s">%s</font>  ·  %s', rarityColor:ToHex(),
+			(Rarities and Rarities.Order[def.Rarity or 1]) or "?", it.kind),
+		TextColor3 = Theme.Dim,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.Regular),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = head,
+	})
+	new("TextLabel", {
+		Position = UDim2.fromOffset(66, 42),
+		Size = UDim2.new(1, -66, 0, 14),
+		BackgroundTransparency = 1,
+		Text = it.slot and ("กำลังใส่อยู่ · ช่อง " .. tostring(it.slot)) or "อยู่ในกระเป๋า (ไม่ได้ใส่)",
+		TextColor3 = it.slot and Theme.Good or Theme.Muted,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = head,
+	})
+
+	if it.level >= Up.Max then
+		section("ระดับ", 10, Theme.Good)
+		label(detail, string.format("+%d สูงสุดแล้ว อัปต่อไม่ได้", Up.Max), 11, Theme.Good, 14, Enum.FontWeight.SemiBold)
+	else
+		local target = targetOf(it)
+
+		-- 1 เป้าหมาย
+		section("1  อัปถึงระดับ", 10)
+		levelPicker(it, 11)
+		label(detail, string.format("ตอนนี้ +%d · เป้าหมาย +%d · กดตัวเลขเพื่อเปลี่ยน สคริปต์ตีวนจนถึงเป้าหมาย", it.level, target),
+			12, Theme.Muted)
+
+		-- 2 ครั้งถัดไป
+		local c = Up.cost(it.level)
+		fixIdentity()
+		if c then
+			section(string.format("2  ครั้งถัดไป  +%d → +%d", it.level, it.level + 1), 20)
+			oddsBar(c.rung, 21)
+			local g = grid(22)
+			for n, need in ipairs(c.need) do
+				costCard(g, n, need)
+			end
+			if #c.missing > 0 then
+				label(detail, "ขาด: " .. table.concat(c.missing, " · "), 23, Theme.Danger, 13, Enum.FontWeight.SemiBold)
+			else
+				label(detail, "ของครบสำหรับครั้งนี้", 23, Theme.Good, 13, Enum.FontWeight.SemiBold)
+			end
+			if c.rung.Ore == "Mythic Refinement Ore" and Up.held("Mythic Refinement Ore") < c.rung.OreCount then
+				label(detail, "Mythic ไม่พอ เกมหลอม Refinement Ore 5 ก้อนแทน Mythic 1 ก้อนให้เอง (นับรวมในการ์ดแล้ว)", 24,
+					Theme.Dim, 12)
+			end
+		end
+
+		-- 3 Guard
+		section("3  Refinement Guard (กันระดับตก)", 30, Theme.Accent2)
+		local guards = Up.held(Up.Guard)
+		local gRow = new("TextButton", {
+			Size = UDim2.new(1, 0, 0, 34),
+			BackgroundColor3 = Theme.Base,
+			AutoButtonColor = false,
+			Text = "",
+			LayoutOrder = 31,
+			Parent = detail,
+		}, { corner(8) })
+		new("ImageLabel", {
+			Position = UDim2.fromOffset(6, 5),
+			Size = UDim2.fromOffset(24, 24),
+			BackgroundTransparency = 1,
+			Image = Game.iconOf(Up.Guard) or "",
+			ScaleType = Enum.ScaleType.Fit,
+			Parent = gRow,
+		})
+		new("TextLabel", {
+			Position = UDim2.fromOffset(38, 0),
+			Size = UDim2.new(1, -96, 1, 0),
+			BackgroundTransparency = 1,
+			Text = string.format("ใช้ Guard ตอนพลาดได้ (มี %d ใบ) · โอกาสข้ามขั้นเพิ่ม 1.5 เท่า", guards),
+			TextColor3 = guards > 0 and Theme.Text or Theme.Dim,
+			TextSize = 13,
+			FontFace = font(Enum.FontWeight.SemiBold),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextWrapped = true,
+			Parent = gRow,
+		})
+		local knob = new("Frame", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -8, 0.5, 0),
+			Size = UDim2.fromOffset(40, 22),
+			BackgroundColor3 = Up.useGuard and Theme.On or Theme.Raised,
+			Parent = gRow,
+		}, { capsule(), stroke() })
+		new("Frame", {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = Up.useGuard and UDim2.new(1, -19, 0.5, 0) or UDim2.new(0, 3, 0.5, 0),
+			Size = UDim2.fromOffset(16, 16),
+			BackgroundColor3 = Up.useGuard and Theme.Base or Theme.Muted,
+			Parent = knob,
+		}, { capsule() })
+		track(gRow.MouseButton1Click:Connect(function()
+			if guards == 0 and not Up.useGuard then
+				ui.setStatus("ไม่มี Refinement Guard ในกระเป๋า", Theme.Warn)
+				return
+			end
+			Up.useGuard = not Up.useGuard
+			showDetail()
+		end))
+		label(detail, "เผาทีละใบเฉพาะขั้นที่มีโอกาสพลาด · หมดใบแล้วตีต่อแบบไม่มี Guard", 32, Theme.Dim, 12)
+
+		-- 4 ตารางทุกขั้น
+		section(string.format("4  ทุกขั้นถึง +%d", target), 40)
+		ladder(it, target, 41)
+	end
+
+	-- 5 สเตตัส: ตัวคูณจาก Refinement.GetStatMultiplier (สเตตัสหลัก ×เต็ม · รอง ×ครึ่ง) ตอนนี้ → เป้าหมาย
+	local stats = Refinement.GetRefineStats(it.name)
+	local base = def.ActiveToolStats or def.Stats or {}
+	local target = math.max(targetOf(it), it.level)
+	section("5  สเตตัสที่อัปขึ้น", 50, Theme.Good)
+	for i, stat in ipairs(stats) do
+		local v = base[stat]
+		local now = Refinement.GetStatMultiplier(it.name, stat, it.level)
+		local to = Refinement.GetStatMultiplier(it.name, stat, target)
+		local text
+		if typeof(v) == "number" and v ~= 0 then
+			text = string.format("%s  %s → <font color=\"#%s\">%s</font>  (×%s → ×%s)", stat,
+				tostring(math.round(v * now * 100) / 100), Theme.Good:ToHex(), tostring(math.round(v * to * 100) / 100),
+				tostring(now), tostring(to))
+		else
+			text = string.format("%s  ×%s → <font color=\"#%s\">×%s</font>", stat, tostring(now), Theme.Good:ToHex(), tostring(to))
+		end
+		label(detail, text, 50 + i, Theme.Muted, 13, Enum.FontWeight.SemiBold)
+	end
+	fixIdentity()
+end
+
+-- รายการซ้าย: หัวกลุ่ม "กำลังใส่อยู่" / "ในกระเป๋า" แถวละชิ้น (ชิ้นซ้ำแยกแถวตาม Id แบบหน้าเกม)
+local function buildRows()
+	for _, c in ipairs(ui.list:GetChildren()) do
+		if c:IsA("GuiObject") then
+			c:Destroy()
+		end
+	end
+	table.clear(rows)
+	local list = Up.items()
+	local shown, lastGroup = 0, nil
+	for n, it in ipairs(list) do
+		if Up.filter == "ทั้งหมด" or Up.filter == it.kind then
+			shown += 1
+			local group = it.slot and "กำลังใส่อยู่ (toolbar)" or "ในกระเป๋า"
+			if group ~= lastGroup then
+				lastGroup = group
+				new("TextLabel", {
+					Size = UDim2.new(1, -6, 0, 22),
+					BackgroundTransparency = 1,
+					Text = group,
+					TextColor3 = it.slot and Theme.Good or Theme.Muted,
+					TextSize = 13,
+					FontFace = font(Enum.FontWeight.Bold),
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextYAlignment = Enum.TextYAlignment.Bottom,
+					LayoutOrder = n * 2 - 1,
+					Parent = ui.list,
+				})
+			end
+			local def = ItemDefs[it.name] or {}
+			local frame = new("TextButton", {
+				Size = UDim2.new(1, -6, 0, 46),
+				BackgroundColor3 = it.id == selected and Theme.Raised or Theme.Row,
+				AutoButtonColor = false,
+				Text = "",
+				LayoutOrder = n * 2,
+				Parent = ui.list,
+			}, { corner(8) })
+			local rim = stroke(Theme.Accent, 1)
+			rim.Transparency = it.id == selected and 0.2 or 1
+			rim.Parent = frame
+			local icon = new("ImageLabel", {
+				AnchorPoint = Vector2.new(0, 0.5),
+				Position = UDim2.new(0, 8, 0.5, 0),
+				Size = UDim2.fromOffset(34, 34),
+				BackgroundColor3 = Theme.Base,
+				Image = def.Icon or Game.iconOf(it.name) or "",
+				ScaleType = Enum.ScaleType.Fit,
+				Parent = frame,
+			}, { corner(7), stroke(RarityColor[def.Rarity or 1] or Theme.Stroke, 1.5) })
+			if it.level > 0 then
+				new("TextLabel", {
+					Position = UDim2.fromOffset(-4, -5),
+					Size = UDim2.fromOffset(24, 13),
+					BackgroundColor3 = Theme.Accent2,
+					Text = "+" .. it.level,
+					TextColor3 = Theme.Base,
+					TextSize = 10,
+					FontFace = font(Enum.FontWeight.Bold),
+					ZIndex = 2,
+					Parent = icon,
+				}, { capsule() })
+			end
+			new("TextLabel", {
+				Position = UDim2.fromOffset(50, 6),
+				Size = UDim2.new(1, -54, 0, 16),
+				BackgroundTransparency = 1,
+				Text = it.name,
+				TextColor3 = Theme.Text,
+				TextSize = 14,
+				FontFace = font(Enum.FontWeight.SemiBold),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Parent = frame,
+			})
+			new("TextLabel", {
+				Position = UDim2.fromOffset(50, 25),
+				Size = UDim2.new(1, -54, 0, 14),
+				BackgroundTransparency = 1,
+				Text = string.format("+%d/%d · %s%s", it.level, Up.Max, it.kind, it.slot and (" · ช่อง " .. tostring(it.slot)) or ""),
+				TextColor3 = it.level >= Up.Max and Theme.Good or Theme.Dim,
+				TextSize = 12,
+				FontFace = font(Enum.FontWeight.Medium),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Parent = frame,
+			})
+			track(frame.MouseButton1Click:Connect(function()
+				if Up.busy then
+					ui.setStatus("กำลังอัปอยู่ กด STOP ก่อนเปลี่ยนชิ้น", Theme.Warn)
+					return
+				end
+				selected = it.id
+				rebuild()
+			end))
+			rows[#rows + 1] = frame
+		end
+	end
+	if shown == 0 then
+		label(ui.list, "ไม่มีของที่อัปได้ในหมวดนี้", 1, Theme.Muted, 13)
+	end
+end
+
+function rebuild()
+	local d = data()
+	local w = Game.wallet()
+	fixIdentity()
+	w.Wen = d.Wen.Value
+	w[Up.Guard] = Up.held(Up.Guard)
+	fixIdentity()
+	ui.walletBar.set(w)
+	if not selected then
+		local list = Up.items()
+		selected = list[1] and list[1].id
+	end
+	buildRows()
+	showDetail()
+	refreshGo()
+end
+
+addPills(ui.filterRow, Up.Filters, function(name)
+	Up.filter = name
+	rebuild()
+end)
+
+-- ตีวน ------------------------------------------------------------------------
+
+local function run()
+	local it = selectedItem()
+	if not it or it.level >= Up.Max then
+		return
+	end
+	local target = targetOf(it)
+	Up.busy, Up.cancel = true, false
+	refreshGo()
+	task.spawn(function()
+		local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
+		local tally = { tries = 0, Success = 0, Great = 0, Fail = 0, Guarded = 0 }
+		local wen0, ore0, myth0 = data().Wen.Value, Up.held("Refinement Ore"), Up.held("Mythic Refinement Ore")
+		local level = it.level
+		local stopWhy
+		while not Up.cancel and level < target do
+			local c = Up.cost(level)
+			if not c then
+				stopWhy = "ไม่มีข้อมูลขั้น +" .. level
+				break
+			end
+			if #c.missing > 0 then
+				stopWhy = "ของไม่พอ: " .. table.concat(c.missing, " · ")
+				break
+			end
+			local ok, res = pcall(SignalFunction.ToServer, "RefinementRequest", { action = "Attempt", Id = it.id, UseGuard = c.guard })
+			fixIdentity()
+			if not ok or type(res) ~= "table" or res.Ok ~= true then
+				stopWhy = "เกมไม่ยอม: " .. tostring(type(res) == "table" and res.Reason or res)
+				break
+			end
+			tally.tries += 1
+			local outcome = res.GuardSaved and "Guarded" or tostring(res.Outcome)
+			tally[outcome] = (tally[outcome] or 0) + 1
+			local before = level
+			level = tonumber(res.Level) or Up.levelOf(it.id) or level
+			local th = Up.OutcomeThai[outcome] or { outcome, Theme.Muted }
+			ui.setStatus(string.format("ครั้งที่ %d · +%d → %s (+%d) · เป้าหมาย +%d", tally.tries, before, th[1], level, target), th[2])
+			task.wait(Up.Gap)
+		end
+		Up.busy = false
+		local spent = string.format("ใช้ Wen %s · Ore %d · Mythic %d", comma(wen0 - data().Wen.Value),
+			ore0 - Up.held("Refinement Ore"), myth0 - Up.held("Mythic Refinement Ore"))
+		local summary = string.format("%s +%d · ตี %d ครั้ง (สำเร็จ %d · ข้ามขั้น %d · พลาด %d · Guard กัน %d) · %s", it.name,
+			level, tally.tries, tally.Success, tally.Great, tally.Fail, tally.Guarded, spent)
+		fixIdentity()
+		rebuild()
+		if level >= target then
+			ui.setStatus("ถึงเป้าหมายแล้ว! " .. summary, Theme.Good)
+		elseif Up.cancel then
+			ui.setStatus("หยุดแล้ว · " .. summary, Theme.Warn)
+		else
+			ui.setStatus(tostring(stopWhy) .. " · " .. summary, Theme.Danger)
+		end
+	end)
+end
+
+track(goBtn.MouseButton1Click:Connect(function()
+	if Up.busy then
+		Up.cancel = true
+		ui.setStatus("กำลังหยุด…", Theme.Warn)
+		return
+	end
+	run()
+end))
+
+local feature = featureRow("Upgrade อุปกรณ์", "ตีเสริมของในกระเป๋าถึงระดับที่เลือก", 1, function()
+	rebuild()
+	ui.setStatus("เลือกของทางซ้าย · ตั้งระดับเป้าหมาย · กด UPGRADE", Theme.Muted)
+	ui.show()
+end, function()
+	ui.hide()
+end)
+track(ui.closeButton.MouseButton1Click:Connect(function()
+	feature.setOpen(false)
+end))
+track({
+	Disconnect = function()
+		Up.cancel = true
+	end,
+})
 end)()
 
 -- Auto-Dodge: อ่านท่าโจมตีของม็อบแล้วหลบก่อนดาเมจเข้า ------------------------
