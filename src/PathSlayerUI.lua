@@ -2004,6 +2004,8 @@ local Layout = {
 			help = "กล่องโซนร้านหลังจบรอบที่ใช้แต้มเปิด · ปิดไว้ = ไม่กด เก็บแต้มไว้แลกของ" },
 		["แลกแต้มเป็น"] = { page = "quest", section = "quest", card = "dungeon", child = 3,
 			title = "แลกแต้มเป็น (ติ๊กหลายอย่าง = แบ่งเท่ากัน)" },
+		["Kasugai Crow Auto-Quest"] = { page = "quest", section = "quest", card = "crow", order = 6,
+			help = "รับเควสล่าบอสจากกระดานอีกาเอง (บอสที่ยืนอยู่ก่อน) ตีแบบใต้ดิน เก็บหีบ แล้ววนรับเควสถัดไป" },
 		["Auto-Final-Selection"] = { page = "quest", section = "quest", card = "finalsel", order = 3,
 			help = "ไปรอหน้าประตูสอบ (Sisters, Final Selection Plains) ก่อนเปิดทุก 2 ชม. ต้อง Lv 45 + Human" },
 		["ตีจากใต้ดิน"] = { page = "combat", section = "attack", card = "under", order = 2,
@@ -15250,21 +15252,31 @@ function FinalSel.step(key)
 	return true
 end
 
-function FinalSel.run(alive)
-	Combat.WorldFloorY = FinalSel.FloorY
-	Runner.active = true
-	Runner.cancel = false
-	-- ตั้งชุดสู้แบบ Auto-Money-Farm (ผู้ใช้สั่ง): นอนใต้ดิน + Kill Aura + Parry + Auto Skill + หยิบดาบคืนเองตอนมือว่าง
-	-- ในสนามมีหัวใจ 3 ดวง เดิมเปิดแค่ Kill Aura สู้ Hand Demon เหลือ 1 ดวง
-	local restore = {}
+-- ชุดสู้แบบ Auto-Money-Farm (ผู้ใช้สั่ง): นอนใต้ดิน + Kill Aura + Parry + Auto Skill + หยิบดาบคืนเองตอนมือว่าง
+-- เปิดเฉพาะตัวที่ปิดอยู่ คืนฟังก์ชันปิดกลับเฉพาะตัวที่เปิดให้ · ใช้กับ Final Selection และเควสอีกา
+-- Final Selection เดิมเปิดแค่ Kill Aura สู้ Hand Demon หัวใจเหลือ 1 จาก 3
+function Runner.fightKit()
+	local turned = {}
 	for _, key in ipairs({ "ตีจากใต้ดิน", "Kill Aura", "Parry อัตโนมัติ", "Auto Skill", "Auto-Equip-Weapon" }) do
 		for _, entry in ipairs(toggles) do
 			if entry.key == key and not entry.isOn() then
-				restore[#restore + 1] = entry
+				turned[#turned + 1] = entry
 				entry.set(true)
 			end
 		end
 	end
+	return function()
+		for _, entry in ipairs(turned) do
+			entry.set(false)
+		end
+	end
+end
+
+function FinalSel.run(alive)
+	Combat.WorldFloorY = FinalSel.FloorY
+	Runner.active = true
+	Runner.cancel = false
+	local restore = Runner.fightKit()
 	local fails = 0
 	while alive() do
 		local key = FinalSel.held()
@@ -15290,9 +15302,7 @@ function FinalSel.run(alive)
 	end
 	Runner.haltAttack()
 	autoAttack.target = nil
-	for _, entry in ipairs(restore) do
-		entry.set(false)
-	end
+	restore()
 	Runner.active = false
 end
 
@@ -15324,6 +15334,11 @@ do
 					log(text)
 				end
 				local ok, err = pcall(FinalSel.run, function()
+					-- Auto Skill (fightKit) ทำ identity ของ thread หล่นเป็น 2 แล้วอ่าน screen.Parent ใน gethui ไม่ได้
+					-- (เจอจริงกับเควสอีกา "lacking capability Plugin") คืนค่าตอนโหลดก่อนเช็กทุกครั้ง แบบ farmLoop
+					if setthreadidentity and Game.loadIdentity then
+						setthreadidentity(Game.loadIdentity)
+					end
 					return loop == mine and screen.Parent ~= nil and not Runner.cancel
 				end)
 				Runner.statusSink = prevSink
@@ -15386,6 +15401,166 @@ do
 		end)
 	end
 end
+end
+
+-- Kasugai Crow Auto-Quest ------------------------------------------------------
+
+-- กระดานเควสอีกา (ถอดโค้ด CAM.Global.Subsets.Gameplay.Quests.BossHunts + DialogueComponent Quests/HuntCard ดู 25 ก.ย. 2026):
+--   รายการอยู่ที่ ReplicatedStorage.BossHunts ลูกละเควส attribute Quest / Boss / Side / Tier / ExpiresAt
+--   ฝั่ง Crow = Slayer/Hybrid · Muzan = Demon/Hybrid หน้าต่างอีกาโชว์เฉพาะฝั่งเผ่าเรา ฝั่งละ 5 อัน (MaxOpen)
+--   ปุ่มรับส่ง SignalEvent "BossHuntsRequest" { action = "Claim", id = ชื่อลูก } ไม่ต้องเปิดหน้าต่างอีกา
+--   เควส "Eliminate <บอส>" มีงานเดียว "Defeat <บอส>" ×1 จำกัด 30 นาที ยกเลิกไม่ได้ (NoCancel) ถือได้ทีละเควส
+do
+local Crow = {
+	Sides = { Crow = { Slayer = true, Hybrid = true }, Muzan = { Demon = true, Hybrid = true } },
+	-- กดรับแล้วรอเควสขึ้นใน Holder เท่านี้ ไม่ขึ้น = โดนปฏิเสธ (พักระหว่างเควส / เลเวลไม่ถึง) ข้ามบอสนั้นไป SkipFor
+	-- ค่าเดา ยังไม่ได้วัดว่าเซิร์ฟใส่เควสให้ช้าสุดกี่วิ
+	ClaimWait = 5,
+	SkipFor = 120,
+	skip = {},
+}
+local loop = 0
+local row
+
+local function heldQuest()
+	local q = questFolder()
+	local holder = q and q:FindFirstChild("Holder")
+	local c = holder and holder:GetChildren()[1]
+	if not c then
+		return nil
+	end
+	return c.Name, c.Name:match("^Eliminate (.+)$")
+end
+
+-- บอสที่ยืนอยู่แล้วก่อน (ตีได้ทันที ไม่ต้องรอเกิด 300 วิ) ที่เหลือเอาอันที่ใกล้หลุดจากกระดานก่อน
+function Crow.pick()
+	local board = ReplicatedStorage:FindFirstChild("BossHunts")
+	local slot = equippedSlot()
+	local race = slot and slot.Race.Value
+	local best, bestKey
+	for _, c in ipairs(board and board:GetChildren() or {}) do
+		local side = Crow.Sides[c:GetAttribute("Side")]
+		local boss = c:GetAttribute("Boss")
+		local left = (c:GetAttribute("ExpiresAt") or 0) - workspace:GetServerTimeNow()
+		if side and side[race] and boss and left > 5 and (Crow.skip[boss] or 0) < os.clock() then
+			local key = (liveMobCount(boss) > 0 and 0 or 1e6) + left
+			if not best or key < bestKey then
+				best, bestKey = c, key
+			end
+		end
+	end
+	return best
+end
+
+function Crow.center(name)
+	for _, m in ipairs(Game.mobs()) do
+		if m.name == name and m.center then
+			return m.center
+		end
+	end
+	return nil
+end
+
+-- ฆ่าบอสของเควสที่ถืออยู่จนเควสหายจาก Holder (เกมปิดให้ตอนนับครบ) แล้วเก็บหีบ
+function Crow.fight(quest, boss, alive)
+	local center = Crow.center(boss)
+	while alive() and heldQuest() == quest do
+		if liveMobCount(boss) > 0 then
+			Runner.attackMob(boss)
+			row.setDesc(string.format("%s · ตี %s", quest, boss))
+		else
+			Runner.haltAttack()
+			local _, hrp = selfParts()
+			if center and hrp and (hrp.Position - center).Magnitude > 60 then
+				goToSpawn(center)
+			end
+			row.setDesc(center and string.format("%s · รอ %s เกิดที่จุดเกิด", quest, boss)
+				or string.format("%s · ไม่รู้จุดเกิดของ %s รอให้โผล่", quest, boss))
+		end
+		task.wait(0.5)
+	end
+	Runner.haltAttack()
+	autoAttack.target = nil
+	if heldQuest() ~= quest then
+		collectLoot({
+			wait = true,
+			stop = function()
+				return not alive()
+			end,
+			say = function(text)
+				row.setDesc(quest .. " · " .. text)
+			end,
+		})
+	end
+end
+
+function Crow.run(alive)
+	local restore = Runner.fightKit()
+	while alive() do
+		local quest, boss = heldQuest()
+		if boss then
+			Crow.fight(quest, boss, alive)
+		elseif quest then
+			-- เกมให้ถือได้ทีละเควส ไม่ยกเลิกเควสของผู้เล่นให้
+			row.setDesc("ถือเควส " .. quest .. " อยู่ · จบก่อนถึงจะรับเควสอีกาได้")
+			task.wait(3)
+		elseif questCooldown() > 0 then
+			row.setDesc(string.format("พักระหว่างเควส %d วิ", math.ceil(questCooldown())))
+			task.wait(1)
+		else
+			local entry = Crow.pick()
+			if not entry then
+				row.setDesc("กระดานอีกาไม่มีเควสที่รับได้ · รอรอบสุ่มใหม่")
+				task.wait(5)
+			else
+				local name = entry:GetAttribute("Boss")
+				row.setDesc("รับเควส " .. tostring(entry:GetAttribute("Quest")))
+				SignalEvent.ToServer("BossHuntsRequest", { action = "Claim", id = entry.Name })
+				local by = os.clock() + Crow.ClaimWait
+				while alive() and not heldQuest() and os.clock() < by do
+					task.wait(0.25)
+				end
+				if not heldQuest() then
+					Crow.skip[name] = os.clock() + Crow.SkipFor
+				end
+			end
+		end
+	end
+	Runner.haltAttack()
+	autoAttack.target = nil
+	restore()
+end
+
+row = switchRow("Kasugai Crow Auto-Quest", "ปิดอยู่", 6, function(on)
+	loop += 1
+	if not on then
+		Runner.stop()
+		return
+	end
+	local mine = loop
+	task.spawn(function()
+		while loop == mine and Runner.active do
+			row.setDesc("มีตัวรันอื่นทำงานอยู่ · รอให้จบก่อน")
+			task.wait(2)
+		end
+		if loop ~= mine then
+			return
+		end
+		Runner.active = true
+		Runner.cancel = false
+		local ok, err = pcall(Crow.run, function()
+			-- Auto Skill ทำ identity หล่น อ่าน screen.Parent ไม่ได้ (เจอจริง รอบแรก) คืนค่าก่อนเช็กทุกครั้ง
+			if setthreadidentity and Game.loadIdentity then
+				setthreadidentity(Game.loadIdentity)
+			end
+			return loop == mine and screen.Parent ~= nil and not Runner.cancel
+		end)
+		Runner.active = false
+		if not ok then
+			row.setDesc("ผิดพลาด: " .. tostring(err):sub(1, 120))
+		end
+	end)
+end)
 end
 
 -- การโต้ตอบหน้าต่าง ---------------------------------------------------------
@@ -17361,7 +17536,7 @@ task.delay(2, function()
 			pcall(row.restore, saved)
 		end
 	end
-	local busyRunners = { ["Auto-Money-Farm"] = true, ["Auto-Final-Selection"] = true }
+	local busyRunners = { ["Auto-Money-Farm"] = true, ["Auto-Final-Selection"] = true, ["Kasugai Crow Auto-Quest"] = true }
 	for _, entry in ipairs(toggles) do
 		if data.switches[entry.key] and not entry.isOn() and not (data.resume and busyRunners[entry.key]) then
 			pcall(entry.set, true)
