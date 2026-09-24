@@ -2046,6 +2046,8 @@ local Layout = {
 			help = "แบบพิมพ์เซ็ต Nightfall 11 ชิ้น · Study / คันโยก / กุญแจงู / รูปปั้น / แลก · ติ๊กหลายชิ้นได้" },
 		["Upgrade อุปกรณ์"] = { page = "items", section = "upgrade", card = "refine", order = 1,
 			help = "เลือกของ (แยกที่ใส่อยู่ / ในกระเป๋า) ตั้งระดับ +1 ถึง +10 ดูโอกาส ค่าใช้จ่าย ของที่ขาด แล้วกดอัป" },
+		["Log ดันเจี้ยน"] = { page = "quest", section = "quest", card = "dungeonlog", order = 6,
+			help = "ทุกรอบที่จบ: ถึงชั้นไหน แต้มเท่าไร ได้อะไรจากหีบ แลกอะไรไป ได้กลับมาทั้งหมดเท่าไร" },
 		["Get Weapons"] = { page = "items", section = "gear", card = "shop", order = 1,
 			help = "อาวุธและของสวมใส่ทุกชิ้น · ร้าน / ดรอป / หีบ / คราฟต์ พร้อมแหล่งได้ทุกทาง" },
 		["Auto-Breathing"] = { page = "quest", section = "quest", card = "breath", order = 2,
@@ -13012,7 +13014,7 @@ local Hook = {
 	SendGap = 1,
 }
 
-local cfg = { url = "", on = false, boss = true, quest = true, mobs = true, rare = true }
+local cfg = { url = "", on = false, boss = true, quest = true, mobs = true, rare = true, dungeon = true }
 if typeof(isfile) == "function" and isfile(Hook.SaveFile) then
 	local ok, saved = pcall(HttpService.JSONDecode, HttpService, readfile(Hook.SaveFile))
 	if ok and type(saved) == "table" then
@@ -13351,6 +13353,34 @@ function Runner.hook(kind, value)
 			embed.iconOf = value
 			queue(embed)
 		end
+	elseif kind == "dungeon" then
+		-- สรุปหนึ่งรอบหอคอย (ดู Ouwi.logRun) ส่งทันทีตอนจบรอบ ไม่รอสรุปรวม
+		local run = value
+		if cfg.on and cfg.dungeon then
+			local lines = {
+				string.format("**ถึงชั้น:** %s  ·  **แต้มรวม:** %s  ·  **หีบ Cache:** %s",
+					tostring(run.floor or "?"), comma(run.points or 0), tostring(run.caches or 0)),
+			}
+			if run.goal then
+				lines[#lines + 1] = "**รอบนี้เพื่อ:** " .. run.goal
+			end
+			local spent = {}
+			for _, s in ipairs(run.spent or {}) do
+				spent[#spent + 1] = string.format("%s × %s  (%s แต้ม)", s.item, comma(s.n), comma(s.points))
+			end
+			local sections = {
+				{ "รอบดันเจี้ยน", lines },
+				dropsSection(run.got or {}, "ไม่ได้ของ"),
+				{ "แลกแต้ม / ตี", #spent > 0 and spent or { "ไม่ได้แลก" } },
+			}
+			if run.craftFail then
+				table.insert(sections[3][2], 1, run.craftFail)
+			end
+			-- ส่งตรงไม่เข้าคิว: จบรอบแล้วย้ายเซิร์ฟในไม่กี่วิ คิวยังไม่ทันรอบส่งสคริปต์ก็ถูกปิดไปก่อน
+			if httpRequest and validUrl(cfg.url) then
+				pcall(post, card("จบรอบดันเจี้ยน Ouwigahara", 0xE0A040, sections))
+			end
+		end
 	elseif kind == "quest" then
 		Hook.quests = (Hook.quests or 0) + 1
 		if cfg.quest then
@@ -13585,6 +13615,7 @@ settingSwitch("boss", "ฆ่าบอส", "ชื่อบอส ครั้�
 settingSwitch("quest", "ผ่านเควส", "ชื่อเควสที่ Auto-Quest ทำจบ พร้อมเลเวลและเงิน", 6)
 settingSwitch("mobs", "สรุปฆ่าม็อบ", "ทุก " .. Hook.SummaryEvery .. " วิ: ฆ่าอะไรกี่ตัว ได้ของอะไร เงินเพิ่มเท่าไร", 7)
 settingSwitch("rare", "ของหายาก", "ได้ของ " .. Rarities.Order[Hook.RareAt] .. " ขึ้นไป แจ้งทันทีไม่รอสรุป", 8)
+settingSwitch("dungeon", "จบรอบดันเจี้ยน", "ถึงชั้นไหน แต้มเท่าไร ได้อะไรจากหีบ แลกอะไรไป ของที่ได้กลับมาทั้งหมด", 9)
 
 -- ปุ่มลัด: แสดงอย่างเดียว ปุ่มจริงอยู่ที่ Config.ToggleKey / UnloadKey
 local keysCard = new("Frame", {
@@ -14678,12 +14709,14 @@ local function autoSkip()
 	end
 end
 
+-- ม็อบหอคอยอยู่ลึก Humanoids.Regions.Temporary.ActiveNpcs.<ชื่อ>.<ชื่อ> (เกมย้ายที่ 24 ก.ย. 2026 เดิมเป็นลูกตรงของ
+-- Humanoids) ผู้ใช้เจอ: ไม่วาร์ปไปตี ยืนรอม็อบเดินมาหาเอง · ไล่ทุกชั้นแล้วกรองด้วย IsMob + OuwigaharaMark
 local function nearestEnemy(hrp)
 	local best, bestD
-	for _, m in ipairs(workspace.Humanoids:GetChildren()) do
-		local h = m:FindFirstChildOfClass("Humanoid")
-		local root = m:FindFirstChild("HumanoidRootPart")
-		if root and h and h.Health > 0 and m:FindFirstChild("OuwigaharaMark") then
+	for _, m in ipairs(workspace.Humanoids:GetDescendants()) do
+		local h = m:IsA("Model") and m:GetAttribute("IsMob") and m:FindFirstChildOfClass("Humanoid")
+		local root = h and m:FindFirstChild("HumanoidRootPart")
+		if root and h.Health > 0 and m:FindFirstChild("OuwigaharaMark") then
 			local d = (root.Position - hrp.Position).Magnitude
 			if not bestD or d < bestD then
 				best, bestD = m, d
@@ -14736,37 +14769,95 @@ local function endRun()
 	end
 end
 
+-- บันทึกรอบ: ของในกระเป๋าตอนเริ่มรอบจดลงไฟล์ (สคริปต์โหลดใหม่กลางรอบยังเทียบได้) จบรอบเทียบว่าได้อะไร
+local function snapshot()
+	local s = {}
+	for k, v in pairs(Game.wallet()) do
+		s[k] = v
+	end
+	fixIdentity()
+	return s
+end
+
+-- ของที่เปลี่ยน b - a (ไม่นับแต้มรอบ) · onlyGain = เอาแค่ที่เพิ่ม
+local function walletDiff(a, b, onlyGain)
+	local out = {}
+	for k, v in pairs(b) do
+		local d = v - (a[k] or 0)
+		if k ~= "RunPoints" and d ~= 0 and (d > 0 or not onlyGain) then
+			out[k] = d
+		end
+	end
+	if not onlyGain then
+		for k, v in pairs(a) do
+			if b[k] == nil and k ~= "RunPoints" and v ~= 0 then
+				out[k] = -v
+			end
+		end
+	end
+	return out
+end
+
+local function beginRunLog()
+	local cur = persistData().ouwiRunStart
+	if not cur or cur.jobId ~= game.JobId then
+		persistData().ouwiRunStart = { jobId = game.JobId, at = os.time(), wallet = snapshot() }
+		Game.save()
+	end
+	Ouwi.spent = Ouwi.spent or {}
+end
+
+-- ใต้ดินแบบเดียวกับ "ตีจากใต้ดิน": นอนหงายใต้ม็อบ ม็อบตีลงมาไม่ถึง (ผู้ใช้เจอยืนสู้บนพื้นในหอคอยแล้วโดนตี)
+local function holdUnder(root)
+	if killAura and killAura.pinUnder then
+		killAura.pinUnder(root)
+	end
+end
+
+local function releaseUnder()
+	if killAura and killAura.underConn then
+		killAura.releaseUnder()
+	end
+end
+
 local function climb()
 	combatOn()
+	beginRunLog()
 	local lastMap = workspace:GetAttribute("MinigameMap")
 	local pauseUntil = 0
 	while Ouwi.on and workspace:GetAttribute("MinigameState") == "Climbing" do
 		fixIdentity()
 		local floor = workspace:GetAttribute("MinigameFloor") or 1
 		if floor > stopAt() then
+			releaseUnder()
 			endRun()
 			return
 		end
 		-- ย้ายแมพ (ทุก 10 ชั้น) เซิร์ฟเช็กว่าตัวเราอยู่ใกล้แท่นเกิดหลัง 3.5 วิ ห้ามวาร์ปไปไหนช่วงนั้น
+		-- ต้องปล่อยจากใต้ดินด้วย ไม่งั้นถูกตรึงไว้ใต้ม็อบตัวเก่าที่แมพเดิม
 		local map = workspace:GetAttribute("MinigameMap")
 		if map ~= lastMap then
 			lastMap = map
 			pauseUntil = os.clock() + 4
+			releaseUnder()
 		end
 		pickCards()
 		autoSkip()
 		local _, hrp = selfParts()
 		if hrp and os.clock() > pauseUntil and not LocalPlayer:GetAttribute("Spectating") then
-			local enemy, d = nearestEnemy(hrp)
-			if enemy and d > 8 then
-				local p = enemy.HumanoidRootPart.Position
-				hrp.CFrame = CFrame.lookAt(p + (hrp.Position - p).Unit * 3 + Vector3.new(0, 1, 0), p)
+			local enemy = nearestEnemy(hrp)
+			if enemy then
+				holdUnder(enemy.HumanoidRootPart)
 			end
+		elseif os.clock() <= pauseUntil then
+			releaseUnder()
 		end
-		say(string.format("ชั้น %d/%d · แต้ม %s · หัวใจ %s", floor, stopAt(),
-			comma(LocalPlayer:GetAttribute("RunPoints") or 0), tostring(LocalPlayer:GetAttribute("Hearts") or "?")))
+		say(string.format("ชั้น %d/%d · แต้ม %s · หัวใจ %s · ม็อบเหลือ %s", floor, stopAt(),
+			comma(LocalPlayer:GetAttribute("RunPoints") or 0), tostring(LocalPlayer:GetAttribute("Hearts") or "?"),
+			tostring(workspace:GetAttribute("MinigameEnemiesLeft") or "?")))
 		task.wait(0.3)
 	end
+	releaseUnder()
 end
 
 -- สูตร V2 ฝั่งหอคอยที่ทำได้ตอนนี้ (มีของฐาน Mythic Scraps Silk แต้มครบ) เลือกตัวที่เป็นของฐานของเซ็ต Nightfall ก่อน
@@ -14824,16 +14915,27 @@ local function buyAt(where, item, count)
 	local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
 	-- ตะกร้าเดียวกับหน้าคุย NPC (Dialogue.ProceedWithCartPurchase): { [ชื่อของ] = จำนวน } ครั้งละไม่เกิน 99
 	local left = count
+	local before = LocalPlayer:GetAttribute("RunPoints") or 0
+	local function logSpent()
+		local bought = count - left
+		if bought > 0 then
+			Ouwi.spent = Ouwi.spent or {}
+			Ouwi.spent[#Ouwi.spent + 1] = { item = item, n = bought,
+				points = before - (LocalPlayer:GetAttribute("RunPoints") or 0) }
+		end
+	end
 	while left > 0 do
 		local n = math.min(left, 99)
 		local ok, res = pcall(SignalFunction.ToServer, "PurchaseSelection", { [item] = n })
 		fixIdentity()
 		if not ok or not res then
+			logSpent()
 			return false
 		end
 		left -= n
 		task.wait(0.4)
 	end
+	logSpent()
 	return true
 end
 
@@ -14861,6 +14963,21 @@ local function shops()
 	end
 	pcall(collectLoot, { wait = true })
 	fixIdentity()
+
+	-- ของที่ได้จากรอบนี้ (หีบ Cache + ของดรอประหว่างไต่) = กระเป๋าตอนนี้ - ตอนเริ่มรอบ ก่อนแลกแต้ม
+	local runStart = persistData().ouwiRunStart
+	local startWallet = runStart and runStart.wallet or snapshot()
+	local log = {
+		at = os.time(),
+		floor = LocalPlayer:GetAttribute("OuwigaharaReached") or workspace:GetAttribute("MinigameFloor"),
+		points = LocalPlayer:GetAttribute("RunPoints") or 0,
+		caches = workspace:GetAttribute("MinigameCaches"),
+		got = walletDiff(startWallet, snapshot(), true),
+		goal = persistData().ouwiGoal and (persistData().ouwiGoal.kind == "v2"
+			and ("อัปดาบฐาน " .. tostring((Crafting and Crafting.Definitions[persistData().ouwiGoal.recipe] or {}).result))
+			or "หา Wen ให้คิว Get Nightfall Craft") or nil,
+	}
+	Ouwi.spent = {}
 
 	local points = LocalPlayer:GetAttribute("RunPoints") or 0
 	-- จดแต้มที่ได้ต่อรอบ แผง Get Nightfall Craft เอาไปประมาณว่าต้องลงอีกกี่รอบถึงจะได้ Wen ครบ
@@ -14894,10 +15011,19 @@ local function shops()
 		end
 		task.wait(1.2)
 		local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
-		pcall(SignalFunction.ToServer, "CraftRecipe", v2.id)
+		local had = Game.wallet()[v2.recipe.result] or 0
+		local okCraft, res = pcall(SignalFunction.ToServer, "CraftRecipe", v2.id)
 		fixIdentity()
 		task.wait(1.5)
+		local before = points
 		points = LocalPlayer:GetAttribute("RunPoints") or 0
+		if (Game.wallet()[v2.recipe.result] or 0) > had then
+			log.crafted = v2.recipe.result
+			Ouwi.spent[#Ouwi.spent + 1] = { item = "ตี " .. v2.recipe.result, n = 1, points = before - points }
+		else
+			log.craftFail = string.format("ตี %s ไม่สำเร็จ: %s", v2.recipe.result,
+				tostring(okCraft and type(res) == "table" and res.Reason or res))
+		end
 	end
 
 	-- ดาบฐานยังตีไม่ได้เพราะ Mythic ไม่ครบ: แลกแต้มเป็น Mythic เท่าที่ขาดก่อน ที่เหลือเป็น Wen
@@ -14957,6 +15083,19 @@ local function shops()
 	if cheap and rest >= cheap.price then
 		buyAt(Ouwi.Zeni, cheap.item, math.floor(rest / cheap.price))
 	end
+
+	-- ลงบันทึกรอบ (เก็บ 20 รอบล่าสุด ดูได้ที่แถว Log ดันเจี้ยน) + ส่ง Discord ถ้าเปิดไว้
+	log.spent = Ouwi.spent
+	log.net = walletDiff(startWallet, snapshot(), false)
+	local history = persistData().ouwiLog or {}
+	table.insert(history, 1, log)
+	while #history > 20 do
+		table.remove(history)
+	end
+	persistData().ouwiLog = history
+	persistData().ouwiRunStart = nil
+	pcall(Runner.hook, "dungeon", log)
+	fixIdentity()
 
 	say("กลับเซิร์ฟเดิม")
 	persistData().ouwiGo = nil
@@ -15134,6 +15273,162 @@ if inTower and persistData().ouwiGo and not Ouwi.on then
 	task.delay(4, function()
 		ouwiRow.set(true)
 	end)
+end
+
+-- Log ดันเจี้ยน: ประวัติ 20 รอบล่าสุดจาก shops() ในไฟล์ config (ข้ามเซิร์ฟได้) ผู้ใช้ขอดูว่าจบรอบได้อะไร แลกอะไร
+do
+	local logUI = makePanel("Log ดันเจี้ยน Ouwigahara", false)
+	logUI.search.Visible = false
+	logUI.filterRow.Visible = false
+	logUI.list.Position = UDim2.fromOffset(0, 48)
+	logUI.list.Size = UDim2.new(1, 0, 1, -70)
+	logUI.list:FindFirstChildOfClass("UIListLayout").Padding = UDim.new(0, 8)
+
+	local function text(parent, str, order, color, size, weight)
+		return new("TextLabel", {
+			Size = UDim2.new(1, 0, 0, 14),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			RichText = true,
+			TextWrapped = true,
+			Text = str,
+			TextColor3 = color or Theme.Muted,
+			TextSize = size or 13,
+			FontFace = font(weight or Enum.FontWeight.Regular),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			LayoutOrder = order,
+			Parent = parent,
+		})
+	end
+
+	-- ชิปไอคอนเกม + ชื่อ + จำนวน (เขียว = ได้ · แดง = เสีย) เรียงจำนวนมากไปน้อย
+	local function chips(parent, order, items, signed)
+		local wrap = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = order,
+			Parent = parent,
+		}, { new("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			Wraps = true,
+			Padding = UDim.new(0, 5),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}) })
+		local list = {}
+		for name, n in pairs(items or {}) do
+			list[#list + 1] = { name = name, n = n }
+		end
+		table.sort(list, function(a, b)
+			return math.abs(a.n) > math.abs(b.n)
+		end)
+		if #list == 0 then
+			text(wrap, "—", 1, Theme.Dim, 12)
+		end
+		for i, it in ipairs(list) do
+			local chip = new("Frame", {
+				Size = UDim2.fromOffset(0, 22),
+				AutomaticSize = Enum.AutomaticSize.X,
+				BackgroundColor3 = Theme.Raised,
+				LayoutOrder = i,
+				Parent = wrap,
+			}, {
+				capsule(),
+				new("UIPadding", { PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 8) }),
+				new("UIListLayout", {
+					FillDirection = Enum.FillDirection.Horizontal,
+					VerticalAlignment = Enum.VerticalAlignment.Center,
+					Padding = UDim.new(0, 4),
+				}),
+			})
+			new("ImageLabel", {
+				Size = UDim2.fromOffset(16, 16),
+				BackgroundTransparency = 1,
+				Image = Game.iconOf(it.name) or "",
+				ScaleType = Enum.ScaleType.Fit,
+				Parent = chip,
+			})
+			new("TextLabel", {
+				Size = UDim2.fromOffset(0, 22),
+				AutomaticSize = Enum.AutomaticSize.X,
+				BackgroundTransparency = 1,
+				Text = string.format("%s %s%s", it.name, signed and (it.n > 0 and "+" or "−") or "×", comma(math.abs(it.n))),
+				TextColor3 = signed and (it.n > 0 and Theme.Good or Theme.Danger) or Theme.Text,
+				TextSize = 12,
+				FontFace = font(Enum.FontWeight.SemiBold),
+				Parent = chip,
+			})
+		end
+	end
+
+	local function rebuildLog()
+		for _, c in ipairs(logUI.list:GetChildren()) do
+			if c:IsA("GuiObject") then
+				c:Destroy()
+			end
+		end
+		local history = persistData().ouwiLog or {}
+		local totalPts, totalWen = 0, 0
+		for _, run in ipairs(history) do
+			totalPts += run.points or 0
+			totalWen += (run.net or {}).Wen or 0
+		end
+		logUI.subtitle.Text = string.format("%d รอบ · แต้มรวม %s · Wen สุทธิ %s%s", #history, comma(totalPts),
+			totalWen >= 0 and "+" or "−", comma(math.abs(totalWen)))
+		if #history == 0 then
+			text(logUI.list, "ยังไม่มีรอบที่จบ · จบรอบแรกแล้วจะขึ้นที่นี่ (ได้อะไร แลกอะไร ได้กลับมาเท่าไร)", 1, Theme.Muted, 14)
+		end
+		for i, run in ipairs(history) do
+			local card = new("Frame", {
+				Size = UDim2.new(1, -6, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundColor3 = Theme.Row,
+				LayoutOrder = i,
+				Parent = logUI.list,
+			}, {
+				corner(10),
+				stroke(),
+				new("UIPadding", {
+					PaddingTop = UDim.new(0, 10),
+					PaddingBottom = UDim.new(0, 10),
+					PaddingLeft = UDim.new(0, 12),
+					PaddingRight = UDim.new(0, 12),
+				}),
+				new("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder }),
+			})
+			text(card, string.format("<b>รอบ %s</b>   %s   ·   ถึงชั้น <b>%s</b>   ·   <font color=\"#%s\">%s แต้ม</font>   ·   หีบ Cache %s",
+				i == 1 and "ล่าสุด" or ("#" .. i), os.date("%d/%m %H:%M", run.at or 0), tostring(run.floor or "?"),
+				Theme.Accent:ToHex(), comma(run.points or 0), tostring(run.caches or 0)), 1, Theme.Text, 14)
+			if run.goal then
+				text(card, "รอบนี้เพื่อ: " .. run.goal, 2, Theme.Accent2, 12, Enum.FontWeight.SemiBold)
+			end
+			text(card, "ได้จากดัน (หีบ + ของดรอป)", 3, Theme.Dim, 12, Enum.FontWeight.Bold)
+			chips(card, 4, run.got)
+			text(card, "แลกแต้ม / ตีที่ Togane", 5, Theme.Dim, 12, Enum.FontWeight.Bold)
+			local spent = {}
+			for _, s in ipairs(run.spent or {}) do
+				spent[#spent + 1] = string.format("%s × %s  <font color=\"#%s\">(%s แต้ม)</font>", s.item, comma(s.n),
+					Theme.Dim:ToHex(), comma(s.points or 0))
+			end
+			if run.craftFail then
+				spent[#spent + 1] = string.format("<font color=\"#%s\">%s</font>", Theme.Danger:ToHex(), run.craftFail)
+			end
+			text(card, #spent > 0 and table.concat(spent, "\n") or "ไม่ได้แลก", 6, Theme.Text, 13)
+			text(card, "ได้กลับมาทั้งหมด (เทียบกระเป๋าก่อนเข้า → ตอนออก)", 7, Theme.Dim, 12, Enum.FontWeight.Bold)
+			chips(card, 8, run.net, true)
+		end
+		fixIdentity()
+	end
+
+	local logRow = featureRow("Log ดันเจี้ยน", "ประวัติรอบดันเจี้ยน", 6, function()
+		rebuildLog()
+		logUI.show()
+	end, function()
+		logUI.hide()
+	end)
+	track(logUI.closeButton.MouseButton1Click:Connect(function()
+		logRow.setOpen(false)
+	end))
 end
 end)()
 
