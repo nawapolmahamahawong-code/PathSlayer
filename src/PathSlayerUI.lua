@@ -1826,6 +1826,8 @@ local Layout = {
 			help = "เข้าดันเจี้ยนเอง ไต่ชั้นด้วย Insta Kill เลือกการ์ดแต้มสูงสุด ยอมแพ้ตามชั้นที่ตั้ง แลกแต้มเป็นของ แล้วกลับ" },
 		["ดันเจี้ยน"] = { page = "quest", section = "quest", card = "dungeon", child = 1, title = "ดันเจี้ยน" },
 		["ยอมแพ้ที่ชั้น"] = { page = "quest", section = "quest", card = "dungeon", child = 2, title = "ยอมแพ้ที่ชั้น" },
+		["Auto-Skip"] = { page = "quest", section = "quest", card = "dungeon", child = 4, title = "Auto-Skip",
+			help = "ข้ามช่วงพัก 10 วิระหว่างชั้นทันที ไต่เร็วขึ้น" },
 		["แลกแต้มเป็น"] = { page = "quest", section = "quest", card = "dungeon", child = 3,
 			title = "แลกแต้มเป็น (ติ๊กหลายอย่าง = แบ่งเท่ากัน)" },
 		["Auto-Final-Selection"] = { page = "quest", section = "quest", card = "finalsel", order = 3,
@@ -6621,7 +6623,7 @@ local function switchRow(name, desc, order, onChange, opts)
 
 	track(hit.MouseButton1Click:Connect(function()
 		entry.set(not on)
-		Game.persist.data.switches[name] = on or nil
+		Game.persist.data.switches[name] = on
 		Game.save()
 	end))
 
@@ -12812,6 +12814,8 @@ local Ouwi = {
 		{ key = "EXP", item = "1,000 Exp", price = 3500 },
 	},
 	rewardPick = { [1] = true, [2] = true },
+	-- ข้ามช่วงพัก 10 วิระหว่างชั้น (เล่นคนเดียวโหวตเดียวผ่าน) ค่าเริ่มต้นเปิด ผู้ใช้ปิดได้ในแถว Auto-Skip
+	autoSkip = Game.persist.data.switches["Auto-Skip"] ~= false,
 	on = false,
 	loop = 0,
 }
@@ -13027,8 +13031,19 @@ local function pickCards()
 	end
 	SignalEvent.ToServer("OuwigaharaRequest", { action = "Pick", id = best.Name })
 	task.wait(0.8)
-	-- เล่นคนเดียวโหวตข้ามพัก 10 วิได้ทันที
-	SignalEvent.ToServer("OuwigaharaRequest", { action = "Skip" })
+end
+
+-- โหวตข้ามพักครั้งเดียวต่อชั้น ตอนเซิร์ฟตั้ง MinigameWaveBreak (เวลาจบพัก) ไว้
+local skippedFloor
+local function autoSkip()
+	local floor = workspace:GetAttribute("MinigameFloor")
+	local offers = LocalPlayer:FindFirstChild("OuwigaharaOffers")
+	-- รอเลือกการ์ดให้ครบก่อน (เล่นคนเดียวมีมือที่สองเป็นการ์ดอีเวนต์) โหวตข้ามตอนมือยังเปิด เซิร์ฟสุ่มการ์ดให้เอง
+	local choosing = offers and #offers:GetChildren() > 0
+	if Ouwi.autoSkip and not choosing and workspace:GetAttribute("MinigameWaveBreak") and skippedFloor ~= floor then
+		skippedFloor = floor
+		SignalEvent.ToServer("OuwigaharaRequest", { action = "Skip" })
+	end
 end
 
 local function nearestEnemy(hrp)
@@ -13107,6 +13122,7 @@ local function climb()
 			pauseUntil = os.clock() + 4
 		end
 		pickCards()
+		autoSkip()
 		local _, hrp = selfParts()
 		if hrp and os.clock() > pauseUntil and not LocalPlayer:GetAttribute("Spectating") then
 			local enemy, d = nearestEnemy(hrp)
@@ -13362,6 +13378,13 @@ switchRow("ยอมแพ้ที่ชั้น", "เคลียร์ช�
 		Ouwi.stopFloor = Ouwi.StopChoices[i]
 	end,
 })
+
+local skipRow = switchRow("Auto-Skip", "ข้ามช่วงพัก 10 วิระหว่างชั้นทันที ไต่เร็วขึ้น", 9, function(on)
+	Ouwi.autoSkip = on
+end)
+if Ouwi.autoSkip then
+	skipRow.set(true)
+end
 
 switchRow("แลกแต้มเป็น", "ติ๊กหลายอย่าง = แบ่งแต้มเท่ากัน · ของครบตีอาวุธ V2 ให้ก่อน", 8, function() end, {
 	choices = { "Wen", "Mythic Ore", "Ore", "EXP" },
