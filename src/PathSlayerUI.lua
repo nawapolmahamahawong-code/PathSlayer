@@ -2028,6 +2028,10 @@ local Layout = {
 			help = "กดสกิลของอาวุธที่ถือใส่ม็อบใกล้ตัวทันทีที่คูลดาวน์หมด" },
 		["สกิลที่ใช้"] = { page = "combat", section = "gear", card = "skill", child = 1,
 			title = "ปุ่มสกิลที่ให้กด" },
+		["Auto-Potion"] = { page = "combat", section = "defense", card = "potion", order = 2,
+			help = "เลือดต่ำกว่าที่ตั้ง กินยาเอง (Elixir → Potion → Regen) ใส่ยาขึ้น toolbar ให้ กินเสร็จถือดาบคืน" },
+		["กินยาเมื่อเลือดต่ำกว่า"] = { page = "combat", section = "defense", card = "potion", child = 1,
+			title = "กินเมื่อเลือดต่ำกว่า" },
 		["Auto-Dodge"] = { page = "combat", section = "defense", card = "dodge", order = 1,
 			help = "วาร์ปหลบตอนม็อบเริ่มท่าตี จำท่าที่เคยโดนไว้ในไฟล์" },
 		["Auto-Chest"] = { page = "items", section = "loot", card = "chest", order = 1,
@@ -6918,6 +6922,10 @@ local function weaponReady()
 end
 
 local function equipWeapon()
+	-- กำลังกินยา (Auto-Potion) ห้ามสลับกลับไปถือดาบ ยากำลังดื่มอยู่จะถูกยกเลิก
+	if os.clock() < (Combat.drinkUntil or 0) then
+		return false
+	end
 	if weaponReady() then
 		return true
 	end
@@ -10604,6 +10612,221 @@ track(craftUI.closeButton.MouseButton1Click:Connect(function()
 end))
 end)()
 
+-- Auto-Potion ------------------------------------------------------------------
+-- ยาในเกมเป็นเครื่องมือถือ (EquipType 2, ToolScript "Health Potion") อ่านจากโค้ดเกม 24 ก.ย. 2026:
+--   ถือแล้วกดค้าง (Tool_Mouse Down) เซิร์ฟดื่มให้ 1.85 วิแล้วค่อยให้ผล ปล่อยก่อน (Up) = ยกเลิก
+--   Health Potion +25 HP · Health Elixir +60 HP · Regen Potion/Elixir = เร่งฟื้นเลือดช่วงสั้น
+--   ระหว่างดื่มโดนตี/ทำท่าอื่น (ManuelCancel) ยกเลิก ไม่เสียยา → ช่วงดื่มหยุด Kill Aura / Auto Skill / สลับดาบ
+-- ในหอคอยเกมแจก Health Potion 3 ขวดทุกรอบ (MinigameSettings.StartPotion)
+;(function()
+local Potion = {
+	-- เรียงจากฟื้นมากสุดก่อน เลือดต่ำใช้ตัวที่ได้เลือดทันทีก่อน Regen
+	Order = { "Health Elixir", "Health Potion", "Health Regen Elixir", "Health Regen Potion" },
+	Heal = { ["Health Elixir"] = 60, ["Health Potion"] = 25 },
+	Thresholds = { 30, 40, 50, 60, 70 },
+	threshold = 40,
+	-- เซิร์ฟตัดยา+ให้เลือดที่ 1.85 วิหลังกด (0.3 + 0.95 + 0.2 + 0.4 ใน Health PotionServer) ปล่อยเมาส์ (Tool_Mouse Up)
+	-- ก่อนนั้นเซิร์ฟยกเลิกทั้งขวด วัดจริง: ปล่อยที่ 1.75 เสียงเปิด+ดื่มครบแต่ยาไม่ลด เลยค้างไว้ 2.3
+	DrinkTime = 2.3,
+	-- เว้นระหว่างขวด ให้ค่าเลือดใหม่ replicate มาก่อน ไม่งั้นกินซ้อนสองขวดทั้งที่ขวดแรกพอแล้ว
+	Gap = 1.5,
+	on = false,
+	loop = 0,
+	drinks = 0,
+	last = 0,
+}
+
+-- โฟลเดอร์สถานะตัวละครของเกม (Player_Service.Values.<ชื่อ>) ที่ Checker อ่าน
+function Potion.values()
+	local ok, U = pcall(require, ReplicatedStorage.CAM.Global.Utility)
+	local vf = ok and U.getvaluesfolder(LocalPlayer) or nil
+	if setthreadidentity and Game.loadIdentity then
+		setthreadidentity(Game.loadIdentity)
+	end
+	return vf
+end
+
+local function bagItem(name)
+	local slot = equippedSlot()
+	local bag = slot and slot.Inventory:FindFirstChild("Inventory")
+	return bag and bag:FindFirstChild(name)
+end
+
+local function countOf(name)
+	local it = bagItem(name)
+	if not it then
+		return 0
+	end
+	local amount = it:FindFirstChild("Amount")
+	return amount and amount.Value or 1
+end
+
+-- ใส่ยาขึ้น toolbar ช่องว่าง (Toolbar_Equip แบบปุ่มในกระเป๋า) ไม่เอาของที่ผู้เล่นวางไว้ออก คืนเลขช่อง
+local function potionSlot(name)
+	local it = bagItem(name)
+	local id = it and it:FindFirstChild("Id")
+	if not id then
+		return nil, "ไม่มี " .. name
+	end
+	local bar = equippedSlot().Inventory.Toolbar
+	local slots = { "One", "Two", "Three", "Four", "Five" }
+	for i, s in ipairs(slots) do
+		if bar[s].Value == id.Value then
+			return i
+		end
+	end
+	for i, s in ipairs(slots) do
+		if bar[s].Value == 0 then
+			SignalEvent.ToServer("Toolbar_Equip", s, id.Value)
+			local untilT = os.clock() + 3
+			while bar[s].Value ~= id.Value and os.clock() < untilT do
+				task.wait(0.1)
+			end
+			if bar[s].Value == id.Value then
+				return i
+			end
+			return nil, "ใส่ยาขึ้น toolbar ไม่ติด"
+		end
+	end
+	return nil, "toolbar เต็ม 5 ช่อง เว้นว่างไว้หนึ่งช่องให้ยา"
+end
+
+local function pickPotion()
+	for _, name in ipairs(Potion.Order) do
+		if countOf(name) > 0 then
+			return name
+		end
+	end
+	return nil
+end
+
+local function stockText()
+	local parts = {}
+	for _, name in ipairs(Potion.Order) do
+		local n = countOf(name)
+		if n > 0 then
+			parts[#parts + 1] = string.format("%s %d", name:gsub("Health ", ""), n)
+		end
+	end
+	return #parts > 0 and table.concat(parts, " · ") or "ไม่มียาในกระเป๋า"
+end
+
+local row
+local function drink(name)
+	local _, hrp, hum = selfParts()
+	if not (hrp and hum) then
+		return false
+	end
+	local slot, why = potionSlot(name)
+	if not slot then
+		return false, why
+	end
+	local prev = heldSlot()
+	local before, hpBefore = countOf(name), hum.Health
+	-- หยุดทุกอย่างที่จะไปยกเลิกท่าดื่ม: หมัด (blockUntil) สกิล + สลับดาบ (drinkUntil)
+	-- รอถือยานิ่ง (สูงสุด 2 วิ) + รอว่าง (3) + ดื่ม 2.3 วิ ตั้งกันไว้ 8 วิ จบแล้วล้างเป็น 0 เอง
+	local untilT = os.clock() + 8
+	Combat.drinkUntil = untilT
+	autoDodge.blockUntil = math.max(autoDodge.blockUntil, untilT)
+	-- Auto Skill ที่อยู่กลางรอบ (ผ่านจุดเช็ก drinkUntil ไปแล้ว) สลับกลับไปถือดาบได้อีกครั้ง
+	-- วัดจริง: ตั้งช่องยาแล้ว 0.8 วิโดนดึงกลับช่อง 1 เลยย้ำช่องยาจนถือนิ่ง 0.5 วิก่อนดื่ม
+	equipSlot(slot)
+	local steady = os.clock()
+	local giveUp = os.clock() + 2
+	while os.clock() - steady < 0.5 and os.clock() < giveUp do
+		task.wait(0.05)
+		if heldSlot() ~= slot then
+			equipSlot(slot)
+			steady = os.clock()
+		end
+	end
+	if heldSlot() ~= slot then
+		Combat.drinkUntil = 0
+		return false, "ถือยาไม่ได้ (ระบบอื่นสลับดาบกลับ)"
+	end
+	-- เซิร์ฟเช็ก Checker.check ก่อนดื่ม: ห้ามมี pause_gameplay / Stun / CombatStun / Blocking และท่าสกิลค้าง (SHC)
+	-- วัดในหอคอย: pause_gameplay โผล่ 43% ของเวลา (ท่าสกิลที่เพิ่งกด / เลือกการ์ด) กดตอนนั้นเซิร์ฟเงียบ ยาไม่ลด
+	local vf = Potion.values()
+	local waitFree = os.clock() + 3
+	while os.clock() < waitFree do
+		local shc = hrp.Parent and (hrp.Parent:FindFirstChild("SHC") or hrp.Parent:FindFirstChild("SHCS"))
+		local busy = shc and shc.Value ~= ""
+		for _, n in ipairs({ "pause_gameplay", "Stun", "CombatStun", "Strict_Stun", "Blocking", "Swapping" }) do
+			busy = busy or (vf and vf:FindFirstChild(n) ~= nil)
+		end
+		if not busy then
+			break
+		end
+		task.wait(0.05)
+	end
+	SignalEvent.ToServer("Tool_Mouse", "Down", hrp.Position)
+	task.wait(Potion.DrinkTime)
+	SignalEvent.ToServer("Tool_Mouse", "Up", hrp.Position)
+	task.wait(0.2)
+	Combat.drinkUntil = 0
+	-- ปลดล็อกหมัดทันที ไม่รอครบ 5 วิที่กันไว้ (ถ้า parry กดค้างอยู่ช่วงนี้ก็แค่ปล่อยเร็วขึ้น)
+	if autoDodge.blockUntil == untilT then
+		autoDodge.blockUntil = 0
+	end
+	if prev ~= 0 and prev ~= slot then
+		equipSlot(prev)
+	end
+	local used = countOf(name) < before
+	if used then
+		Potion.drinks += 1
+	end
+	return used, used and string.format("กิน %s · เลือด %d → %d", name, hpBefore, hum.Health) or "ท่าดื่มโดนยกเลิก (โดนตี?)"
+end
+
+local function loop(mine)
+	while Potion.on and Potion.loop == mine do
+		local _, _, hum = selfParts()
+		if hum and hum.Health > 0 and hum.MaxHealth > 0 then
+			local pct = hum.Health / hum.MaxHealth * 100
+			if pct < Potion.threshold and os.clock() - Potion.last > Potion.Gap then
+				local name = pickPotion()
+				if name then
+					Potion.last = os.clock()
+					local ok, msg = drink(name)
+					Potion.last = os.clock()
+					row.setDesc(string.format("%s · กินไป %d ขวด · เหลือ %s", tostring(msg), Potion.drinks, stockText()))
+				else
+					row.setDesc(string.format("เลือด %d%% ต่ำกว่า %d%% แต่ไม่มียา · ซื้อที่ Rika / Alchemist Meku", pct, Potion.threshold))
+				end
+			elseif os.clock() - Potion.last > 5 then
+				row.setDesc(string.format("เฝ้าเลือด %d%% · กินเมื่อต่ำกว่า %d%% · มี %s", pct, Potion.threshold, stockText()))
+			end
+		end
+		task.wait(0.25)
+	end
+end
+
+row = switchRow("Auto-Potion", "ปิดอยู่", 2, function(on)
+	Potion.on = on
+	Potion.loop += 1
+	Combat.drinkUntil = 0
+	if on then
+		task.spawn(loop, Potion.loop)
+	end
+end)
+
+switchRow("กินยาเมื่อเลือดต่ำกว่า", "เลือดต่ำกว่าเท่านี้ (% ของเลือดเต็ม) กินยาทันที", 3, function() end, {
+	choices = { "30%", "40%", "50%", "60%", "70%" },
+	selected = 2,
+	onChoice = function(i)
+		Potion.threshold = Potion.Thresholds[i]
+	end,
+})
+
+track({
+	Disconnect = function()
+		Potion.on = false
+		Potion.loop += 1
+		Combat.drinkUntil = 0
+	end,
+})
+end)()
+
 -- Upgrade อุปกรณ์ (Refine) ---------------------------------------------------
 -- ระบบเดียวกับหน้า Refiner Hagane ในเกม (CAM.Global.Refinement อ่าน 24 ก.ย. 2026):
 --   ระดับ 0-10 · แต่ละขั้นใช้ Wen + Refinement Ore (ขั้น 0-4) หรือ Mythic Refinement Ore (ขั้น 5-9)
@@ -12218,7 +12441,9 @@ local function auraStep()
 				end
 			else
 				-- ยืนข้างม็อบหันหน้าเข้าหาทุกรอบ รวมช่วงพักหลังหมัดปิด ม็อบกระเด็นไปก็ตามไปทันที
-				if not autoAttack.on then
+				-- นอนใต้ดินอยู่ (หอคอยตรึงใต้ม็อบเอง) ห้ามดึงขึ้นมายืนข้าง: สองฝั่งแย่งเขียนตำแหน่งทุกเฟรม
+				-- ผู้ใช้เจอ "ตีไม่ค่อยโดน โดนม็อบรุม" วัดได้ตัวละครเด้งขึ้นมาระดับม็อบ (dy 0) ทั้งที่ควรอยู่ลึก 8
+				if not autoAttack.on and not killAura.underConn then
 					local root = mob:FindFirstChild("HumanoidRootPart")
 					-- ย้ายไกลเกินระยะหมัด ต้องค้างให้เซิร์ฟเห็นตำแหน่งใหม่ก่อน ยิงทันทีหมัดหลุด (ดู BlinkBefore)
 					if (root.Position - hrp.Position).Magnitude > Aura.Range then
@@ -12570,7 +12795,8 @@ local function skillLoop()
 				farthest = math.max(farthest, skillReach(skill.Name))
 			end
 		end
-		local mob = hrp and hum and hum.Health > 0 and not isKnockedDown(hum) and mobInReach(hrp.Position, farthest)
+		local mob = hrp and hum and hum.Health > 0 and not isKnockedDown(hum) and os.clock() >= (Combat.drinkUntil or 0)
+			and mobInReach(hrp.Position, farthest)
 		local used = false
 		local blocked
 		if mob and #(SkillsProvider.get_current_keys() or {}) < 2 then
