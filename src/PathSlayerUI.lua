@@ -189,10 +189,167 @@ function Game.save()
 		end)
 	end)
 end
+-- ตามไปทุกเซิร์ฟ/แมพ: ใส่คิวให้ executor โหลดสคริปต์นี้อีกฝั่ง (executor เก็บคิวแค่การย้ายครั้งถัดไป ต้องใส่ทุกครั้งที่โหลด)
+-- ไฟล์ใน workspace ก่อน ลิงก์ GitHub ทีหลัง: เดิมลิงก์มาก่อน คนที่รันจากไฟล์ (run.lua) ย้ายเซิร์ฟแล้วได้ตัวเก่า
+-- บน GitHub ที่ยังไม่อัปเดตแทน (ผู้ใช้เจอ 24 ก.ย. 2026) คนที่รันจากลิงก์ไม่มีไฟล์นี้ เลยได้ลิงก์เหมือนเดิม
+-- Potassium ไม่ได้เก็บแค่คิวล่าสุด มันสะสมทุกครั้งที่รันแล้วรันเรียงกันอีกฝั่ง: ตัวเก่าที่ค้าง (ใน Lobby ค้างที่
+-- Skill_Controller) ขวางตัวใหม่ไม่ให้ได้รันเลย ล้างคิวก่อนใส่ ให้เหลือตัวเดียวเสมอ
+function Game.followTeleport()
+	if typeof(queue_on_teleport) ~= "function" then
+		return
+	end
+	local clear = clear_teleport_queue or clearteleportqueue or clearqueueonteleport
+	if typeof(clear) == "function" then
+		pcall(clear)
+	end
+	pcall(queue_on_teleport, string.format([[
+repeat task.wait() until game:IsLoaded()
+task.wait(3)
+local file = "PathSlayer/PathSlayerUI.lua"
+local ok = isfile and isfile(file) and pcall(function() loadstring(readfile(file))() end)
+if not ok then
+	pcall(function() loadstring(game:HttpGet(%q))() end)
+end]], Game.SourceUrl))
+end
+
 -- งานยาวที่ต้องทำต่อหลังย้ายแมพ: { kind = "craft" | "shop", ... } ล้างเมื่อจบหรือผู้ใช้กด STOP
 function Game.setResume(job)
 	Game.persist.data.resume = job
 	Game.save()
+end
+
+-- Lobby (Main Menu 16205713724) --------------------------------------------------
+-- ในหน้าเมนูไม่มีตัวละครและไม่มี Ouwland ทั้งไฟล์รันต่อไม่ได้: require Skill_Controller ค้างรอตัวละครตลอดไป
+-- (วัดจริง 24 ก.ย. 2026 สคริปต์ค้างที่บรรทัดนั้น หน้าต่างไม่ขึ้นเลย) เลยทำแผงเล็กปุ่มเดียว "กลับเกมหลัก" แล้วจบไฟล์ตรงนี้
+if game.PlaceId == 16205713724 or workspace:GetAttribute("IsMenu") == true then
+	-- ย้ายกลับแล้วต้องตามไปโหลดตัวเต็มอีกฝั่ง (โค้ดใส่คิวท้ายไฟล์ไปไม่ถึง)
+	Game.followTeleport()
+
+	local screen = new("ScreenGui", {
+		Name = "PathSlayer_" .. tostring(math.random(1e6, 9e6)),
+		ResetOnSpawn = false,
+		DisplayOrder = 9999,
+		IgnoreGuiInset = true,
+		Parent = typeof(gethui) == "function" and gethui() or CoreGui,
+	})
+	_G.PathSlayerUnload = function()
+		_G.PathSlayerUnload = nil
+		screen:Destroy()
+	end
+	local box = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 70),
+		Size = UDim2.fromOffset(360, 132),
+		BackgroundColor3 = Theme.Base,
+		BorderSizePixel = 0,
+		Parent = screen,
+	}, {
+		corner(14),
+		stroke(),
+		new("UIPadding", {
+			PaddingTop = UDim.new(0, 14),
+			PaddingLeft = UDim.new(0, 16),
+			PaddingRight = UDim.new(0, 16),
+		}),
+	})
+	new("TextLabel", {
+		Size = UDim2.new(1, -40, 0, 22),
+		BackgroundTransparency = 1,
+		Text = "XIIIN",
+		TextColor3 = Theme.Text,
+		TextSize = 22,
+		FontFace = Font.new("rbxasset://fonts/families/PermanentMarker.json"),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = box,
+	})
+	local close = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, -2),
+		Size = UDim2.fromOffset(26, 26),
+		BackgroundColor3 = Theme.Raised,
+		AutoButtonColor = false,
+		Text = "X",
+		TextColor3 = Theme.Muted,
+		TextSize = 14,
+		FontFace = font(Enum.FontWeight.Bold),
+		Parent = box,
+	}, { capsule(), stroke() })
+	close.MouseButton1Click:Connect(_G.PathSlayerUnload)
+
+	local origin = Game.persist.data.origin
+	local info = new("TextLabel", {
+		Position = UDim2.fromOffset(0, 28),
+		Size = UDim2.new(1, 0, 0, 34),
+		BackgroundTransparency = 1,
+		Text = origin and origin.jobId and "อยู่ Lobby · กดเพื่อกลับเซิร์ฟที่เล่นอยู่ก่อนหน้า"
+			or "อยู่ Lobby · ไม่มีบันทึกเซิร์ฟเดิม กดแล้วเข้าเซิร์ฟใหม่ของ Ouwland",
+		TextColor3 = Theme.Muted,
+		TextSize = 14,
+		FontFace = font(Enum.FontWeight.Regular),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextWrapped = true,
+		Parent = box,
+	})
+	local go = new("TextButton", {
+		Position = UDim2.fromOffset(0, 70),
+		Size = UDim2.new(1, 0, 0, 34),
+		BackgroundColor3 = Theme.On,
+		AutoButtonColor = false,
+		Text = "กลับเกมหลัก  ›",
+		TextColor3 = Theme.Base,
+		TextSize = 15,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		Parent = box,
+	}, { capsule() })
+
+	-- ทางเดียวกับปุ่มในเกม: Teleporter.Request ให้เซิร์ฟย้ายเอง (jobId เดิมก่อน ไม่ได้ค่อยเซิร์ฟใหม่)
+	local function request(settings)
+		local ok, Teleporter = pcall(require, ReplicatedStorage.CAM.Client.Modules.Teleporter)
+		if setthreadidentity and Game.loadIdentity then
+			setthreadidentity(Game.loadIdentity)
+		end
+		if not ok then
+			return false, "ไม่เจอตัวย้ายเซิร์ฟของเกม"
+		end
+		local sent, res, why = pcall(Teleporter.Request, settings)
+		if setthreadidentity and Game.loadIdentity then
+			setthreadidentity(Game.loadIdentity)
+		end
+		return sent and res == true, sent and why or res
+	end
+	local busy = false
+	go.MouseButton1Click:Connect(function()
+		if busy then
+			return
+		end
+		busy = true
+		task.spawn(function()
+			local o = Game.persist.data.origin
+			local ok, why = false, nil
+			if o and o.jobId and o.placeId == 136406881576517 then
+				info.Text = "กำลังกลับเซิร์ฟเดิม …"
+				-- ถ้าเซิร์ฟส่งไปห้องอื่น พอโหลดอีกฝั่งส่วน returning ของ Auto-Dungeon ย้ายเข้าห้องเดิมให้อีกรอบ
+				-- เขียนไฟล์ตรง ๆ ไม่รอ Game.save (หน่วง 1 วิ) เพราะย้ายเซิร์ฟอาจตัดก่อนเขียนทัน
+				Game.persist.data.returning = true
+				Game.persist.data.returningAt = os.time()
+				pcall(function()
+					writefile(Game.persist.file, game:GetService("HttpService"):JSONEncode(Game.persist.data))
+				end)
+				ok, why = request({ placeId = o.placeId, jobId = o.jobId, allowFallback = false })
+				if not ok and (o.ownerId or 0) > 0 then
+					ok, why = request({ placeId = o.placeId, privateOwner = o.ownerId })
+				end
+			end
+			if not ok then
+				info.Text = "เซิร์ฟเดิมเข้าไม่ได้ · เข้าเซิร์ฟใหม่ของ Ouwland …"
+				ok, why = request({ placeId = 136406881576517 })
+			end
+			info.Text = ok and "เซิร์ฟรับคำขอแล้ว กำลังย้าย …" or ("ย้ายไม่สำเร็จ: " .. tostring(why or "เซิร์ฟไม่ตอบ"))
+			info.TextColor3 = ok and Theme.Good or Theme.Danger
+			busy = false
+		end)
+	end)
+	return
 end
 
 -- หมวดในแผง = ชื่อโฟลเดอร์ใน ReplicatedStorage.Items
@@ -1750,6 +1907,7 @@ do
 	makePage("combat", "ต่อสู้", "โจมตี · สกิล · หลบ")
 	makePage("quest", "เควส", "เควส · ฝึกปราณ")
 	makePage("items", "ไอเทม", "อาวุธ · หีบ · ของดรอป")
+	makePage("warp", "จุดวาร์ป", "Lobby · NPC · สถานที่")
 	makePage("settings", "ตั้งค่า", "Discord · ปุ่มลัด")
 
 	-- ลำดับหัวข้อในแต่ละหมวดตามลำดับในตารางนี้ ไม่ใช่ตามลำดับที่โค้ดฟีเจอร์สร้างแถว
@@ -1764,6 +1922,17 @@ do
 		{ page = "items", key = "material", title = "วัตถุดิบและของใช้" },
 		{ page = "items", key = "set", title = "เซ็ตท็อปเกม" },
 		{ page = "items", key = "loot", title = "เก็บของ" },
+		{ page = "warp", key = "server", title = "ย้ายเซิร์ฟ",
+			hint = "กลับหน้าเมนูของเกม หรือกลับเซิร์ฟที่เล่นอยู่ก่อนเข้าดันเจี้ยน / Lobby" },
+		{ page = "warp", key = "find", title = "วาร์ปไปหา NPC",
+			hint = "กด วาร์ป แล้วไปยืนหน้า NPC ทันที · ป้ายบอกโซน เลเวลขั้นต่ำ เผ่า และช่วงเวลาที่อยู่" },
+		{ page = "warp", key = "forge", title = "ช่างตีและอัปเกรดอาวุธ" },
+		{ page = "warp", key = "shop", title = "ร้านค้าและรับซื้อของ" },
+		{ page = "warp", key = "trainer", title = "ครูฝึกปราณและสไตล์" },
+		{ page = "warp", key = "fish", title = "ตกปลา" },
+		{ page = "warp", key = "schem", title = "แบบพิมพ์เซ็ตและภารกิจพิเศษ" },
+		{ page = "warp", key = "quest", title = "ให้เควส" },
+		{ page = "warp", key = "place", title = "สถานที่สำคัญ" },
 		{ page = "settings", key = "webhook", title = "แจ้งเตือน Discord",
 			hint = "ส่งสรุปการฆ่า ของหายาก และเควสที่จบเข้าห้อง Discord" },
 		{ page = "settings", key = "afk", title = "กันหลุด (Anti-AFK)" },
@@ -13480,17 +13649,660 @@ if inTower and persistData().ouwiGo and not Ouwi.on then
 end
 end)()
 
--- ตามไปทุกเซิร์ฟ/แมพ: ย้ายแล้วโหลดตัวเองใหม่ (ลิงก์ GitHub ก่อน โหลดไม่ได้ใช้ไฟล์ใน workspace)
--- executor เก็บคิวไว้แค่การย้ายครั้งถัดไป ทุกครั้งที่โหลดเลยต้องใส่ใหม่
-if typeof(queue_on_teleport) == "function" then
-	pcall(queue_on_teleport, string.format([[
-repeat task.wait() until game:IsLoaded()
-task.wait(3)
-local ok = pcall(function() loadstring(game:HttpGet(%q))() end)
-if not ok and isfile and isfile("PathSlayer/PathSlayerUI.lua") then
-	pcall(function() loadstring(readfile("PathSlayer/PathSlayerUI.lua"))() end)
-end]], Game.SourceUrl))
+-- จุดวาร์ป ----------------------------------------------------------------------
+-- ย้ายเซิร์ฟใช้ทางเดียวกับปุ่ม Back To Main Menu ในเมนูของเกม (Menu.Sidebar.SidebarOption):
+--   Teleporter.Request { placeId = Worlds.ByName["Main Menu"].Id } เซิร์ฟย้ายให้เอง ไม่ต้องแตะ TeleportService
+-- ตำแหน่ง NPC อ่านจาก Spawns[1] ของโมดูล NPC ในเกม (ไม่ฝังพิกัด) หน้าที่ของแต่ละตัวไล่อ่านจาก
+-- Shop / Quests.Holder (OfferNpc) / บทพูด Yap / สูตร Crafting ตามสถานี เมื่อ 24 ก.ย. 2026
+;(function()
+local RunService = game:GetService("RunService")
+
+local Places = { Menu = 16205713724, Main = 136406881576517, Minigames = 75556147183481 }
+do
+	local ok, Worlds = pcall(require, ReplicatedStorage.CAM.Worlds)
+	if ok and type(Worlds) == "table" and Worlds.ByName then
+		Places.Menu = Worlds.ByName["Main Menu"] and Worlds.ByName["Main Menu"].Id or Places.Menu
+		Places.Main = Worlds.ByName.Ouwland and Worlds.ByName.Ouwland.Id or Places.Main
+	end
 end
+
+local function fixIdentity()
+	if setthreadidentity and Game.loadIdentity then
+		setthreadidentity(Game.loadIdentity)
+	end
+end
+fixIdentity()
+
+local inMenu = game.PlaceId == Places.Menu
+local inMain = game.PlaceId == Places.Main and not workspace:GetAttribute("IsMinigame")
+
+-- เซิร์ฟที่ผู้เล่นมา: จดทุกครั้งที่โหลดในเกมหลัก (คีย์เดียวกับ Auto-Dungeon ใช้กลับ VIP)
+-- ยกเว้นตอนเพิ่งหลุดกลับจากหอคอยมาเซิร์ฟ public (returning) ไม่งั้นทับ VIP เดิมก่อน Auto-Dungeon ย้ายกลับ
+local function rememberOrigin()
+	Game.persist.data.origin = {
+		placeId = game.PlaceId,
+		jobId = game.JobId,
+		privateId = game.PrivateServerId,
+		ownerId = game.PrivateServerOwnerId,
+	}
+	Game.save()
+end
+-- เซิร์ฟเดิมที่คนเล่นคนเดียวปิดทันทีที่ออก (วัดจริง: ออกไป Lobby แล้ว jobId เดิมหายไป) แต่เซิร์ฟยังตอบ
+-- "Joining." แล้วค่อยย้ายพังเงียบ ๆ ธง returning เลยค้าง Auto-Dungeon ไม่ยอมทำงานต่อ
+-- ล้างธงเมื่อย้ายพัง หรือธงที่ปุ่มกลับเกมหลักตั้งไว้เก่าเกิน 3 นาที แล้วถือเซิร์ฟนี้เป็นเซิร์ฟเดิมแทน
+local function dropReturning()
+	Game.persist.data.returning = nil
+	Game.persist.data.returningAt = nil
+	rememberOrigin()
+end
+if inMain then
+	local at = Game.persist.data.returningAt
+	if Game.persist.data.returning and at and os.time() - at > 180 then
+		dropReturning()
+	elseif not Game.persist.data.returning then
+		rememberOrigin()
+	end
+	track(game:GetService("TeleportService").TeleportInitFailed:Connect(function(player)
+		if player == LocalPlayer and Game.persist.data.returning then
+			dropReturning()
+		end
+	end))
+end
+
+local function requestTeleport(settings)
+	local ok, Teleporter = pcall(require, ReplicatedStorage.CAM.Client.Modules.Teleporter)
+	fixIdentity()
+	if not ok then
+		return false, "ไม่เจอตัวย้ายเซิร์ฟของเกม"
+	end
+	local sent, res, why = pcall(Teleporter.Request, settings)
+	fixIdentity()
+	if not sent then
+		return false, tostring(res)
+	end
+	return res == true, why
+end
+
+-- NPC --------------------------------------------------------------------------
+
+-- ทุกตัวที่มีหน้าที่ในเกม เรียงตามกลุ่ม ชื่อ = def.Name ในโมดูล NPC (ใช้หาตำแหน่ง/ไอคอน/เงื่อนไข)
+-- ตัดทิ้ง: Horse (สุ่มจุดเกิด) Muzan (เดินทั้งแมพตอนกลางคืน) UbuSister (ยืนเฝ้าประตูสอบ อยู่ในสถานที่แทน)
+local Catalog = {
+	forge = {
+		{ "Yagane", "คลังอาวุธ · ตีดาบนิจิรินเล่มแรก",
+			"ตี Enryu / Shinkage / Tengoku Katana ต้องมี Crude Iron Ingot (ได้จาก Final Selection)" },
+		{ "Blacksmith Togane", "ช่างตีเซ็ต Firstlight / Nightfall",
+			"โต๊ะช่างสูตรชุดเซ็ตและ Lost Shotgun · แลกวัตถุดิบ · ครบ 9 แบบวาดแบบ Top/Bottom ให้"
+				.. " · ให้เควสเปิดประตูหอคอย Ouwigahara" },
+		{ "Refiner Hagane", "ตีเสริมพลัง (Refine)",
+			"ใช้ Refinement Ore อัปค่าพลังอาวุธและเบ็ดตกปลา" },
+	},
+	shop = {
+		{ "Raze", "ร้านดาบคาตานะ", "ขาย Regular Katana และ Fancy Katana" },
+		{ "Rika", "ร้านยา", "Health Regen Potion · Stamina Regen Potion" },
+		{ "Alchemist Meku", "ร้านยาขั้นสูง (Elixir)",
+			"Health Elixir · Health / Stamina Regen Elixir · Underwater Breathing Potion" },
+		{ "Ginzo", "รับซื้อของ · ขาย Scraps และ Silk",
+			"ขายเหรียญ (Coin Pouch ฯลฯ) ได้ Wen · ขาย Metal Scraps / Silk Thread หลังจบเควสกล่องเครื่องประดับ" },
+		{ "Elara", "ร้านเสื้อผ้า (ของหมุนเวียน)",
+			"ฮาโอริ ชุด หน้ากาก สลับ 6 ช่องตามรอบ · ต้องส่งพัสดุของ MoldySugar ให้ก่อนถึงซื้อได้" },
+		{ "Kuro", "พ่อค้าของสวมใส่หายาก",
+			"หน้ากาก Urokodaki ผ้าคลุม สร้อย ต่างหู เขามังกร และยา · อยู่เฉพาะกลางคืน" },
+		{ "Winter Store Rep Lynx", "ร้านชุดกันหนาว · ขายพลั่ว",
+			"Shovel (ใช้ขุด Chest Mounds) · เสื้อกันหนาวสลับทุกชั่วโมง · ต้องผ่านเควสของ Iceveil Guard Shiro" },
+		{ "Ren", "ขายน้ำเต้าฝึกปราณ",
+			"Small / Medium / Large Gourd (เฉพาะ Slayer) หลังช่วยตามหาดาบให้ · เดินไปมาในสวน" },
+		{ "Black Marketer", "ตลาดมืด (มาเป็นรอบ)",
+			"ของสวมใส่หายากสุ่มตามความหายาก · โผล่ในเมืองเป็นรอบ ไม่ได้อยู่ตลอด" },
+	},
+	trainer = {
+		{ "Water Trainer Urokodaki", "ครูปราณน้ำ", "เควสฝึก Water Breathing" },
+		{ "Flame Trainer Rengu", "ครูปราณเพลิง", "เควสฝึก Flame Breathing" },
+		{ "Thunder Trainer Zentaro", "ครูปราณสายฟ้า", "เควสฝึก Thunder Breathing" },
+		{ "Wind Trainer Saneri", "ครูปราณวายุ", "เควสฝึก Wind Breathing" },
+		{ "Stone Trainer Gyorei", "ครูปราณศิลา", "เควสฝึก Stone Breathing" },
+		{ "Serpent Trainer Obari", "ครูปราณอสรพิษ", "เควสฝึก Serpent Breathing" },
+		{ "Insect Trainer Shinora", "ครูปราณแมลง", "เควสฝึก Insect Breathing" },
+		{ "Sound Trainer Tengai", "ครูปราณเสียง", "เควสฝึก Sound Breathing" },
+		{ "Soryu Expert Kazuma", "ครูสไตล์ Soryu", "เควสฝึก Soryu Style (ท่าต่อสู้ฝั่งอสูร)" },
+		{ "Tai Chi Expert Renjiro", "ครูสไตล์ Tai Chi", "เควสฝึก Tai Chi Style (ท่าต่อสู้ฝั่งนักล่า)" },
+		{ "Harvester of Souls Zurinyz", "ครูสไตล์ Reaping Blades", "เควสฝึก Reaping Blades Style" },
+	},
+	fish = {
+		{ "Dock Master Sofen", "ใบอนุญาตตกปลา",
+			"เควส Permit Stamp (ปลดล็อกร้านเบ็ด) · ขายบันทึกเบาะแสเบ็ดตำนาน 2,500 Wen" },
+		{ "Fisherman Jeso", "ร้านเบ็ดและเหยื่อ",
+			"Basic / Rare Fishing Rod · Worm · แลก Golden Fish เป็นเบ็ดที่ดีกว่า · ต้องจบเควส Permit Stamp" },
+		{ "Baitmonger Nori", "ร้านเหยื่อชั้นดี",
+			"Fish Head · Golden Tentacle · ต้องจบเควส Restock the Infirmary" },
+		{ "Angler Runo", "เควสส่งปลา", "ส่งปลาเต็มลัง (Lv 45) · ส่งปลาหายาก Clown / Zebra Fish (Lv 60)" },
+		{ "Legendary Fisherman Isao", "เบ็ดตำนาน",
+			"ส่ง Crustadon 2 + Krathulon 2 แล้วบอกที่จม Legendary Fishing Rod · อยู่เฉพาะกลางคืน" },
+	},
+	schem = {
+		{ "Weaver Hatsu", "แบบพิมพ์ Nightfall Cape", "เอา Lost Cape ไปให้ วาดแบบพิมพ์ให้" },
+		{ "Stonemason Tobei", "แบบพิมพ์ Nightfall Gauntlet",
+			"คุยให้รูปปั้นตื่น ตีรูปปั้น 3 ตัว (ดาบ / สกิล / มือเปล่า) แล้วกลับมารับแบบ" },
+		{ "Tailor Omi", "แบบพิมพ์ Firstlight Haori", "เอา Lost Outfit ไปให้ วาดแบบพิมพ์ให้" },
+		{ "Duelist Hibiki", "แบบพิมพ์ Firstlight Sound Cleavers", "ท้าดวลตัวต่อตัว ชนะแล้วได้แบบ" },
+		{ "Lamplighter Isamu", "แบบพิมพ์ Firstlight Lantern",
+			"เกมจำลำดับแผ่นไฟ กระโดดตามให้ครบ 5 รอบ" },
+		{ "Wagasa Maker Genzo", "แบบพิมพ์ Firstlight Bladed Wagasa",
+			"ถือ Damascus Bladed Wagasa แล้วดันหินขึ้นเขามาหา" },
+		{ "Old Trapper Retsu", "เบาะแสถ้ำ White Terror",
+			"จ่าย 2,500 Wen บอกที่เก็บของเติมตะเกียง (ถามตอนกลางคืน)" },
+	},
+	quest = {
+		{ "Krue", "ปราบโจร", "ฆ่าโจร 3 ตัว · ปราบหัวหน้าโจร (Lv 7)" },
+		{ "Kazu", "เควสเริ่มต้น", "นำบันทึกไปส่ง · ช่วยกำจัดศัตรู" },
+		{ "Noote", "ส่งจดหมาย", "เอาจดหมายไปส่งให้ถึงมือ" },
+		{ "MoldySugar", "ส่งพัสดุ", "ส่งพัสดุให้ Elara (ปลดล็อกร้าน Elara)" },
+		{ "Kona", "ตามหาหน้ากระดาษ", "เก็บหน้ากระดาษที่หายไป" },
+		{ "Lucy", "เติมเสบียงครัว", "หาวัตถุดิบให้ ได้ Cooked Bear Meat (ใช้ในเควส Iceveil)" },
+		{ "Tom", "ไล่หมี", "ไล่ฝูงหมี (Lv 10) · ล้ม Mother Bear (Lv 18)" },
+		{ "Betty", "ตามหาของหาย", "ตามหาของที่ทำหาย" },
+		{ "Liv", "หาเหรียญ · โยนเหรียญพนัน",
+			"หาเหรียญนำโชค (Lv 14) · เก็บเหรียญ 500 อัน (Lv 21) · โยนหัวก้อยเงินทั้งหมด ชนะได้ 1.5 เท่า" },
+		{ "Chaka", "ปราบกลุ่ม Kaiden", "กำจัดลูกน้อง (Lv 26) · ปราบ Kaiden (Lv 34)" },
+		{ "Wagwan", "ปราบกลุ่ม Hoyuzo", "กำจัดองครักษ์ (Lv 40) · ปราบ Hoyuzo (Lv 50)" },
+		{ "Rin", "ขับไล่ศัตรู", "ไล่ศัตรูที่บุกท่าเรือ (Lv 47)" },
+		{ "Shady Individual Rooyi", "ภารกิจฝั่งอสูร", "กำจัดนักล่า Mizunoto (Lv 62)" },
+		{ "Jugg", "เคลียร์ถ้ำ", "เคลียร์ถ้ำ Dreamfall Hollow (Lv 62)" },
+		{ "Estate Worker Niko", "ส่งกล่องเสบียง", "ส่งกล่องเสบียงให้ Shiori แล้วกลับมารายงาน (Lv 70)" },
+		{ "Shiori", "ห้องพยาบาล Butterfly Estate", "เติมยาห้องพยาบาล (Lv 70) · เติมคลังเสบียงด้วยปลา (Lv 75)" },
+		{ "Demon Slayer Goro", "ล่าอสูร Veilfall Cavern", "ลดจำนวนอสูร (Lv 75) · ล่าอสูรตัวใหญ่ (Lv 83)" },
+		{ "Demon Mokuro", "ภารกิจฝั่งอสูร", "ทลายเวรยาม (Lv 75)" },
+		{ "Wounded Slayer Tomoi", "ช่วยนักล่าบาดเจ็บ", "ช่วยปราบศัตรู (Lv 90)" },
+		{ "Demon Delroy", "ภารกิจฝั่งอสูร", "ไล่ผู้บุกรุก (Lv 90)" },
+		{ "Iceveil Guard Shiro", "ประตู Iceveil Settlement",
+			"ส่งเสบียงช่วยผ่านหน้าหนาว = เปิดประตูหมู่บ้าน (Lv 100) · ส่งปลาเข้าคลัง (Lv 105)" },
+		{ "Demon Slayer Mitsu", "ภารกิจนักล่าระดับสูง", "ขับไล่ความหนาว (Lv 105) · ดับไฟ (Lv 115)" },
+		{ "Shrine Messenger Akio", "ผู้ส่งสารศาลเจ้า", "คุ้มกันไป Windy Peak (Lv 105) · ตกปลาน้ำลึก (Lv 125)" },
+	},
+}
+
+-- สถานที่ที่ไม่ใช่ NPC พิกัดเดียวกับที่ Auto-Dungeon / Auto-Final-Selection / Get Nightfall Schematic ใช้
+local Spots = {
+	{ "ประตูหอคอย Ouwigahara", "ดันเจี้ยนไต่ชั้น", "หน้า Hidden Mist · ต้อง Lv 65 และรับเควสของ Blacksmith Togane ก่อน",
+		Vector3.new(-1605.6, 1014.2, 1142.8), Vector3.new(0, 0, -1) },
+	{ "ประตูสอบ Final Selection", "สอบคัดเลือก", "เปิดทุก 2 ชั่วโมงตามเวลาเซิร์ฟ · ต้อง Lv 45 และเป็น Human",
+		Vector3.new(-2625.6, 284, -203.4), Vector3.new(0, 0, 1) },
+	{ "กล่องกุญแจงู (Serpent Box)", "แบบพิมพ์ Nightfall Serpent Katana", "ไขด้วยกุญแจงูที่วางริมน้ำ มีดอกจริงดอกเดียว",
+		Vector3.new(899, 879, 739), Vector3.new(0, 0, -1) },
+}
+
+-- ข้อมูล NPC จากเกม: ตำแหน่ง ทิศที่หัน ไอคอน เงื่อนไข · Spawns[1] เป็น CFrame (บางตัว Vector3)
+local npcDefs = {}
+local okContent = pcall(function()
+	for _, region in ipairs(ReplicatedStorage.Ouwland.Content:GetChildren()) do
+		local npcs = region:FindFirstChild("Npcs")
+		for _, m in ipairs(npcs and npcs:GetDescendants() or {}) do
+			local ok, def = false, nil
+			if m:IsA("ModuleScript") then
+				ok, def = pcall(require, m)
+			end
+			if ok and type(def) == "table" and def.Name then
+				local s = def.Spawns and def.Spawns[1]
+				local pos, look
+				if typeof(s) == "CFrame" then
+					pos, look = s.Position, s.LookVector
+				elseif typeof(s) == "Vector3" then
+					pos = s
+				end
+				npcDefs[def.Name] = { def = def, pos = pos, look = look, region = region.Name }
+			end
+		end
+	end
+end)
+fixIdentity()
+
+-- ป้ายเล็กใต้คำอธิบาย: โซน · เลเวลขั้นต่ำ · เผ่า · กลางคืน อ่านจากเงื่อนไขของเกม (Requirements / NightOnly)
+local function tagsOf(info)
+	local tags = {}
+	if not info then
+		return tags
+	end
+	local def = info.def
+	tags[#tags + 1] = { text = def.SubArea and (info.region .. " › " .. def.SubArea) or info.region }
+	local req = def.Requirements or {}
+	if req.Level then
+		tags[#tags + 1] = { text = "Lv " .. req.Level .. "+", color = Theme.Accent }
+	end
+	if type(req.Race) == "table" then
+		tags[#tags + 1] = { text = table.concat(req.Race, " / "), color = Theme.Accent2 }
+	end
+	if def.NightOnly then
+		tags[#tags + 1] = { text = "กลางคืน", color = Color3.fromRGB(170, 160, 255) }
+	end
+	return tags
+end
+
+local statusLabel
+local function status(text, color)
+	fixIdentity()
+	if statusLabel then
+		statusLabel.Text = text
+		statusLabel.TextColor3 = color or Theme.Muted
+	end
+end
+
+local function stream(pos)
+	local done = false
+	task.spawn(function()
+		pcall(function()
+			LocalPlayer:RequestStreamAroundAsync(pos, 4)
+		end)
+		done = true
+	end)
+	-- บางครั้งไม่คืนเลย รอไม่เกิน 4 วิ (เจอตอนทดสอบกุญแจงู)
+	local untilT = os.clock() + 4
+	while not done and os.clock() < untilT do
+		task.wait(0.1)
+	end
+end
+
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+-- ยิงจากเหนือจุดยืนแค่ 4 stud ไม่ใช่ 25 แบบ groundAt: NPC หลายตัวยืนในบ้าน (Yagane, Meku)
+-- ยิงจากสูงโดนหลังคาแล้วไปยืนบนหลังคา
+local function floorAt(pos)
+	local exclude = { LocalPlayer.Character }
+	local humanoids = workspace:FindFirstChild("Humanoids")
+	if humanoids then
+		exclude[#exclude + 1] = humanoids
+	end
+	rayParams.FilterDescendantsInstances = exclude
+	local hit = workspace:Raycast(pos + Vector3.new(0, 4, 0), Vector3.new(0, -40, 0), rayParams)
+	return hit and hit.Position + Vector3.new(0, 3, 0) or nil
+end
+
+local busy = false
+-- ยืนหน้าเป้า 5 stud หันเข้าหา ตรึงตัวไว้จนพื้นโหลด (ไม่งั้นวาร์ปไกลแล้วตกทะลุก่อนแมพ stream มาถึง)
+local function warpTo(pos, look, name)
+	if busy then
+		return false
+	end
+	if not inMain then
+		status("วาร์ปได้เฉพาะในเกมหลัก · ตอนนี้อยู่" .. (inMenu and " Lobby" or "ในดันเจี้ยน") .. " กด กลับเกมหลัก ก่อน", Theme.Warn)
+		return false
+	end
+	if Runner.active then
+		status("ตัวรัน (เควส / ฟาร์ม / Get) ทำงานอยู่ จะพาตัวกลับ · กดหยุดก่อนแล้ววาร์ปใหม่", Theme.Warn)
+		return false
+	end
+	local _, hrp, hum = selfParts()
+	if not (hrp and hum and hum.Health > 0) then
+		status("ตัวละครยังไม่เกิด / ตายอยู่", Theme.Warn)
+		return false
+	end
+	busy = true
+	status("กำลังไป " .. name .. " …", Theme.Accent)
+	stream(pos)
+	-- NPC ที่เดินไปมา (Ren, Niko) หรือมาเป็นรอบ ใช้ตัวจริงถ้าโหลดมาแล้ว ตำแหน่งตรงกว่าจุดเกิด
+	local live = findLiveNpc(name)
+	if live and live:IsDescendantOf(workspace) then
+		local cf = live:GetPivot()
+		if (cf.Position - pos).Magnitude < 400 then
+			pos, look = cf.Position, cf.LookVector
+		end
+	end
+	look = look and Vector3.new(look.X, 0, look.Z)
+	if not look or look.Magnitude < 0.1 then
+		look = Vector3.new(0, 0, -1)
+	end
+	local spot = pos + look.Unit * 5
+	local goal = CFrame.lookAt(spot + Vector3.new(0, 3, 0), Vector3.new(pos.X, spot.Y + 3, pos.Z))
+	local pin = RunService.Heartbeat:Connect(function()
+		if hrp.Parent then
+			placeAt(hrp, goal, "warp")
+			hrp.AssemblyLinearVelocity = Vector3.zero
+		end
+	end)
+	local untilT = os.clock() + 3
+	repeat
+		local floor = floorAt(spot)
+		if floor then
+			goal = CFrame.lookAt(floor, Vector3.new(pos.X, floor.Y, pos.Z))
+			break
+		end
+		task.wait(0.25)
+	until os.clock() > untilT
+	task.wait(0.4)
+	pin:Disconnect()
+	busy = false
+	return true
+end
+
+-- หน้า -------------------------------------------------------------------------
+
+local page = Pages.warp
+
+local function actionButton(parent, text)
+	local label = new("TextLabel", {
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundTransparency = 1,
+		Text = text,
+		TextColor3 = Theme.Text,
+		TextSize = 14,
+		FontFace = font(Enum.FontWeight.SemiBold),
+	})
+	local button = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -12, 0.5, 0),
+		Size = UDim2.fromOffset(textWidth(text, 14) + 34, 28),
+		BackgroundColor3 = Theme.Raised,
+		AutoButtonColor = false,
+		Text = "",
+		Parent = parent,
+	}, { capsule(), stroke(), label })
+	track(button.MouseEnter:Connect(function()
+		tween(button, { BackgroundColor3 = Theme.On }, FAST)
+		tween(label, { TextColor3 = Theme.Base }, FAST)
+	end))
+	track(button.MouseLeave:Connect(function()
+		tween(button, { BackgroundColor3 = Theme.Raised }, FAST)
+		tween(label, { TextColor3 = Theme.Text }, FAST)
+	end))
+	return button, label
+end
+
+-- การ์ดย้ายเซิร์ฟ: ปุ่มละแถว + บรรทัดสถานะร่วมกับการ์ด NPC
+local function serverRow(order, title, desc, btnText)
+	local frame, _, descLabel = placeRow("switch", title, order, page.sections.server)
+	descLabel.Text = desc
+	descLabel.Size = UDim2.new(1, -150, 0, 15)
+	local button, label = actionButton(frame, btnText)
+	return frame, descLabel, button, label
+end
+
+local lobbyFrame, lobbyDesc, lobbyBtn, lobbyLabel = serverRow(1, "กลับ Lobby",
+	inMenu and "อยู่ Lobby อยู่แล้ว" or "ไปหน้าเมนูหลักของเกม (เลือกช่องตัวละคร / เซิร์ฟ)", "Lobby  ›")
+local mainFrame, mainDesc, mainBtn = serverRow(2, "กลับเกมหลัก",
+	inMain and "อยู่เกมหลักอยู่แล้ว · ออกจากดันเจี้ยน / Lobby แล้วกดปุ่มนี้กลับเซิร์ฟเดิม"
+		or "กลับเซิร์ฟที่เล่นอยู่ก่อนหน้า (VIP ก็กลับห้องเดิม) · ไม่ได้ก็เข้าเซิร์ฟใหม่ของ Ouwland",
+	"กลับ  ›")
+if inMenu then
+	lobbyFrame.BackgroundTransparency = 0.4
+end
+if inMain then
+	mainFrame.BackgroundTransparency = 0.4
+end
+
+-- กดสองครั้งกันเผลอ (เกมเองก็ถามยืนยันก่อน Back To Main Menu)
+local lobbyArmedUntil = 0
+track(lobbyBtn.MouseButton1Click:Connect(function()
+	if inMenu then
+		status("อยู่ Lobby อยู่แล้ว", Theme.Muted)
+		return
+	end
+	if os.clock() > lobbyArmedUntil then
+		lobbyArmedUntil = os.clock() + 3
+		lobbyLabel.Text = "ยืนยัน?"
+		lobbyDesc.Text = "กดอีกครั้งภายใน 3 วิ เพื่อไป Lobby"
+		lobbyDesc.TextColor3 = Theme.Warn
+		task.delay(3, function()
+			if os.clock() >= lobbyArmedUntil then
+				lobbyLabel.Text = "Lobby  ›"
+				lobbyDesc.Text = "ไปหน้าเมนูหลักของเกม (เลือกช่องตัวละคร / เซิร์ฟ)"
+				lobbyDesc.TextColor3 = Theme.Dim
+			end
+		end)
+		return
+	end
+	lobbyArmedUntil = 0
+	lobbyLabel.Text = "Lobby  ›"
+	task.spawn(function()
+		if inMain then
+			rememberOrigin()
+		end
+		status("กำลังย้ายไป Lobby …", Theme.Accent)
+		local ok, why = requestTeleport({ placeId = Places.Menu })
+		status(ok and "เซิร์ฟรับคำขอแล้ว กำลังย้ายไป Lobby" or ("ย้ายไม่สำเร็จ: " .. tostring(why or "เซิร์ฟไม่ตอบ")),
+			ok and Theme.Good or Theme.Danger)
+	end)
+end))
+
+local function goMain()
+	-- ออกจากหอคอยแล้วห้าม Auto-Dungeon พากลับเข้าอีก (ทั้งสวิตช์และงานที่คิว Craft สั่งไว้)
+	for _, entry in ipairs(toggles) do
+		if entry.key == "Auto-Dungeon" and entry.isOn() then
+			pcall(entry.set, false)
+		end
+	end
+	local data = Game.persist.data
+	data.ouwiGo = nil
+	local o = data.origin
+	if o and o.jobId and o.placeId == Places.Main then
+		-- หลุดไป public ระหว่างทาง Auto-Dungeon ย้ายกลับห้องเดิมให้อีกรอบ (ดูส่วน returning)
+		data.returning = true
+		Game.save()
+		status("กำลังกลับเซิร์ฟเดิม …", Theme.Accent)
+		if requestTeleport({ placeId = o.placeId, jobId = o.jobId, allowFallback = false }) then
+			return true
+		end
+		if (o.ownerId or 0) > 0 and requestTeleport({ placeId = o.placeId, privateOwner = o.ownerId }) then
+			return true
+		end
+		data.returning = nil
+	end
+	Game.save()
+	status("เซิร์ฟเดิมปิดไปแล้ว / ไม่มีบันทึก · เข้าเซิร์ฟใหม่ของ Ouwland", Theme.Accent)
+	local ok, why = requestTeleport({ placeId = Places.Main })
+	if not ok then
+		status("ย้ายไม่สำเร็จ: " .. tostring(why or "เซิร์ฟไม่ตอบ"), Theme.Danger)
+	end
+	return ok
+end
+
+track(mainBtn.MouseButton1Click:Connect(function()
+	if inMain then
+		status("อยู่เกมหลักอยู่แล้ว", Theme.Muted)
+		return
+	end
+	task.spawn(goMain)
+end))
+
+-- ค้นหา + สถานะ ------------------------------------------------------------------
+
+local findBox = page.sections.find
+local search = new("TextBox", {
+	Size = UDim2.new(1, 0, 0, 30),
+	BackgroundColor3 = Theme.Raised,
+	BorderSizePixel = 0,
+	Text = "",
+	PlaceholderText = "ค้นหาชื่อ NPC หรือหน้าที่ เช่น ตีดาบ, ยา, เบ็ด, Water",
+	PlaceholderColor3 = Theme.Dim,
+	TextColor3 = Theme.Text,
+	TextSize = 14,
+	FontFace = font(Enum.FontWeight.Regular),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	ClearTextOnFocus = false,
+	LayoutOrder = 1,
+	Parent = findBox,
+}, { capsule(), new("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }) })
+
+statusLabel = new("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 16),
+	BackgroundTransparency = 1,
+	Text = "",
+	TextColor3 = Theme.Muted,
+	TextSize = 14,
+	FontFace = font(Enum.FontWeight.Medium),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+	LayoutOrder = 2,
+	Parent = findBox,
+})
+if not inMain then
+	status(inMenu and "อยู่ Lobby · วาร์ปหา NPC ได้หลังกลับเกมหลัก" or "อยู่ในดันเจี้ยน · วาร์ปหา NPC ได้หลังกลับเกมหลัก", Theme.Warn)
+elseif not okContent then
+	status("อ่านข้อมูล NPC ของเกมไม่ได้", Theme.Danger)
+end
+
+-- การ์ดหนึ่งใบต่อหนึ่ง NPC: ไอคอนของเกม · ชื่อ · หน้าที่ (สีทอง) · รายละเอียด · ป้ายเงื่อนไข
+local cards = {}
+local function card(group, order, name, role, detail, tags, icon, go)
+	local frame = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Theme.Row,
+		BorderSizePixel = 0,
+		LayoutOrder = order,
+		Parent = page.sections[group],
+	}, {
+		corner(10),
+		stroke(),
+		new("UIPadding", { PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10) }),
+	})
+
+	local iconBox = new("Frame", {
+		Position = UDim2.fromOffset(12, 0),
+		Size = UDim2.fromOffset(40, 40),
+		BackgroundColor3 = Theme.Raised,
+		Parent = frame,
+	}, { corner(8) })
+	if icon and icon ~= "" then
+		new("ImageLabel", {
+			Size = UDim2.new(1, 0, 1, 0),
+			BackgroundTransparency = 1,
+			Image = icon,
+			ScaleType = Enum.ScaleType.Crop,
+			Parent = iconBox,
+		}, { corner(8) })
+	else
+		new("TextLabel", {
+			Size = UDim2.new(1, 0, 1, 0),
+			BackgroundTransparency = 1,
+			Text = name:sub(1, 1),
+			TextColor3 = Theme.Muted,
+			TextSize = 20,
+			FontFace = font(Enum.FontWeight.Bold),
+			Parent = iconBox,
+		})
+	end
+
+	local col = new("Frame", {
+		Position = UDim2.fromOffset(64, 0),
+		Size = UDim2.new(1, -160, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		Parent = frame,
+	}, { new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }) })
+
+	local function line(text, size, color, weight, order2)
+		return new("TextLabel", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			Text = text,
+			TextColor3 = color,
+			TextSize = size,
+			FontFace = font(weight),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextWrapped = true,
+			LayoutOrder = order2,
+			Parent = col,
+		})
+	end
+	line(name, 16, Theme.Text, Enum.FontWeight.SemiBold, 1)
+	line(role, 14, Theme.Accent, Enum.FontWeight.SemiBold, 2)
+	line(detail, 14, Theme.Muted, Enum.FontWeight.Regular, 3)
+
+	if #tags > 0 then
+		local row = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 20),
+			BackgroundTransparency = 1,
+			LayoutOrder = 4,
+			Parent = col,
+		}, { new("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			VerticalAlignment = Enum.VerticalAlignment.Bottom,
+			Padding = UDim.new(0, 5),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}) })
+		for i, t in ipairs(tags) do
+			new("TextLabel", {
+				Size = UDim2.fromOffset(textWidth(t.text, 12) + 14, 18),
+				BackgroundColor3 = Theme.Raised,
+				Text = t.text,
+				TextColor3 = t.color or Theme.Muted,
+				TextSize = 12,
+				FontFace = font(Enum.FontWeight.Medium),
+				LayoutOrder = i,
+				Parent = row,
+			}, { capsule() })
+		end
+	end
+
+	local button, label = actionButton(frame, "วาร์ป  ›")
+	button.AnchorPoint = Vector2.new(1, 0)
+	button.Position = UDim2.new(1, -12, 0, 6)
+	if not go then
+		button.BackgroundTransparency = 0.6
+		label.TextColor3 = Theme.Dim
+	end
+	track(button.MouseButton1Click:Connect(function()
+		if not go then
+			status("ไม่รู้ตำแหน่ง " .. name .. " (เกมไม่ได้ระบุจุดเกิด)", Theme.Warn)
+			return
+		end
+		label.Text = "…"
+		task.spawn(function()
+			local ok = go()
+			fixIdentity()
+			label.Text = "วาร์ป  ›"
+			if ok then
+				status("ถึง " .. name .. " แล้ว", Theme.Good)
+			end
+		end)
+	end))
+
+	local tagText = {}
+	for _, t in ipairs(tags) do
+		tagText[#tagText + 1] = t.text
+	end
+	cards[#cards + 1] = {
+		frame = frame,
+		group = group,
+		text = (name .. " " .. role .. " " .. detail .. " " .. table.concat(tagText, " ")):lower(),
+	}
+end
+
+for group, list in pairs(Catalog) do
+	for i, entry in ipairs(list) do
+		local name, role, detail = entry[1], entry[2], entry[3]
+		local info = npcDefs[name]
+		local go = info and info.pos and function()
+			return warpTo(info.pos, info.look, name)
+		end or nil
+		card(group, i, name, role, detail, tagsOf(info), info and info.def.Icon, go)
+	end
+end
+for i, s in ipairs(Spots) do
+	card("place", i, s[1], s[2], s[3], {}, nil, function()
+		return warpTo(s[4], s[5], s[1])
+	end)
+end
+
+-- ค้นหาจากชื่อ หน้าที่ รายละเอียด และป้าย หัวข้อกลุ่มที่ไม่เหลือการ์ดซ่อนทั้งหัวข้อ
+track(search:GetPropertyChangedSignal("Text"):Connect(function()
+	local q = search.Text:lower():gsub("^%s+", ""):gsub("%s+$", "")
+	local shown = {}
+	for _, c in ipairs(cards) do
+		local match = q == "" or c.text:find(q, 1, true) ~= nil
+		c.frame.Visible = match
+		if match then
+			shown[c.group] = true
+		end
+	end
+	for group in pairs(Catalog) do
+		page.sections[group].Visible = shown[group] == true
+	end
+	page.sections.place.Visible = shown.place == true
+end))
+end)()
+
+Game.followTeleport()
 
 -- เปิดสวิตช์/ตัวเลือกที่ผู้เล่นตั้งไว้คืน แล้วทำงานที่ค้างต่อ รอแผงสร้างเสร็จและตัวละครพร้อมก่อน
 -- ถ้ามีงานค้าง (resume) ไม่เปิดตัวรันที่จองตัวละครทั้งตัว ไม่งั้นแย่งกันแล้วงานค้างไม่ได้ทำต่อ
