@@ -6888,6 +6888,27 @@ local Combat = {
 	-- ช้าเกินไป ท่าโจรเร็วสุดดาเมจเข้าหลังเริ่มท่า 0.14 วิ ตอนนี้ใช้วาร์ปแทน (ดู Dodge)
 }
 
+-- สูตรต่อสู้ที่ปรับได้ (ผู้ใช้สั่ง 25 ก.ย. 2026 วัดให้เป๊ะแล้วหาสูตรที่จบบอสไวสุด):
+--   pick = "combo" เลือกท่าตามจังหวะ (Combo.pick) / "slot" กดตามลำดับช่อง
+--   hold = วิที่ค้างง้างท่าก่อนปล่อย · gap = วิที่เว้นหลังออกท่า · dip = มุดหลบท่าบอสเมื่อเลือดเราต่ำกว่าสัดส่วนนี้
+-- config.tune = { mode = "experiment", set = { สูตร... } } สลับสูตรทุกไฟต์บอสของ Money Farm (Game.tuneNext)
+-- แต่ละไฟต์จดลง fightlog ไว้เทียบ · ไม่มี config.tune = ใช้ Game.tune ค่าเริ่มต้นข้างล่าง
+Game.tune = { name = "combo", pick = "combo", hold = 0.15, gap = 0.6, dip = 0.35 }
+Game.tuneRound = 0
+function Game.tuneNext()
+	local cfg = Game.persist.data.tune
+	if type(cfg) ~= "table" then
+		return Game.tune
+	end
+	if cfg.mode == "experiment" and type(cfg.set) == "table" and #cfg.set > 0 then
+		Game.tuneRound += 1
+		Game.tune = cfg.set[(Game.tuneRound - 1) % #cfg.set + 1]
+	elseif type(cfg.fixed) == "table" then
+		Game.tune = cfg.fixed
+	end
+	return Game.tune
+end
+
 local VIM = game:GetService("VirtualInputManager")
 -- ช่องอาวุธที่ติ๊กไว้ในแถว Auto-Equip-Weapon ติ๊กได้หลายช่อง Kill Aura จะสลับไปเรื่อย ๆ
 local weaponSlots = { [1] = true }
@@ -12162,7 +12183,7 @@ local function parryNow()
 	if killAura.underConn then
 		-- มุดทุกท่าแล้วตัวอยู่ลึก 22 เกือบตลอด หมัดเข้าแค่ 24 ครั้งต่อนาทีจาก ~70 มุดเฉพาะตอนเลือดใกล้หมด (ดู DipBelowHp)
 		local _, _, myHum = selfParts()
-		if not myHum or myHum.Health > myHum.MaxHealth * Combat.DipBelowHp then
+		if not myHum or myHum.Health > myHum.MaxHealth * (Game.tune.dip or Combat.DipBelowHp) then
 			return
 		end
 		if os.clock() >= (killAura.dipUntil or 0) then
@@ -13198,11 +13219,22 @@ local function skillLoop()
 			local keys = SkillsProvider.get_current_keys() or {}
 			local root = mob:FindFirstChild("HumanoidRootPart")
 			-- ทีละท่า: เลือกท่าที่เหมาะกับจังหวะนี้ที่สุดจากท่าที่พร้อม (Combo.pick) แทนการกดตามลำดับช่อง
-			local slot = root and Combo.pick(keys, mob, function(i, skill)
+			local function usable(i, skill)
 				return autoSkill.picked[i - 1] and skill.Name ~= "Blocking" and not onCooldown(skill)
 					and os.clock() >= (lockedUntil[skill.Name] or 0)
 					and (root.Position - hrp.Position).Magnitude <= skillReach(skill.Name)
-			end)
+			end
+			local slot
+			if root and Game.tune.pick == "slot" then
+				for i = 2, #keys do
+					if not slot and usable(i, keys[i]) then
+						slot = i
+					end
+				end
+				Combo.why = nil
+			elseif root then
+				slot = Combo.pick(keys, mob, usable)
+			end
 			if slot then
 				local skill = keys[slot]
 				if autoSkill.on and mob.Parent then
@@ -13212,16 +13244,17 @@ local function skillLoop()
 						-- สองค่านี้คือสิ่งที่ปุ่มบน HUD ตั้งหลังกดติด ลูปของเกมใช้ปล่อยท่าเองถ้าค้างเกิน Max_Hold
 						SkillController.CurrentMax = skill.Max_Hold
 						SkillController.HeldSkill = skill.Name
-						task.wait(SkillCast.HoldTime)
+						task.wait(Game.tune.hold or SkillCast.HoldTime)
 						aim.pos = root.Position
 						asGame(SkillController.StopHold, skill.Name)
 						SkillController.HeldSkill, SkillController.CurrentMax = nil, nil
 						autoSkill.casts += 1
+						Game.skillCasts = (Game.skillCasts or 0) + 1
 						Combo.cast(skill.Name, mob)
 						lastCast = string.format("%s [%s] %s ใส่ %s", skill.Name, keyOf(slot), Combo.why or "", mob.Name)
 						show(lastCast .. " · ใช้ไป " .. autoSkill.casts .. " ครั้ง")
 						used = true
-						task.wait(SkillCast.Gap)
+						task.wait(Game.tune.gap or SkillCast.Gap)
 					elseif not onCooldown(skill) then
 						lockedUntil[skill.Name] = os.clock() + 5
 					end
@@ -14614,6 +14647,16 @@ function Money.stats()
 	return Money.statCache
 end
 
+-- ไฟต์ละบรรทัด (JSON) ไว้เทียบสูตรต่อสู้ (Game.tune) · ดาเมจต่อวิ = hp / secs ไม่รวมเวลาวาร์ป/รอเกิด
+Money.FightLog = "PathSlayer/fightlog_" .. LocalPlayer.UserId .. ".jsonl"
+function Money.logFight(row)
+	row.at = os.time()
+	local line = game:GetService("HttpService"):JSONEncode(row) .. "\n"
+	-- อ่านแล้วเขียนทั้งไฟล์ ไม่ใช้ appendfile: ไฟล์ยังไม่มีแล้ว append พังเงียบ (ครอบ pcall) ไฟต์แรกหาย
+	local ok, old = pcall(readfile, Money.FightLog)
+	pcall(writefile, Money.FightLog, (ok and old or "") .. line)
+end
+
 function Money.record(name, secs, killed, deaths)
 	local s = Money.stats()[name] or { fights = 0, kills = 0, deaths = 0, secs = 0 }
 	s.fights += 1
@@ -14660,6 +14703,8 @@ function Money.fight(t, alive, say)
 	-- (Datai 2807 -> 2989) ดูต่ำสุดแล้วนึกว่าตีไม่เข้า ทิ้งบอสทั้งที่ตีเข้าปกติ
 	local lastHp, lastDrop = math.huge, os.clock()
 	local onAdd
+	local tune = Game.tuneNext()
+	local firstHit, startHp, castsAt, addSecs = nil, nil, Game.skillCasts or 0, 0
 	while alive() do
 		local mob, bossRoot
 		for _, m in ipairs(workspace.Humanoids:GetDescendants()) do
@@ -14673,7 +14718,15 @@ function Money.fight(t, alive, say)
 		-- หายไปตอนเลือดยังเยอะ = ไม่ได้ตาย (Domae บอสกลางคืนหายตอนสว่างที่ 2843/3000 เคยถูกนับว่าฆ่าได้ใน 5 วิ
 		-- ระบบจำผลเลยคิดว่าตัวนี้คุ้มสุด) เช็กทุก 0.5 วิ บอสตีเหลือ 25% แล้วหายถือว่าตาย
 		if not mob then
-			return lastHp < t.hp * 0.25 and "killed" or "gone"
+			local killed = lastHp < t.hp * 0.25
+			if killed and firstHit then
+				Money.logFight({
+					boss = t.name, hp = startHp, secs = os.clock() - firstHit, adds = addSecs,
+					deaths = farm.deaths - deathsAt, casts = (Game.skillCasts or 0) - castsAt,
+					tune = tune.name,
+				})
+			end
+			return killed and "killed" or "gone"
 		end
 		-- ลูกน้องที่บอสเรียกออกมา (Yeti: Small Yeti) ต้องตายหมดก่อนบอสถึงจะโดนดาเมจ (ผู้ใช้บอก 25 ก.ย. 2026
 		-- log เดียวกัน: Yeti เลือดค้าง 946/2790 เกิน 40 วิ ถูกทิ้งว่าตีไม่เข้า) ตีลูกน้องก่อน ช่วงนั้นไม่นับว่าค้าง
@@ -14686,12 +14739,19 @@ function Money.fight(t, alive, say)
 			lastDrop = os.clock()
 			say(string.format("ตีลูกน้อง %s ก่อน · %s HP %d/%d", add.Name, t.name, math.floor(mob.Health), math.floor(mob.MaxHealth)))
 			task.wait(0.5)
+			addSecs += 0.5
 			continue
 		elseif onAdd then
 			onAdd = nil
 			Runner.attackMob(t.name)
 		end
 		if mob.Health < lastHp - 1 then
+			-- นับเวลาไฟต์จากดาเมจแรก ไม่รวมวาร์ป/รอ stream ให้เทียบสูตรกันตรง ๆ · บอสที่เลือดไม่เต็มตอนเริ่ม
+			-- (ตีค้างจากรอบก่อน) เวลาสั้นกว่าจริง ตอนวิเคราะห์หารด้วยเลือดที่ตีไปจริง (startHp)
+			if not firstHit then
+				firstHit = os.clock()
+				startHp = lastHp < math.huge and lastHp or mob.MaxHealth
+			end
 			lastDrop = os.clock()
 		elseif os.clock() - lastDrop > Money.StuckAfter then
 			return "stuck"
