@@ -13737,14 +13737,32 @@ local function forceLoop()
 		end
 		return string.format("ตีโดน %d ตัว · รอเลือดถึงเกณฑ์ · ฆ่าไป %d ตัว", owned, insta.kills)
 	end
+	-- ฆ่าไม่ติด: เราตั้ง Health 0 ตอนการคุมฟิสิกส์หลุดพอดี เซิร์ฟไม่ตาม ในเครื่องเราม็อบเลือด 0 แต่ state ยัง Running
+	-- (เซิร์ฟคุม state) ทุกลูปที่กรอง Health > 0 เลยมองข้ามตัวนี้ถาวร เจอ 26 ก.ย. หอคอยชั้น 16 ค้าง "ม็อบเหลือ 1"
+	-- ข้าง Mizunoe Demon Slayer เลือด 0 ไม่ยอมหาย · ผ่านไป ForcedGrace แล้วยังอยู่ คืนเลือดเดิมในเครื่องให้ตีต่อได้
+	-- ตัวที่เราไม่ได้ฆ่าเอง (โหลดสคริปต์ใหม่ทับ) ไม่รู้เลือดเดิม คืนเต็มหลอด ตีโดนเซิร์ฟส่งค่าจริงมาทับเอง
+	local ForcedGrace = 1.5
+	local forced, zeroSince = {}, {}
 	while insta.on and insta.mode == 2 do
 		keepIdentity()
 		local _, hrp = selfParts()
 		local folder = workspace:FindFirstChild("Humanoids")
 		local near, owned, killed, nearest, nearestD = 0, 0, false, "-", nil
+		for m, at in pairs(zeroSince) do
+			local hum = m.Parent and m:FindFirstChildOfClass("Humanoid")
+			if not hum or hum.Health > 0 or hum:GetState() == Enum.HumanoidStateType.Dead then
+				zeroSince[m], forced[m] = nil, nil
+			elseif os.clock() - at > ForcedGrace then
+				hum.Health = forced[m] or hum.MaxHealth
+				zeroSince[m], forced[m] = nil, nil
+			end
+		end
 		for _, m in ipairs(hrp and folder and folder:GetDescendants() or {}) do
 			local hum = m:IsA("Model") and m:GetAttribute("IsMob") and not Combat.NeverTarget[m.Name]
 				and m:FindFirstChildOfClass("Humanoid")
+			if hum and hum.Health <= 0 and not zeroSince[m] and hum:GetState() ~= Enum.HumanoidStateType.Dead then
+				zeroSince[m] = os.clock()
+			end
 			local root = hum and m:FindFirstChild("HumanoidRootPart")
 			local d = root and (root.Position - hrp.Position).Magnitude
 			local inRange = root and hum.Health > 0 and hum.MaxHealth > 0 and d <= InstaKill.Range
@@ -13768,10 +13786,15 @@ local function forceLoop()
 				else
 					pct = insta.mobPct
 				end
+				-- หอคอยแบบตีแล้วหนี (Runner.instaAnyHp): ตีโดนได้คุมฟิสิกส์เมื่อไรฆ่าทันทีไม่ดูเลือด ไม่ต้องอยู่ตีต่อให้โดนรุม
+				if Runner.instaAnyHp then
+					pct = 100
+				end
 				local hpPct = hum.Health / hum.MaxHealth * 100
 				if pct and hpPct <= pct then
 					-- บอก Webhook ก่อนว่าตัวนี้ไม่นับเป็นการฆ่า ไม่งั้นสรุปขึ้นว่าฆ่าได้ทั้งที่ไม่ได้รางวัล
 					Runner.hook("forced", m)
+					forced[m] = hum.Health
 					hum:ChangeState(Enum.HumanoidStateType.Dead)
 					hum.Health = 0
 					insta.kills += 1
@@ -17149,6 +17172,18 @@ local function pickCards()
 			best, bestValue = c, v
 		end
 	end
+	-- มี Fortune ในมือเลือก Fortune เสมอ ใบที่แต้มสูงสุด (ผู้ใช้สั่ง 26 ก.ย. 2026) ไม่เทียบกับตัวคูณ/หัวใจ
+	-- ตีแล้วหนีฆ่าเร็วได้แต้มฆ่าน้อยลง แต้มหลักของรอบมาจากการ์ด ตัวคูณที่ตีค่าจากแต้มฆ่าเลยเชื่อถือน้อยลงด้วย
+	local fortune, fortunePts
+	for _, c in ipairs(cards) do
+		local pts = tonumber(c:GetAttribute("Points")) or 0
+		if c:GetAttribute("Type") == "Fortune" and (not fortunePts or pts > fortunePts) then
+			fortune, fortunePts = c, pts
+		end
+	end
+	if fortune then
+		best, bestValue = fortune, math.max(fortunePts, Cards.RerollBelow)
+	end
 	if trace then
 		trace[#trace + 1] = string.format("ชั้น %d เหลือ~%.0f ฐาน %.0f x%.2f/%.2f หัวใจ %d · %s", floor, s.left, s.base,
 			run, nextMult, s.hearts, table.concat(seen, " | "))
@@ -17279,31 +17314,189 @@ local function beginRunLog()
 	Ouwi.spent = Ouwi.spent or {}
 end
 
--- ใต้ดินแบบเดียวกับ "ตีจากใต้ดิน": นอนหงายใต้ม็อบ ม็อบตีลงมาไม่ถึง (ผู้ใช้เจอยืนสู้บนพื้นในหอคอยแล้วโดนตี)
-local function holdUnder(root)
-	if killAura and killAura.pinUnder then
-		killAura.pinUnder(root)
-	end
-end
-
 local function releaseUnder()
 	if killAura and killAura.underConn then
 		killAura.releaseUnder()
 	end
 end
 
+-- ตีแล้วหนี (ผู้ใช้สั่ง 26 ก.ย. 2026): เดิมนอนใต้ม็อบตัวใกล้สุดค้างทั้งชั้น ม็อบที่เหลือเดินมารุมตรงนั้น
+-- หัวใจที่เสียในรอบก่อน ๆ อยู่ชั้น 58-77 ข้างบอส (Lancer Captain, Fujiko, Yeti Demon, Saneri, Domae, Shinora)
+-- ตอนนี้: ปักตัวที่จุดปลอดภัยใต้ดินห่างม็อบทุกตัว → วาร์ปไปใต้เป้าทีละตัว → ตีโดนเซิร์ฟยกการคุมฟิสิกส์ให้
+-- → Insta Kill ฆ่าทันทีไม่ดูเลือด (Runner.instaAnyHp) → ตัวถัดไป · ช่วงพักหมัด 1.65 วิหลังหมัด 5 กลับไปรอที่จุดปลอดภัย
+-- ฆ่าเร็วแบบนี้แต้มฆ่าน้อยลง (เกมจ่ายตามสัดส่วนเลือดที่ตีเข้า) ผู้ใช้เลือกความปลอดภัย แต้มหลักมาจากการ์ด Fortune
+local HitRun = {
+	-- อยู่ใต้เป้าได้นานสุดเท่านี้ต่อเที่ยว ยังไม่ตายก็กลับจุดปลอดภัยก่อน
+	-- วัด 26 ก.ย. ชั้น 16-20: ส่วนใหญ่ตายตอนไปถึง 0.06-0.19 วิ (เล่นคนเดียว ม็อบถูกยกการคุมฟิสิกส์ให้เราอยู่แล้ว
+	-- ไม่ต้องรอหมัด) ตัวที่ต้องตีจริงหมัดเข้าที่ ~1.1-1.3 วิหลังไปถึง หน้าต่าง 1.2 ตัดก่อนหมัดเข้าพอดี
+	Window = 1.6,
+	-- ค้างใต้เป้าเท่านี้ก่อนปล่อยหมัดแรก วาร์ปมาไกล ~90 stud: Settle 0.3 ยิง 3 หมัดใส่ Nezura ไม่เข้าเลยสามเที่ยว
+	-- (Aura.BlinkBefore 0.3 วัดจากระยะ 30 stud) · 0.6 หมัดแรกออก 0.65 ดาเมจเข้า 1.26
+	Settle = 0.6,
+	-- จุดปลอดภัยห่างม็อบที่ใกล้สุดอย่างน้อยเท่านี้ ม็อบเดินเข้ามาใกล้กว่านี้ย้ายจุดใหม่
+	SafeGap = 40,
+	-- วงรอบจุดกลางม็อบที่ใช้หาจุดปลอดภัย (ม็อบหอคอยหายเมื่อไม่มีผู้เล่นใกล้เกิน 250 อยู่ในนั้นเผื่อไว้)
+	SafeRadius = 90,
+	log = {},
+}
+-- ปรับค่าสด ๆ ตอนทดสอบในหอคอยโดยไม่ต้องโหลดสคริปต์ใหม่กลางรอบ
+_G.PathSlayerHitRun = HitRun
+
+local function enemiesAlive()
+	local list = {}
+	for _, m in ipairs(workspace.Humanoids:GetDescendants()) do
+		local h = m:IsA("Model") and m:GetAttribute("IsMob") and m:FindFirstChildOfClass("Humanoid")
+		local root = h and m:FindFirstChild("HumanoidRootPart")
+		if root and h.Health > 0 and root.Position.Y > Combat.WorldFloorY then
+			list[#list + 1] = root
+		end
+	end
+	return list
+end
+
+-- จุดบนวงรอบจุดกลางม็อบที่ห่างม็อบตัวใกล้สุดมากที่สุด ใต้พื้นลึกเท่านอนใต้ม็อบ
+function HitRun.safeSpot(roots)
+	if #roots == 0 then
+		return nil
+	end
+	local sum, low = Vector3.zero, math.huge
+	for _, r in ipairs(roots) do
+		sum += r.Position
+		low = math.min(low, r.Position.Y)
+	end
+	local center = sum / #roots
+	local best, bestGap
+	for i = 0, 11 do
+		local a = i * math.pi / 6
+		local p = Vector3.new(center.X + math.cos(a) * HitRun.SafeRadius, low - Combat.UnderDepth,
+			center.Z + math.sin(a) * HitRun.SafeRadius)
+		local gap = math.huge
+		for _, r in ipairs(roots) do
+			gap = math.min(gap, (r.Position - p).Magnitude)
+		end
+		if not bestGap or gap > bestGap then
+			best, bestGap = p, gap
+		end
+	end
+	return best
+end
+
+-- ไปจุดปลอดภัย: ทิ้งเป้า (pinUnder ลอยค้างที่ hoverAt) ห้ามหมัดออกระหว่างนั้น
+-- Kill Aura ตอนนอนใต้ดินยิงใส่ม็อบในระยะ 80 แม้ตัวไม่อยู่ใต้มัน = หมัดวืดเสียเลขคอมโบเปล่า ๆ
+function HitRun.goSafe(hrp, roots)
+	killAura.underRoot = nil
+	killAura.holdM1Until = math.huge
+	local near = math.huge
+	for _, r in ipairs(roots) do
+		near = math.min(near, (r.Position - hrp.Position).Magnitude)
+	end
+	if near < HitRun.SafeGap or not HitRun.safe then
+		HitRun.safe = HitRun.safeSpot(roots) or HitRun.safe
+	end
+	if HitRun.safe and (hrp.Position - HitRun.safe).Magnitude > 3 then
+		hrp.CFrame = CFrame.new(HitRun.safe) * killAura.LayFaceUp
+		killAura.hoverAt = hrp.CFrame
+	end
+end
+
+function HitRun.note(line)
+	local log = HitRun.log
+	log[#log + 1] = os.date("%X") .. " " .. line
+	if #log > 300 then
+		table.remove(log, 1)
+	end
+	pcall(writefile, "PathSlayer/_hitrun.txt", table.concat(log, "\n"))
+end
+
+function HitRun.loop(alive)
+	Runner.instaAnyHp = true
+	killAura.pinUnder(nil)
+	while alive() do
+		fixIdentity()
+		local _, hrp, hum = selfParts()
+		if not (hrp and hum and hum.Health > 0) or os.clock() <= (Ouwi.pauseUntil or 0)
+			or LocalPlayer:GetAttribute("Spectating") then
+			-- ย้ายแมพ / ตาย / ดูคนอื่น: ไม่ขยับ ให้เซิร์ฟวางตัวเอง จุดปลอดภัยเดิมเป็นของแมพเก่า
+			killAura.underRoot = nil
+			killAura.holdM1Until = math.huge
+			HitRun.safe = nil
+			task.wait(0.2)
+			continue
+		end
+		local roots = enemiesAlive()
+		local target = nearestEnemy(hrp)
+		local root = target and target:FindFirstChild("HumanoidRootPart")
+		local mobHum = target and target:FindFirstChildOfClass("Humanoid")
+		if not (root and mobHum) then
+			HitRun.goSafe(hrp, roots)
+			task.wait(0.1)
+		elseif Chain.waitLeft() > Aura.BlinkBefore then
+			-- พักหลังหมัดปิด 1.65 วิ ยืนใต้ม็อบเฉย ๆ = ให้มันรุม รอที่จุดปลอดภัยแล้วค่อยไปพร้อมหมัดถัดไป
+			HitRun.goSafe(hrp, roots)
+			task.wait(math.min(Chain.waitLeft() - Aura.BlinkBefore, 0.5))
+		else
+			local arrived = os.clock()
+			local hp0 = mobHum.Health
+			killAura.underRoot = root
+			-- เซิร์ฟต้องเห็นตำแหน่งใหม่ก่อนหมัดแรก (Aura.BlinkBefore) ยิงเฟรมเดียวกับที่วาร์ปเข้า 0 หมัด
+			killAura.holdM1Until = arrived + HitRun.Settle
+			local firesAt = killAura.fires
+			local firstFire, firstDrop, ownAt
+			while alive() and root.Parent and mobHum.Health > 0 and os.clock() - arrived < HitRun.Window do
+				task.wait()
+				local t = os.clock() - arrived
+				if not firstFire and killAura.fires > firesAt then
+					firstFire = t
+				end
+				if not firstDrop and mobHum.Health < hp0 then
+					firstDrop = t
+				end
+				if not ownAt and root.Parent and select(2, pcall(isnetworkowner, root)) == true then
+					ownAt = t
+				end
+			end
+			local dead = not root.Parent or mobHum.Health <= 0
+			local _, meNow = selfParts()
+			HitRun.note(string.format("%s %s %.2fs หมัด %d (แรก %s) เลือดลด %s คุม %s · %d→%d/%d · dy %.1f dxz %.1f",
+				target.Name, dead and "ตาย" or "ไม่ตาย", os.clock() - arrived, killAura.fires - firesAt,
+				firstFire and string.format("%.2f", firstFire) or "-", firstDrop and string.format("%.2f", firstDrop) or "-",
+				ownAt and string.format("%.2f", ownAt) or "-", math.floor(hp0), math.floor(math.max(mobHum.Health, 0)),
+				math.floor(mobHum.MaxHealth), meNow and root.Parent and (root.Position.Y - meNow.Position.Y) or 0,
+				meNow and root.Parent and ((root.Position - meNow.Position) * Vector3.new(1, 0, 1)).Magnitude or 0))
+			if not dead then
+				HitRun.goSafe(hrp, enemiesAlive())
+			end
+		end
+	end
+	Runner.instaAnyHp = false
+	killAura.holdM1Until = 0
+	killAura.underRoot = nil
+end
+
 local function climb()
 	local instaOff = combatOn()
 	beginRunLog()
 	local lastMap = workspace:GetAttribute("MinigameMap")
-	local pauseUntil = 0
 	-- จดทุกครั้งที่เสียหัวใจ (ชั้น ระดับ Y ใต้ดินอยู่ไหม ม็อบใกล้สุด) ลง Log ดันเจี้ยน ไว้หาว่าอะไรฆ่า
 	local hearts = LocalPlayer:GetAttribute("Hearts")
 	Ouwi.deaths = Ouwi.deaths or {}
+	-- การเคลื่อนที่/ตีอยู่ใน HitRun.loop (thread แยก จังหวะรายเฟรม) ลูปนี้ดูแลการ์ด ชั้น หัวใจ ป้าย
+	local climbing = true
+	Ouwi.pauseUntil = 0
+	task.spawn(function()
+		local ok, err = pcall(HitRun.loop, function()
+			return climbing and Ouwi.on and workspace:GetAttribute("MinigameState") == "Climbing"
+		end)
+		if not ok then
+			HitRun.note("ลูปพัง: " .. tostring(err))
+			Runner.instaAnyHp = false
+		end
+	end)
 	while Ouwi.on and workspace:GetAttribute("MinigameState") == "Climbing" do
 		fixIdentity()
 		local floor = workspace:GetAttribute("MinigameFloor") or 1
 		if floor > stopAt() then
+			climbing = false
 			releaseUnder()
 			endRun()
 			instaOff()
@@ -17315,7 +17508,7 @@ local function climb()
 		local map = workspace:GetAttribute("MinigameMap")
 		if map ~= lastMap then
 			lastMap = map
-			pauseUntil = os.clock() + 4
+			Ouwi.pauseUntil = os.clock() + 4
 			if killAura then
 				killAura.underRoot = nil
 			end
@@ -17334,15 +17527,6 @@ local function climb()
 		trackFloor(floor)
 		pickCards()
 		autoSkip()
-		local _, hrp = selfParts()
-		if hrp and os.clock() > pauseUntil and not LocalPlayer:GetAttribute("Spectating") then
-			local enemy = nearestEnemy(hrp)
-			if enemy then
-				holdUnder(enemy.HumanoidRootPart)
-			end
-		elseif os.clock() <= pauseUntil and killAura then
-			killAura.underRoot = nil
-		end
 		local runMult, floorMult = heldMult(floor)
 		say(string.format("ชั้น %d/%d · แต้ม %s · x%.2f · หัวใจ %s · ม็อบเหลือ %s · การ์ดล่าสุด %s", floor, stopAt(),
 			comma(LocalPlayer:GetAttribute("RunPoints") or 0), math.min(runMult * floorMult, Cards.MultCap),
@@ -17350,6 +17534,7 @@ local function climb()
 			tostring(workspace:GetAttribute("MinigameEnemiesLeft") or "?"), Ouwi.lastPick or "-"))
 		task.wait(0.3)
 	end
+	climbing = false
 	releaseUnder()
 	instaOff()
 end
