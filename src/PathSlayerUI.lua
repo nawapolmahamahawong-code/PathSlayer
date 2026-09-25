@@ -13139,6 +13139,10 @@ function Combo.profile(name)
 					elseif key:find("LOCK_DUR") or key:find("CUTSCENE_DUR") or key:find("PAUSE_GAMEPLAY") then
 						p.lock = math.max(p.lock, v)
 					end
+					-- จุดชาร์จเต็มของท่ากดค้าง: HOLD_FREEZE_AT / HOLD_STARTUP_DUR / HOLD_DURATION (Flame 0.25-0.4)
+					if (key:find("^HOLD_.*_AT$") or key == "HOLD_STARTUP_DUR" or key == "HOLD_DURATION") and v <= 1.5 then
+						p.holdAt = math.max(p.holdAt or 0, v)
+					end
 				end
 			end
 			break
@@ -13225,7 +13229,8 @@ do
 	local ok, data = pcall(function()
 		return game:GetService("HttpService"):JSONDecode(readfile(Combo.StatsFile))
 	end)
-	if ok and type(data) == "table" then
+	-- สถิติรุ่นก่อน (ไม่มีแบบกด) ใช้ไม่ได้ เริ่มเรียนใหม่
+	if ok and type(data) == "table" and data._v == Combo.StatsVersion then
 		Combo.stats = data
 	end
 end
@@ -13241,6 +13246,7 @@ function Combo.record(name, pose, dealt)
 	if Combo.isHit(name, dealt) then
 		p.hit += 1
 	end
+	Combo.stats._v = Combo.StatsVersion
 	pcall(writefile, Combo.StatsFile, game:GetService("HttpService"):JSONEncode(Combo.stats))
 end
 
@@ -13256,22 +13262,29 @@ end
 --   under = นอนใต้ม็อบ · stand = ยืนหน้าม็อบตรึงไว้ · free = ยืนหน้าม็อบแล้วปล่อยตัวให้ท่าพุ่งเอง
 -- วัด 25 ก.ย. ยืนตรึง: Flame Tiger โดน 5/6 Flame Undulation 4/8 แต่ Blazing Universe 2/5 Unknowing Fire 1/3
 -- สองตัวหลังเป็นท่าพุ่ง (DASH_* / AIM_RANGE ใน Config) ตรึงตำแหน่งทุกเฟรม ท่าพุ่งไม่ออก
-Combo.Poses = { "under", "stand", "free" }
+-- ต่อด้วยแบบกด: held = ค้างถึงจุดชาร์จเต็ม (profile.holdAt) · tap = ปล่อยเร็ว (Game.tune.hold)
+-- ง้างแค่ 0.15 วิ ยังไม่ถึงจุดชาร์จของทุกท่าไฟ เกมอาจออกเวอร์ชันแตะ (Flame Tiger มีค่า TAP_* แยก) ลองทั้งสองแบบ
+-- ท่าที่ไม่มีจุดชาร์จใน Config ลองแค่ tap
+Combo.Poses = { "under:held", "under:tap", "stand:held", "stand:tap", "free:held", "free:tap" }
+Combo.StatsVersion = 2
 function Combo.poseFor(name)
 	local s = Combo.stats[name] or {}
-	local under = s.under
-	if under and under.n >= Combo.TryCasts and under.hit / under.n >= 0.75 then
-		return "under"
-	end
+	local chargeable = (Combo.profile(name).holdAt or 0) > 0
 	local best, bestAvg
 	for _, pose in ipairs(Combo.Poses) do
-		local p = s[pose]
-		if not p or p.n < Combo.TryCasts then
-			return pose
-		end
-		local avg = p.dmg / p.n
-		if not bestAvg or avg > bestAvg then
-			best, bestAvg = pose, avg
+		if chargeable or pose:find(":tap$") then
+			local p = s[pose]
+			if not p or p.n < Combo.TryCasts then
+				return pose
+			end
+			-- แบบที่โดนเกิน 3/4 และดาเมจไม่แพ้ครั้งดีสุดมาก หยุดลองแบบที่เสี่ยงกว่า (ยืน/ปล่อยตัวโดนบอสตี)
+			local avg = p.dmg / p.n
+			if p.hit / p.n >= 0.75 and avg >= (s.best or 0) * 0.6 then
+				return pose
+			end
+			if not bestAvg or avg > bestAvg then
+				best, bestAvg = pose, avg
+			end
 		end
 	end
 	return best
@@ -13380,7 +13393,9 @@ local function skillLoop()
 				local skill = keys[slot]
 				-- กำลังมุดหลบลึก 22 ห้ามออกท่า: วัด 25 ก.ย. ท่าที่ออกตอนมุดพลาดเกือบหมด (ได้แค่หมัด 48-61)
 				if autoSkill.on and mob.Parent and os.clock() >= (killAura.dipUntil or 0) then
-					local pose = Combo.poseFor(skill.Name)
+					local choice = Combo.poseFor(skill.Name)
+					local pose, press = choice:match("^(%a+):(%a+)$")
+					local fullHold = (Combo.profile(skill.Name).holdAt or 0) + 0.05
 					local window = Combo.window(skill.Name)
 					local dmgBefore = Combo.myDamage(mob)
 					killAura.holdM1Until = os.clock() + window
@@ -13401,7 +13416,7 @@ local function skillLoop()
 						-- สองค่านี้คือสิ่งที่ปุ่มบน HUD ตั้งหลังกดติด ลูปของเกมใช้ปล่อยท่าเองถ้าค้างเกิน Max_Hold
 						SkillController.CurrentMax = skill.Max_Hold
 						SkillController.HeldSkill = skill.Name
-						task.wait(Game.tune.hold or SkillCast.HoldTime)
+						task.wait(press == "held" and fullHold or Game.tune.hold or SkillCast.HoldTime)
 						aim.pos = root.Position
 						asGame(SkillController.StopHold, skill.Name)
 						SkillController.HeldSkill, SkillController.CurrentMax = nil, nil
@@ -13412,9 +13427,9 @@ local function skillLoop()
 						-- รอจนท่าจบ (ตัวล็อกอยู่แล้ว กดท่าอื่นไม่ติด) แล้วดูดาเมจของเราบนม็อบว่าท่านี้เข้าเท่าไร
 						task.wait(math.max(window - (os.clock() - castAt), Game.tune.gap or SkillCast.Gap))
 						local dealt = Combo.myDamage(mob) - dmgBefore
-						Combo.record(skill.Name, pose, dealt)
+						Combo.record(skill.Name, choice, dealt)
 						lastCast = string.format("%s [%s] %s%s %s ใส่ %s", skill.Name, keyOf(slot), Combo.why or "",
-							pose == "stand" and " ยืน" or pose == "free" and " ปล่อยตัว" or "",
+							(pose == "stand" and " ยืน" or pose == "free" and " ปล่อยตัว" or "") .. (press == "held" and " ง้าง" or ""),
 							Combo.isHit(skill.Name, dealt) and ("โดน " .. math.floor(dealt)) or "พลาด", mob.Name)
 						show(lastCast .. " · ใช้ไป " .. autoSkill.casts .. " ครั้ง")
 					elseif not onCooldown(skill) then
