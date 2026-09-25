@@ -13294,6 +13294,10 @@ end
 Combo.Poses = { "under:held", "under:tap", "stand:held", "stand:tap", "free:held", "free:tap" }
 Combo.StatsVersion = 2
 function Combo.poseFor(name)
+	-- สูตรที่ปิดการเรียนท่ายืน (Game.tune.pose = "under") ใช้นอนใต้ม็อบ + แตะเสมอ ไว้เทียบกับแบบเรียน
+	if Game.tune.pose == "under" then
+		return "under:tap"
+	end
 	local s = Combo.stats[name] or {}
 	local chargeable = (Combo.profile(name).holdAt or 0) > 0
 	local best, bestAvg
@@ -13433,7 +13437,7 @@ local function skillLoop()
 					local dmgBefore = Combo.myDamage(mob)
 					-- หยุดหมัดเฉพาะตอนยังเรียนท่านี้ (ต้องการดาเมจของท่าล้วน) เรียนครบแล้วปล่อยหมัดตีต่อ
 					-- วัด 25 ก.ย. ช่วงเรียนที่หยุดหมัดทุกท่า ไฟต์ช้าลงเป็น 60-76 วิ จาก 39-56
-					local learning = not Combo.learned(skill.Name)
+					local learning = Game.tune.pose ~= "under" and not Combo.learned(skill.Name)
 					Combo.busyUntil = os.clock() + window + Combo.StandSettle
 					if learning then
 						killAura.holdM1Until = os.clock() + window
@@ -13470,7 +13474,10 @@ local function skillLoop()
 						if not learning then
 							dealt -= (Combo.m1Rate or 0) * (os.clock() - castAt)
 						end
-						Combo.record(skill.Name, choice, dealt)
+						-- สูตรเทียบ (ไม่เรียน) ไม่ลงสถิติ ไม่งั้น under:tap ได้ตัวอย่างปนหมัดเยอะจนตัดสินผิด
+						if Game.tune.pose ~= "under" then
+							Combo.record(skill.Name, choice, dealt)
+						end
 						lastCast = string.format("%s [%s] %s%s %s ใส่ %s", skill.Name, keyOf(slot), Combo.why or "",
 							(pose == "stand" and " ยืน" or pose == "free" and " ปล่อยตัว" or "") .. (press == "held" and " ง้าง" or ""),
 							Combo.isHit(skill.Name, dealt) and ("โดน " .. math.floor(dealt)) or "พลาด", mob.Name)
