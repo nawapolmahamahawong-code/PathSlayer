@@ -14247,6 +14247,9 @@ local Money = {
 	YetiAltar = Vector3.new(-1381.9, -32.8, 502.6),
 	-- ยังไม่ได้วัดว่ากดแล้ว Yeti โผล่ช้าแค่ไหน (มีท่าแตกน้ำแข็ง YetiSummon) ค่าเผื่อ
 	YetiSpawnWait = 15,
+	-- เปิดสวิตช์ใหม่ตอนลูปเก่ายังไม่จบ รอได้นานสุดเท่านี้ · ลูปเก่าเช็ก alive ทุก ~0.5 วิ ยกเว้นตอนขายเหรียญ / เก็บของ
+	-- (Money.sell รอ 1.5 วิ + เก็บของหลายวิ) ค่าเผื่อ
+	OldLoopWait = 20,
 	YetiFindWait = 10,
 	Coins = { "Coin Pouch", "Coin Pile", "Coin Stack", "Coin" },
 }
@@ -14683,6 +14686,7 @@ local function farmLoop(mine)
 	-- identity ของ thread หล่นเป็น 2 กลางทาง (Auto Skill ตั้งให้ thread ลูก แล้วรั่วมาถึงนี่ เหมือนที่ skillLoop เจอ)
 	-- แล้ว screen.Parent (อยู่ใน gethui) พังด้วย "lacking capability Plugin" ตอนรอเควสของ Ginzo วินาทีที่ 33
 	-- คืนค่าทุกครั้งที่เช็ก alive ซึ่งลูปเรียกก่อนแตะอย่างอื่นทุกรอบ
+	farm.running = true
 	local myIdentity = getthreadidentity and getthreadidentity()
 	local function alive()
 		if setthreadidentity and myIdentity then
@@ -14823,6 +14827,7 @@ local function farmLoop(mine)
 	if farm.loop == mine or not farm.on then
 		Runner.active = false
 	end
+	farm.running = false
 	-- ผู้ยืมลูป (Runner.moneyUntil) จบด้วยเงื่อนไข farm.on ยังเป็น true อยู่ ต้องคืน Kill Aura / Parry / Skill ด้วย
 	if not farm.on or farm.untilDone then
 		if not auraWasOn then
@@ -14841,18 +14846,29 @@ moneyRow = switchRow("Auto-Money-Farm", "ปิดอยู่", 4, function(on)
 	farm.loop += 1
 	farm.on = on
 	if on then
-		if Runner.active then
-			moneyRow.setDesc("มีตัวรันอื่นทำงานอยู่ (Auto-Quest?) หยุดก่อนแล้วเปิดใหม่")
-			farm.on = false
-			return
-		end
-		farm.triedGinzo = -math.huge
-		moneyRow.setDesc("กำลังหาบอสที่คุ้มที่สุด…")
 		local mine = farm.loop
 		task.spawn(function()
+			-- ปิดแล้วเปิดใหม่เร็ว ๆ ลูปรอบเก่ายังตีบอส/เก็บของค้างอยู่ ยังถือ Runner.active จนกว่าจะเช็ก alive รอบถัดไป
+			-- เดิมปฏิเสธทันที ผู้ใช้เห็น "มีตัวรันอื่นทำงานอยู่" ทั้งที่ไม่มีตัวอื่น (25 ก.ย. 2026) รอลูปเก่าคืนก่อน
+			local waitBy = os.clock() + Money.OldLoopWait
+			while farm.running and os.clock() < waitBy and farm.loop == mine do
+				moneyRow.setDesc("รอรอบเก่าหยุดก่อน…")
+				task.wait(0.5)
+			end
+			if farm.loop ~= mine then
+				return
+			end
+			if Runner.active then
+				moneyRow.setDesc("มีตัวรันอื่นทำงานอยู่ (Auto-Quest / Crow / Dungeon) หยุดตัวนั้นก่อนแล้วเปิดใหม่")
+				farm.on = false
+				return
+			end
+			farm.triedGinzo = -math.huge
+			moneyRow.setDesc("กำลังหาบอส…")
 			local ok, err = pcall(farmLoop, mine)
 			if not ok then
 				Runner.active = false
+				farm.running = false
 				moneyRow.setDesc("ผิดพลาด: " .. tostring(err):sub(1, 90))
 			end
 		end)
