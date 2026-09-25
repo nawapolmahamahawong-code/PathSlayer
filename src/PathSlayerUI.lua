@@ -7539,6 +7539,23 @@ local function liveMobCount(name)
 	return n
 end
 
+-- ขอ stream แบบจำกัดเวลา: RequestStreamAroundAsync ค้างได้ไม่มีกำหนด (ขอถ้ำ Yeti 25 ก.ย. เกิน 30 วิไม่ตอบ
+-- ทั้งที่ใส่ timeout 3) เรียกตรง ๆ ในลูปฟาร์ม = ฟาร์มหยุดนิ่งทั้งลูป · ยิงใน thread แยกแล้วรอไม่เกิน maxWait
+local function streamAround(pos, maxWait)
+	local done = false
+	task.spawn(function()
+		pcall(function()
+			LocalPlayer:RequestStreamAroundAsync(pos, maxWait)
+		end)
+		done = true
+	end)
+	local by = os.clock() + maxWait
+	while not done and os.clock() < by do
+		task.wait(0.05)
+	end
+	return done
+end
+
 -- ม็อบในโซนอื่นยังไม่ stream เข้ามา pickTarget เลยมองไม่เห็น ต้องไปยืนที่จุดเกิดก่อน
 -- Bandit เกิดใหม่ทุก 30 วิ (SpawnTime) ถ้าฆ่าหมดก็รอที่ Center ไม่ต้องวิ่งหา
 local function goToSpawn(center)
@@ -14250,6 +14267,8 @@ local Money = {
 	-- เปิดสวิตช์ใหม่ตอนลูปเก่ายังไม่จบ รอได้นานสุดเท่านี้ · ลูปเก่าเช็ก alive ทุก ~0.5 วิ ยกเว้นตอนขายเหรียญ / เก็บของ
 	-- (Money.sell รอ 1.5 วิ + เก็บของหลายวิ) ค่าเผื่อ
 	OldLoopWait = 20,
+	-- สแกนหีบแดงทั้งแมพ: ทีละจุดวัดได้ 0.04-0.23 วิ ครบ 32 จุด 2.5 วิ · ยิงพร้อมกันรอรวมไม่เกินนี้
+	ScanWait = 3,
 	YetiFindWait = 10,
 	Coins = { "Coin Pouch", "Coin Pile", "Coin Stack", "Coin" },
 }
@@ -14328,10 +14347,8 @@ function Money.yeti(t, alive, say)
 		end
 		say("ถือ Frozen Heart ไปปลุก Yeti Demon")
 		-- ถ้ำอยู่ใต้ดิน (Y -33) ไกลจากทุกจุดเกิดบอส ครั้งแรกรอ stream 4 วิไม่พอ หา prompt ไม่เจอ ข้ามไปตี Datai
-		-- ขอ stream ก่อนวาร์ปแล้วรอนานขึ้น
-		pcall(function()
-			LocalPlayer:RequestStreamAroundAsync(t.center, 5)
-		end)
+		-- ขอ stream ก่อนวาร์ปแล้วรอนานขึ้น (ขอค้างได้ ใช้ตัวจำกัดเวลา)
+		streamAround(t.center, 3)
 		placeAt(hrp, CFrame.new(t.center + Vector3.new(0, 3, 6), t.center), "yeti")
 		local prompt
 		local findBy = os.clock() + Money.YetiFindWait
@@ -14664,13 +14681,17 @@ function Money.sealedRound(alive, say)
 			Money.sealedSpots = spots
 		end
 		say(string.format("หาหีบแดงทั้งแมพ %d จุด", #Money.sealedSpots))
+		-- ขอทุกจุดพร้อมกันแล้วรอรวมไม่เกิน ScanWait จุดไหนค้างก็ไม่ลากทั้งฟาร์มไปด้วย
+		local pending = #Money.sealedSpots
 		for _, pos in ipairs(Money.sealedSpots) do
-			if not alive() then
-				return
-			end
-			pcall(function()
-				LocalPlayer:RequestStreamAroundAsync(pos, 3)
+			task.spawn(function()
+				streamAround(pos, Money.ScanWait)
+				pending -= 1
 			end)
+		end
+		local by = os.clock() + Money.ScanWait
+		while pending > 0 and os.clock() < by and alive() do
+			task.wait(0.1)
 		end
 		chest = Money.nextSealed()
 	end
@@ -14822,11 +14843,9 @@ local function farmLoop(mine)
 	deathConn:Disconnect()
 	Runner.haltAttack()
 	autoAttack.target = nil
-	-- ปิดสวิตช์ก็เพิ่ม farm.loop ด้วย เดิมเช็กแค่ loop == mine เลยไม่คืน Runner.active ตอนปิด
-	-- Auto-Quest ค้าง (กดเลือกเควส / START ไม่ติดเลย) ต้องคืนเสมอ ยกเว้นเปิดรอบใหม่ทับไปแล้ว
-	if farm.loop == mine or not farm.on then
-		Runner.active = false
-	end
+	-- คืนเสมอ: รอบใหม่ของสวิตช์รอให้รอบนี้จบก่อน (farm.running) ไม่มีทางทับกัน
+	-- เดิมคืนเฉพาะ loop == mine หรือปิดอยู่ เปิดใหม่ระหว่างรอบเก่ายังไม่จบ = ไม่มีใครคืน รอบใหม่ติด "มีตัวรันอื่นทำงานอยู่"
+	Runner.active = false
 	farm.running = false
 	-- ผู้ยืมลูป (Runner.moneyUntil) จบด้วยเงื่อนไข farm.on ยังเป็น true อยู่ ต้องคืน Kill Aura / Parry / Skill ด้วย
 	if not farm.on or farm.untilDone then
