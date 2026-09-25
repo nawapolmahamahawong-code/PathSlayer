@@ -6895,7 +6895,11 @@ local Combat = {
 --   hold = วิที่ค้างง้างท่าก่อนปล่อย · gap = วิที่เว้นหลังออกท่า · dip = มุดหลบท่าบอสเมื่อเลือดเราต่ำกว่าสัดส่วนนี้
 -- config.tune = { mode = "experiment", set = { สูตร... } } สลับสูตรทุกไฟต์บอสของ Money Farm (Game.tuneNext)
 -- แต่ละไฟต์จดลง fightlog ไว้เทียบ · ไม่มี config.tune = ใช้ Game.tune ค่าเริ่มต้นข้างล่าง
-Game.tune = { name = "combo", pick = "combo", hold = 0.15, gap = 0.6, dip = 0.35 }
+-- ค่าเริ่มต้น = ผู้ชนะจากการสลับสูตรทุกไฟต์ Money Farm 25 ก.ย. 2026 (fightlog, Flame + Regular Katana):
+--   v4 นอนใต้ตลอด 50.5 ดาเมจ/วิ vs เรียนท่ายืน 35.1 (ตาย 6 vs 2) · v5 กดตามช่อง 70.5 vs เรียนแตะ/ง้าง 55.5
+--   vs เลือกตามจังหวะ 44.3 · v6 กดต่อทันที (nowait) 71.4 เฉลี่ย 38 วิ ไม่ตาย vs รอท่าจบ 58.7 เฉลี่ย 48 วิ ตาย 2
+--   ไม่มุดเลย (dip 0) 70.2 ไม่ต่างจาก 0.2 เก็บ 0.2 ไว้กันตาย
+Game.tune = { name = "v6-nowait", pick = "slot", pose = "under", hold = 0.15, gap = 0.3, dip = 0.2, nowait = true }
 Game.tuneRound = 0
 function Game.tuneNext()
 	local cfg = Game.persist.data.tune
