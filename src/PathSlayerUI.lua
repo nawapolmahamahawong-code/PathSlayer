@@ -13471,7 +13471,12 @@ local function skillLoop()
 						Combo.cast(skill.Name, mob)
 						used = true
 						-- รอจนท่าจบ (ตัวล็อกอยู่แล้ว กดท่าอื่นไม่ติด) แล้วดูดาเมจของเราบนม็อบว่าท่านี้เข้าเท่าไร
-						task.wait(math.max(window - (os.clock() - castAt), Game.tune.gap or SkillCast.Gap))
+						-- tune.nowait = ไม่รอท่าจบ เว้นแค่ gap แล้วลองกดท่าถัดไปเลย (ท่าที่ยังล็อกอยู่ Attempt_Hold คืน nil เอง)
+						if Game.tune.nowait and not learning then
+							task.wait(Game.tune.gap or SkillCast.Gap)
+						else
+							task.wait(math.max(window - (os.clock() - castAt), Game.tune.gap or SkillCast.Gap))
+						end
 						-- เรียนครบแล้วหมัดตีปนเข้ามา หักดาเมจหมัดตามอัตราที่วัดได้ ให้สถิติยังเทียบกันได้
 						local dealt = Combo.myDamage(mob) - dmgBefore
 						if not learning then
@@ -13486,7 +13491,8 @@ local function skillLoop()
 							Combo.isHit(skill.Name, dealt) and ("โดน " .. math.floor(dealt)) or "พลาด", mob.Name)
 						show(string.format("%s · หมัด %d/วิ · ใช้ไป %d ครั้ง", lastCast, Combo.m1Rate or 0, autoSkill.casts))
 					elseif not onCooldown(skill) then
-						lockedUntil[skill.Name] = os.clock() + 5
+						-- nowait: กดไม่ติดส่วนใหญ่เพราะท่าก่อนหน้ายังล็อกตัว ไม่ใช่ท่ายังไม่ปลด ลองใหม่ในครึ่งวิ
+						lockedUntil[skill.Name] = os.clock() + (Game.tune.nowait and 0.5 or 5)
 					end
 					killAura.holdM1Until, killAura.castPoseUntil, killAura.freeUntil = 0, 0, 0
 					aim.pos = nil
