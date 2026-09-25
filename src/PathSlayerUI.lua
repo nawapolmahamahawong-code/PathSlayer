@@ -318,7 +318,17 @@ if game.PlaceId == 16205713724 or workspace:GetAttribute("IsMenu") == true then
 		return sent and res == true, sent and why or res
 	end
 	local busy = false
-	go.MouseButton1Click:Connect(function()
+	-- Auto-Rejoin (ส่วน Anti-AFK) หลุดแล้ว TeleportReconnect บางทีส่งมาหน้าเมนูแทนแมพหลัก (ทดสอบ 26 ก.ย. 2026)
+	-- จดเซิร์ฟที่หลุดไว้ในไฟล์ มาถึงนี่ภายใน 5 นาทีก็กลับเองไม่ต้องรอคนกด: เซิร์ฟที่หลุดก่อน ปิดไปแล้วค่อยเซิร์ฟใหม่
+	local rj = Game.persist.data.rejoin
+	local auto = type(rj) == "table" and os.time() - (rj.at or 0) < 300
+	if type(rj) == "table" then
+		Game.persist.data.rejoin = nil
+		pcall(function()
+			writefile(Game.persist.file, game:GetService("HttpService"):JSONEncode(Game.persist.data))
+		end)
+	end
+	local function goBack()
 		if busy then
 			return
 		end
@@ -326,7 +336,13 @@ if game.PlaceId == 16205713724 or workspace:GetAttribute("IsMenu") == true then
 		task.spawn(function()
 			local o = Game.persist.data.origin
 			local ok, why = false, nil
-			if o and o.jobId and o.placeId == 136406881576517 then
+			if auto then
+				auto = false
+				if rj.placeId == 136406881576517 and rj.jobId then
+					info.Text = "หลุดจากเกม · กำลังกลับเซิร์ฟที่หลุด …"
+					ok, why = request({ placeId = rj.placeId, jobId = rj.jobId, allowFallback = false })
+				end
+			elseif o and o.jobId and o.placeId == 136406881576517 then
 				info.Text = "กำลังกลับเซิร์ฟเดิม …"
 				-- ถ้าเซิร์ฟส่งไปห้องอื่น พอโหลดอีกฝั่งส่วน returning ของ Auto-Dungeon ย้ายเข้าห้องเดิมให้อีกรอบ
 				-- เขียนไฟล์ตรง ๆ ไม่รอ Game.save (หน่วง 1 วิ) เพราะย้ายเซิร์ฟอาจตัดก่อนเขียนทัน
@@ -348,7 +364,21 @@ if game.PlaceId == 16205713724 or workspace:GetAttribute("IsMenu") == true then
 			info.TextColor3 = ok and Theme.Good or Theme.Danger
 			busy = false
 		end)
-	end)
+	end
+	go.MouseButton1Click:Connect(goBack)
+	-- มาจาก Auto-Rejoin: กดให้เอง รอเมนูโหลดเสร็จก่อน ย้ายไม่ติดลองใหม่ (ยังอยู่หน้านี้ = ยังไม่ได้ย้าย)
+	if auto then
+		task.spawn(function()
+			for _ = 1, 5 do
+				task.wait(3)
+				if not screen.Parent then
+					return
+				end
+				goBack()
+				task.wait(15)
+			end
+		end)
+	end
 	return
 end
 
@@ -14644,6 +14674,95 @@ do
 		VirtualUser:ClickButton2(Vector2.new())
 		AntiAfk.saves += 1
 		status.Text = string.format("กันหลุดไปแล้ว %d ครั้ง · ล่าสุด %s", AntiAfk.saves, os.date("%H:%M"))
+	end))
+end
+
+-- Auto-Rejoin ----------------------------------------------------------------
+-- หลุดกลางฟาร์ม 26 ก.ย. 2026 00:14 (Error 277) log ของ Roblox: ไม่ได้รับแพ็กเก็ตจากเซิร์ฟ 20 วิ (AckTimeout)
+-- และช่องแจ้งเตือนของ Roblox (realtime-signalr ต่อแยกจากเซิร์ฟเกม) ขาดพร้อมกัน = ทางเน็ตขาดชั่วครู่ ไม่ใช่สคริปต์
+-- กันไม่ได้ เลยกลับเข้าเองแทน: ผู้ใช้กด Reconnect เองแล้วสคริปต์ตามมาทาง queue_on_teleport ฟาร์มต่อได้ทันที
+-- ลองซ้ำจนกว่าจะย้ายได้ (เน็ตยังไม่กลับ = ล้มเงียบ)
+local Rejoin = {
+	-- โดนเตะ (267 = kick ของเกม/anti-cheat) ล็อกอินซ้อนที่อื่น (264, 273) กดออกเอง (285) ห้ามกลับเอง
+	Skip = { [264] = true, [267] = true, [273] = true, [285] = true },
+	-- รอให้หน้าหลุดขึ้นครบก่อนย้าย แล้วลองใหม่ทุกเท่านี้ (เน็ตยังไม่กลับ Teleport ล้มเงียบ)
+	Settle = 3,
+	RetryEvery = 20,
+	busy = false,
+}
+do
+	local GuiService = game:GetService("GuiService")
+	local TeleportService = game:GetService("TeleportService")
+	local card = new("Frame", {
+		Size = UDim2.new(1, 0, 0, 56),
+		BackgroundColor3 = Theme.Row,
+		BorderSizePixel = 0,
+		Parent = Pages.settings.sections.afk,
+	}, { corner(10), stroke() })
+	new("Frame", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 16, 0.5, 0),
+		Size = UDim2.fromOffset(8, 8),
+		BackgroundColor3 = Theme.Good,
+		BorderSizePixel = 0,
+		Parent = card,
+	}, { capsule() })
+	new("TextLabel", {
+		Position = UDim2.fromOffset(34, 10),
+		Size = UDim2.new(1, -48, 0, 18),
+		BackgroundTransparency = 1,
+		Text = "Auto-Rejoin · เน็ตหลุด / เซิร์ฟปิด แล้วกลับเข้าเกมเอง",
+		TextColor3 = Theme.Text,
+		TextSize = 16,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = card,
+	})
+	local status = new("TextLabel", {
+		Position = UDim2.fromOffset(34, 30),
+		Size = UDim2.new(1, -48, 0, 15),
+		BackgroundTransparency = 1,
+		Text = "กลับเข้าเกมแบบปุ่ม Reconnect · สคริปต์ตามไปเปิดฟีเจอร์ที่เปิดไว้ต่อเอง · โดนเตะไม่กลับ",
+		TextColor3 = Theme.Dim,
+		TextSize = 14,
+		FontFace = font(Enum.FontWeight.Regular),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = card,
+	})
+
+	-- ย้ายเองด้วย Teleport / TeleportToPlaceInstance ไม่ได้: เกมบังคับ teleport token (ทดสอบ 26 ก.ย.
+	-- ได้ 773 "Cannot teleport without a valid teleport token") ใช้ TeleportReconnect ตัวเดียวกับปุ่ม Reconnect
+	-- ของ Roblox (CoreScripts/Connection.lua) · ทดสอบแล้วกลับเข้าได้ แต่บางทีไปโผล่หน้าเมนู แผง Lobby พากลับต่อ
+	local function rejoin(code)
+		Rejoin.busy = true
+		task.wait(Rejoin.Settle)
+		-- จดลงไฟล์ตรง ๆ ทันที (Game.save หน่วง 1 วิ ย้ายแล้วอาจไม่ทันเขียน) ฝั่ง Lobby อ่านแล้วกลับแมพหลักเอง
+		Game.persist.data.rejoin = { at = os.time(), placeId = game.PlaceId, jobId = game.JobId }
+		pcall(function()
+			writefile(Game.persist.file, game:GetService("HttpService"):JSONEncode(Game.persist.data))
+		end)
+		local tries = 0
+		while true do
+			tries += 1
+			-- สคริปต์ต้องตามไปอีกฝั่ง ใส่คิวใหม่ทุกครั้ง (คิวเดิมอาจถูกใช้ไปกับการย้ายที่ล้มเหลว)
+			Game.followTeleport()
+			status.Text = string.format("หลุด (%d) · กำลังกลับเข้าเกม ครั้งที่ %d …", code, tries)
+			pcall(function()
+				TeleportService:TeleportReconnect()
+			end)
+			task.wait(Rejoin.RetryEvery)
+		end
+	end
+
+	track(GuiService.ErrorMessageChanged:Connect(function()
+		local code = GuiService:GetErrorCode().Value
+		-- _G.PathSlayerRejoinTest: ทดสอบด้วยการเตะตัวเอง (267) ซึ่งปกติข้าม
+		-- เอาเฉพาะรหัสหลุดจากเซิร์ฟ (256-299) ย้ายเซิร์ฟล้มเหลวเป็น 7xx ตอนนั้นยังต่ออยู่ ห้ามย้ายซ้ำ
+		if Rejoin.busy or code < 256 or code >= 300 or (Rejoin.Skip[code] and not _G.PathSlayerRejoinTest) then
+			return
+		end
+		task.spawn(rejoin, code)
 	end))
 end
 
