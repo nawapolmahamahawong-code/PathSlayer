@@ -17172,12 +17172,14 @@ local function pickCards()
 			best, bestValue = c, v
 		end
 	end
-	-- มี Fortune ในมือเลือก Fortune เสมอ ใบที่แต้มสูงสุด (ผู้ใช้สั่ง 26 ก.ย. 2026) ไม่เทียบกับตัวคูณ/หัวใจ
+	-- มีการ์ดแต้มในมือ (Fortune / Trophy) เลือกเสมอ ใบที่แต้มสูงสุด (ผู้ใช้สั่ง 26 ก.ย. 2026) ไม่เทียบกับตัวคูณ/สเตตัส
 	-- ตีแล้วหนีฆ่าเร็วได้แต้มฆ่าน้อยลง แต้มหลักของรอบมาจากการ์ด ตัวคูณที่ตีค่าจากแต้มฆ่าเลยเชื่อถือน้อยลงด้วย
+	-- เห็นจริงชั้น 23: ตัวเดิมเลือก Damage +2 (ตีค่า 588 จากชั้นที่เหลือ 150) ทิ้ง Greater Trophy +375
 	local fortune, fortunePts
 	for _, c in ipairs(cards) do
+		local t = c:GetAttribute("Type")
 		local pts = tonumber(c:GetAttribute("Points")) or 0
-		if c:GetAttribute("Type") == "Fortune" and (not fortunePts or pts > fortunePts) then
+		if (t == "Fortune" or t == "Points") and pts > 0 and (not fortunePts or pts > fortunePts) then
 			fortune, fortunePts = c, pts
 		end
 	end
