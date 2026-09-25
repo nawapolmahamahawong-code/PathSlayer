@@ -6865,6 +6865,8 @@ local Combat = {
 	DipDepth = 14,
 	DipTime = 0.8,
 	DipBelowHp = 0.35,
+	-- ยืนหน้าม็อบห่างเท่านี้ตอนออกท่าแบบยืน (killAura.pinFrame) ระยะหมัด M1 คือ 6 ท่าส่วนใหญ่กล่องหน้าตัว 13-40
+	CastStandOff = 4,
 	-- เข้าหาจนเหลือระยะนี้แล้วค่อยสลับไปปักเหนือหัว ใกล้กว่านี้การก้าว 6 stud ต่อรอบจะเลยเป้า
 	EngageDistance = 8,
 	-- เกมฆ่าตัวละครที่ค้าง Freefall นาน: ลอยนิ่ง 7.5 วิยังรอด ตายที่วินาทีที่ 9
@@ -7312,6 +7314,19 @@ function killAura.rememberCollide(char)
 	end
 end
 
+-- จุดปักตัวเฟรมนี้: ปกติใต้ม็อบ · ช่วงออกท่าที่ Combo สั่ง (castPoseUntil) ยืนหน้าม็อบระดับเดียวกันหันเข้าหา
+-- วัด 25 ก.ย. นอนใต้บอสลึก 8: Unknowing Fire ได้ 0 / Flame Undulation ใส่ Zentaro ได้ 0 ทั้งที่ Blazing Universe โดน 105
+-- กล่อง hitbox ของท่าพวกนั้นอยู่หน้าตัวแนวราบ นอนหงายแล้วชี้ขึ้นฟ้าเลยวืด
+function killAura.pinFrame(r)
+	if os.clock() < (killAura.castPoseUntil or 0) then
+		local look = r.CFrame.LookVector * Vector3.new(1, 0, 1)
+		look = look.Magnitude > 0.01 and look.Unit or Vector3.new(0, 0, -1)
+		local at = r.Position + look * Combat.CastStandOff
+		return CFrame.lookAt(at, Vector3.new(r.Position.X, at.Y, r.Position.Z))
+	end
+	return CFrame.new(r.Position - Vector3.new(0, killAura.depth(), 0)) * killAura.LayFaceUp
+end
+
 function killAura.pinUnder(root)
 	killAura.underRoot = root
 	if killAura.underConn then
@@ -7322,6 +7337,15 @@ function killAura.pinUnder(root)
 		local r = killAura.underRoot
 		local char, me, hum = selfParts()
 		if not (me and hum and hum.Health > 0) then
+			return
+		end
+		-- ท่าพุ่งตัว (Unknowing Fire / Blazing Universe) ต้องให้ท่าขยับตัวเองได้ ช่วง freeUntil ไม่ตรึงอะไรเลย
+		-- คืนการชนด้วย ไม่งั้นตกทะลุพื้นระหว่างท่า (ดู Combo.poseFor "free")
+		if os.clock() < (killAura.freeUntil or 0) then
+			for p, collide in pairs(killAura.underParts or {}) do
+				p.CanCollide = collide
+			end
+			hum.PlatformStand = false
 			return
 		end
 		if char ~= killAura.underChar then
@@ -7337,7 +7361,7 @@ function killAura.pinUnder(root)
 		-- ไม่มีเป้า: ตรึงไว้ที่จุดเดิมจริง ๆ (ล้างความเร็วอย่างเดียวยังร่วง ~0.3 stud/วิ ค้างนาน 15 นาทีจมไป 330 stud
 		-- ผู้ใช้เจอตัวไปอยู่ใต้แมพชั้น 58) แต่ถ้าตัวถูกย้ายไกลในเฟรมเดียว (เซิร์ฟวาร์ปไปแท่นเกิดแมพใหม่) รับจุดใหม่แทน
 		if r and r.Parent and r.Position.Y > Combat.WorldFloorY then
-			killAura.underLast = CFrame.new(r.Position - Vector3.new(0, killAura.depth(), 0)) * killAura.LayFaceUp
+			killAura.underLast = killAura.pinFrame(r)
 			me.CFrame = killAura.underLast
 			killAura.hoverAt = nil
 		else
@@ -7354,8 +7378,8 @@ function killAura.pinUnder(root)
 	killAura.underRender = track(game:GetService("RunService").RenderStepped:Connect(function()
 		local r = killAura.underRoot
 		local _, me = selfParts()
-		if me and r and r.Parent and r.Position.Y > Combat.WorldFloorY then
-			killAura.underLast = CFrame.new(r.Position - Vector3.new(0, killAura.depth(), 0)) * killAura.LayFaceUp
+		if me and r and r.Parent and r.Position.Y > Combat.WorldFloorY and os.clock() >= (killAura.freeUntil or 0) then
+			killAura.underLast = killAura.pinFrame(r)
 			me.CFrame = killAura.underLast
 		end
 	end))
@@ -12715,6 +12739,9 @@ local function auraStep()
 	if killAura.fastKill then
 		auraRow.setDesc("Insta Kill ยิงหมัดแทนอยู่")
 		task.wait(0.2)
+	-- Auto Skill กำลังวัดว่าท่าโดนไหม (Combo) ดาเมจช่วงนี้ต้องมาจากท่าล้วน ระหว่างท่าล็อกตัวหมัดก็ออกไม่ได้อยู่แล้ว
+	elseif os.clock() < (killAura.holdM1Until or 0) then
+		task.wait(0.05)
 	-- ระหว่างหลบ ตัวอยู่ไกลเป้า ยิงไปก็ไม่เข้า ได้แต่เผาโควตาความถี่ของเซิร์ฟเวอร์
 	-- โดนตีล้มเองก็ตีไม่ได้ เกมเช็ก Checker.check(combat) ก่อนทุกหมัด
 	elseif hrp and hum and hum.Health > 0 and not isKnockedDown(hum) and os.clock() >= autoDodge.holdUntil then
@@ -13072,7 +13099,21 @@ local Combo = {
 	BlockWindow = 1.5,
 	-- ท่าที่ไม่มีค่าล็อกตัวใน Config ถือว่าล็อก ~1 วิ (ค่ากลางจากท่าที่มี: 0.5-3 วิ ไม่นับคัตซีน)
 	DefaultLock = 1,
+	-- วัดผลท่า: รอดาเมจเข้าหลังท่าล็อกหมดอีกเท่านี้ · หน้าต่างวัดสั้น/ยาวสุด
+	HitLag = 0.4,
+	MinWindow = 0.8,
+	MaxWindow = 7.5,
+	-- ลองท่ายืนแบบละกี่ครั้งก่อนตัดสิน
+	TryCasts = 2,
+	-- หมัด M1 หนึ่งหมัดที่หลุดเข้ามาระหว่างวัด (Regular Katana 48-58) ไม่นับว่าท่าโดน · โดนต้องได้ HitShare ของครั้งดีสุด
+	M1Slack = 60,
+	HitShare = 0.4,
+	-- เลือดบอสไม่ลดเกินนี้ (วิ) ถือว่าอมตะอยู่ · หมัด M1 ยิงทุก ~0.3-0.45 วิ ปกติเลือดขยับทุกวิ
+	VulnWindow = 2.5,
+	-- ยืนหน้าม็อบแล้วรอให้เซิร์ฟเห็นตำแหน่งก่อนกดท่า ค่าเดียวกับ Aura.BlinkBefore ที่วัดไว้
+	StandSettle = 0.25,
 	profiles = {},
+	stats = {},
 	targets = setmetatable({}, { __mode = "k" }),
 }
 
@@ -13121,20 +13162,40 @@ function Combo.blocking(mob)
 	return os.clock() - (t.blockSeen or 0) < Combo.BlockWindow
 end
 
+-- บอสยังรับดาเมจอยู่ไหม: เลือดลดภายใน VulnWindow วิ หรือยังไม่เคยเห็นเลย (เพิ่งเริ่มไฟต์)
+-- วัด 25 ก.ย. Gyutai เลือดค้าง 1128 นาน 16 วิ หมัดก็ไม่เข้า กดท่าไป 4 ท่าพลาดหมด เสียคูลดาวน์เปล่า
+function Combo.vulnerable(mob)
+	local t = Combo.targets[mob] or {}
+	Combo.targets[mob] = t
+	local hum = mob:FindFirstChildOfClass("Humanoid")
+	local hp = hum and hum.Health or 0
+	if not t.hp or hp < t.hp - 1 then
+		t.dropAt = os.clock()
+	end
+	t.hp = hp
+	return os.clock() - (t.dropAt or 0) < Combo.VulnWindow
+end
+
 -- คืนช่องของท่าที่ควรกดตอนนี้ ในท่าที่ usable(ช่อง, ท่า) ผ่าน · Combo.why = เหตุผลไว้โชว์บนแถวสถานะ
+-- บอสเลือดนิ่ง (อมตะ/เปลี่ยนเฟส) และไม่ได้บล็อก = ไม่กดอะไร เก็บท่าไว้ (คืน nil)
 function Combo.pick(keys, mob, usable)
 	local blocking = Combo.blocking(mob)
+	if not Combo.vulnerable(mob) and not blocking then
+		Combo.why = "(บอสเลือดนิ่ง เก็บท่าไว้)"
+		return nil
+	end
 	local controlled = os.clock() < (Combo.targets[mob].controlUntil or 0)
 	local best, bestScore, why
 	for slot = 2, #keys do
 		local skill = keys[slot]
 		if usable(slot, skill) then
 			local p = Combo.profile(skill.Name)
-			local score, reason = p.damage / p.lock, "ดาเมจ"
+			local perSec = Combo.damageOf(skill.Name) / p.lock
+			local score, reason = perSec, "ดาเมจ"
 			if blocking and p.blockBreak > 0 then
 				score, reason = 1e6 + p.blockBreak, "ทำลายบล็อก"
 			elseif not controlled and p.control > 0 then
-				score, reason = 1e3 + p.control * 10 + p.damage / p.lock, "เปิดให้ล้ม"
+				score, reason = 1e3 + p.control * 10 + perSec, "เปิดให้ล้ม"
 			end
 			if not bestScore or score > bestScore then
 				best, bestScore, why = slot, score, reason
@@ -13143,6 +13204,86 @@ function Combo.pick(keys, mob, usable)
 	end
 	Combo.why = why and ("(" .. why .. ")") or nil
 	return best
+end
+
+-- ดาเมจสะสมของเราบนม็อบ: เซิร์ฟเก็บไว้ใน DMG.<ชื่อผู้เล่น> (ตัวเดียวกับที่ใช้จ่ายของ) เทียบก่อน-หลังท่า = ท่าเข้าเท่าไร
+function Combo.myDamage(mob)
+	local dmg = mob:FindFirstChild("DMG")
+	local mine = dmg and dmg:FindFirstChild(LocalPlayer.Name)
+	return mine and mine.Value or 0
+end
+
+-- วัดนานเท่าท่าล็อกตัว + เผื่อดาเมจเข้าช้า (Purgatory ตีครั้งสุดท้ายที่ 5.15 จากล็อก 6.6)
+function Combo.window(name)
+	return math.clamp(Combo.profile(name).lock + Combo.HitLag, Combo.MinWindow, Combo.MaxWindow)
+end
+
+-- สถิติโดน/พลาดต่อท่าต่อท่ายืน ("under" นอนใต้ม็อบ / "stand" ยืนหน้าม็อบ) เก็บลงไฟล์ต่อบัญชี
+-- โหลดสคริปต์ใหม่ไม่ต้องเรียนใหม่ทุกครั้ง (ท่าละ 2 ครั้งต่อท่ายืน = หลายนาทีกว่าจะครบทุกท่า)
+Combo.StatsFile = "PathSlayer/combo_" .. LocalPlayer.UserId .. ".json"
+do
+	local ok, data = pcall(function()
+		return game:GetService("HttpService"):JSONDecode(readfile(Combo.StatsFile))
+	end)
+	if ok and type(data) == "table" then
+		Combo.stats = data
+	end
+end
+
+function Combo.record(name, pose, dealt)
+	local s = Combo.stats[name] or {}
+	Combo.stats[name] = s
+	local p = s[pose] or { n = 0, hit = 0, dmg = 0 }
+	s[pose] = p
+	s.best = math.max(s.best or 0, dealt)
+	p.n += 1
+	p.dmg += math.max(dealt, 0)
+	if Combo.isHit(name, dealt) then
+		p.hit += 1
+	end
+	pcall(writefile, Combo.StatsFile, game:GetService("HttpService"):JSONEncode(Combo.stats))
+end
+
+-- โดนจริง = เกินหมัด M1 ที่หลุดเข้ามาหนึ่งหมัด และได้อย่างน้อย HitShare ของครั้งที่ดีที่สุดของท่านี้
+-- วัด 25 ก.ย.: ท่าพลาดยังขึ้น +48 (หมัด Regular Katana ที่ยิงไปก่อนหยุดหมัด) Purgatory ใส่ Gyutai +48 สองรอบ
+-- ทั้งที่โดนจริงได้ 300+ · Unknowing Fire โดนเต็ม 234
+function Combo.isHit(name, dealt)
+	local best = (Combo.stats[name] or {}).best or 0
+	return dealt > Combo.M1Slack and dealt >= best * Combo.HitShare
+end
+
+-- ท่ายืนตอนออกท่า: ลองใต้ม็อบก่อน (ไม่โดนบอสตี) โดนเกิน 3/4 ใช้ต่อ ไม่งั้นลองแบบถัดไปจนครบ แล้วเลือกดาเมจเฉลี่ยสูงสุด
+--   under = นอนใต้ม็อบ · stand = ยืนหน้าม็อบตรึงไว้ · free = ยืนหน้าม็อบแล้วปล่อยตัวให้ท่าพุ่งเอง
+-- วัด 25 ก.ย. ยืนตรึง: Flame Tiger โดน 5/6 Flame Undulation 4/8 แต่ Blazing Universe 2/5 Unknowing Fire 1/3
+-- สองตัวหลังเป็นท่าพุ่ง (DASH_* / AIM_RANGE ใน Config) ตรึงตำแหน่งทุกเฟรม ท่าพุ่งไม่ออก
+Combo.Poses = { "under", "stand", "free" }
+function Combo.poseFor(name)
+	local s = Combo.stats[name] or {}
+	local under = s.under
+	if under and under.n >= Combo.TryCasts and under.hit / under.n >= 0.75 then
+		return "under"
+	end
+	local best, bestAvg
+	for _, pose in ipairs(Combo.Poses) do
+		local p = s[pose]
+		if not p or p.n < Combo.TryCasts then
+			return pose
+		end
+		local avg = p.dmg / p.n
+		if not bestAvg or avg > bestAvg then
+			best, bestAvg = pose, avg
+		end
+	end
+	return best
+end
+
+-- ดาเมจต่อครั้งจากที่วัดได้จริงในท่ายืนที่จะใช้ · ยังวัดไม่ถึง TryCasts ใช้ค่าจาก Config
+function Combo.damageOf(name)
+	local s = (Combo.stats[name] or {})[Combo.poseFor(name)]
+	if s and s.n >= Combo.TryCasts then
+		return s.dmg / s.n
+	end
+	return Combo.profile(name).damage
 end
 
 function Combo.cast(name, mob)
@@ -13237,8 +13378,24 @@ local function skillLoop()
 			end
 			if slot then
 				local skill = keys[slot]
-				if autoSkill.on and mob.Parent then
+				-- กำลังมุดหลบลึก 22 ห้ามออกท่า: วัด 25 ก.ย. ท่าที่ออกตอนมุดพลาดเกือบหมด (ได้แค่หมัด 48-61)
+				if autoSkill.on and mob.Parent and os.clock() >= (killAura.dipUntil or 0) then
+					local pose = Combo.poseFor(skill.Name)
+					local window = Combo.window(skill.Name)
+					local dmgBefore = Combo.myDamage(mob)
+					killAura.holdM1Until = os.clock() + window
+					if pose == "stand" then
+						-- ยืนหน้าม็อบก่อนกด ให้เซิร์ฟเห็นตำแหน่งใหม่ (เหตุผลเดียวกับ Aura.BlinkBefore)
+						killAura.castPoseUntil = os.clock() + window + Combo.StandSettle
+						task.wait(Combo.StandSettle)
+					elseif pose == "free" then
+						-- ยืนหน้าม็อบก่อน แล้วปล่อยตัวให้ท่าพุ่งเองตลอดท่า
+						killAura.castPoseUntil = os.clock() + Combo.StandSettle
+						task.wait(Combo.StandSettle)
+						killAura.freeUntil = os.clock() + window
+					end
 					aim.pos = root.Position
+					local castAt = os.clock()
 					local ok, started = asGame(SkillController.Attempt_Hold, skill.Name, keyOf(slot))
 					if ok and started then
 						-- สองค่านี้คือสิ่งที่ปุ่มบน HUD ตั้งหลังกดติด ลูปของเกมใช้ปล่อยท่าเองถ้าค้างเกิน Max_Hold
@@ -13251,13 +13408,19 @@ local function skillLoop()
 						autoSkill.casts += 1
 						Game.skillCasts = (Game.skillCasts or 0) + 1
 						Combo.cast(skill.Name, mob)
-						lastCast = string.format("%s [%s] %s ใส่ %s", skill.Name, keyOf(slot), Combo.why or "", mob.Name)
-						show(lastCast .. " · ใช้ไป " .. autoSkill.casts .. " ครั้ง")
 						used = true
-						task.wait(Game.tune.gap or SkillCast.Gap)
+						-- รอจนท่าจบ (ตัวล็อกอยู่แล้ว กดท่าอื่นไม่ติด) แล้วดูดาเมจของเราบนม็อบว่าท่านี้เข้าเท่าไร
+						task.wait(math.max(window - (os.clock() - castAt), Game.tune.gap or SkillCast.Gap))
+						local dealt = Combo.myDamage(mob) - dmgBefore
+						Combo.record(skill.Name, pose, dealt)
+						lastCast = string.format("%s [%s] %s%s %s ใส่ %s", skill.Name, keyOf(slot), Combo.why or "",
+							pose == "stand" and " ยืน" or pose == "free" and " ปล่อยตัว" or "",
+							Combo.isHit(skill.Name, dealt) and ("โดน " .. math.floor(dealt)) or "พลาด", mob.Name)
+						show(lastCast .. " · ใช้ไป " .. autoSkill.casts .. " ครั้ง")
 					elseif not onCooldown(skill) then
 						lockedUntil[skill.Name] = os.clock() + 5
 					end
+					killAura.holdM1Until, killAura.castPoseUntil, killAura.freeUntil = 0, 0, 0
 					aim.pos = nil
 				end
 			end
