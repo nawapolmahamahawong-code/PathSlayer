@@ -5212,7 +5212,7 @@ function Runner.start(list)
 	Runner.cancel = false
 
 	-- เปิด Kill Aura / Auto Skill / Parry ให้ตอนกด START แล้วคืนสถานะเดิมตอนจบ ผู้ใช้เปิดไว้เองก็ไม่ไปปิดให้
-	-- Auto Skill กดเฉพาะช่วงพักหลังหมัดปิด (comboPause) ไม่กินเวลาตี · Parry ตอนนอนใต้ม็อบ = มุดหลบคอมโบบอส
+	-- Auto Skill กดทุกท่าทันทีที่พ้นคูลดาวน์ · Parry ตอนนอนใต้ม็อบ = มุดหลบคอมโบบอส
 	local helpers = {}
 	for _, h in ipairs({
 		{ on = Runner.auraOn, set = Runner.setAura },
@@ -13039,18 +13039,9 @@ local function skillWeaponSlot()
 	return nil
 end
 
--- Kill Aura ตีอยู่: กดสกิลเฉพาะช่วงหลังหมัดปิด (หมัด 5) ที่เซิร์ฟบังคับพัก 1.65 วิ หมัดยิงไม่ได้อยู่แล้ว
--- กดตอนไหนก็ได้แบบเดิม วัดกับ Zuko: ตีล้วน 21.2 วิ ใส่ Unknowing Fire ด้วย 23.9 วิ เพราะท่าล็อกตัว 3 วิ
--- (pause_gameplay) ทับกลางคอมโบ เสียหมัดไป ~43 ดาเมจ ได้ท่าคืนมา 49
--- Kill Aura ไม่ได้ยิงเกิน 2 วิ (ไม่มีม็อบในระยะหมัด) ไม่ต้องรอจังหวะ
-local function comboPause()
-	if not killAura.on or os.clock() - killAura.lastFire > 2 then
-		return true
-	end
-	local _, preset = Chain.style()
-	return Chain.last >= (preset.Max or 5) and os.clock() - Chain.at < 0.5
-end
-
+-- กดทุกท่าทันทีที่พ้นคูลดาวน์ ไม่รอจังหวะหมัด (ผู้ใช้สั่ง 25 ก.ย. 2026 "spam Z X C V B")
+-- เคยกดเฉพาะ 0.5 วิหลังหมัดปิดของ Kill Aura: วัดกับ Zuko ท่าล็อกตัว 3 วิทับกลางคอมโบเสียหมัด ~43 ได้ท่าคืน 49
+-- แต่ได้กดแค่ราวคอมโบละท่า ท่าที่พร้อมแล้วรอคิวจนผู้ใช้เห็นว่าไม่กดสกิลเลย
 local function skillLoop()
 	-- ท่าที่ยังล็อก (ไม่ได้ปลดใน Skill Tree) Attempt_Hold คืน nil ทั้งที่ไม่ติดคูลดาวน์ พักไว้ 5 วิ ไม่ต้องลองทุกรอบ
 	local lockedUntil = {}
@@ -13117,7 +13108,6 @@ local function skillLoop()
 				local ready = skill.Name ~= "Blocking" and not onCooldown(skill)
 					and os.clock() >= (lockedUntil[skill.Name] or 0)
 					and root and (root.Position - hrp.Position).Magnitude <= skillReach(skill.Name)
-					and comboPause()
 				if autoSkill.on and autoSkill.picked[slot - 1] and ready and root and mob.Parent then
 					aim.pos = root.Position
 					local ok, started = asGame(SkillController.Attempt_Hold, skill.Name, keyOf(slot))
@@ -14780,7 +14770,7 @@ local function farmLoop(mine)
 	-- Parry ตอนนอนใต้บอส = มุดหลบคอมโบบอส ไม่มีตัวนี้ตายบ่อย (Zentaro 3 ครั้งใน 260 วิ)
 	local parryWasOn = Runner.parryRow.isOn()
 	Runner.parryRow.set(true)
-	-- สกิลกดในช่วงพักหลังหมัดปิด (comboPause) เพิ่มดาเมจโดยไม่กินเวลาตี
+	-- Auto Skill กดทุกท่าทันทีที่พ้นคูลดาวน์ เพิ่มดาเมจ
 	local skillWasOn = Runner.skillOn()
 	Runner.setSkill(true)
 	attackRow.set(false)
