@@ -16243,7 +16243,15 @@ function Crow.fight(quest, boss, alive, patience)
 			seenAt = os.clock()
 			absentSince = nil
 			Runner.attackMob(boss)
-			Crow.say(string.format("%s · ตี %s", quest, boss))
+			local hum
+			for _, m in ipairs(workspace.Humanoids:GetDescendants()) do
+				local h = not hum and m.Name == boss and m:IsA("Model") and m:FindFirstChildOfClass("Humanoid")
+				if h and h.Health > 0 then
+					hum = h
+				end
+			end
+			Crow.say(hum and string.format("%s · ตี %s · HP %d/%d", quest, boss, math.floor(hum.Health), math.floor(hum.MaxHealth))
+				or string.format("%s · ตี %s", quest, boss))
 		else
 			Runner.haltAttack()
 			absentSince = absentSince or os.clock()
