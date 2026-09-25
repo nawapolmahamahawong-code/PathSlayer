@@ -14748,9 +14748,9 @@ function Money.fight(t, alive, say)
 		if mob.Health < lastHp - 1 then
 			-- นับเวลาไฟต์จากดาเมจแรก ไม่รวมวาร์ป/รอ stream ให้เทียบสูตรกันตรง ๆ · บอสที่เลือดไม่เต็มตอนเริ่ม
 			-- (ตีค้างจากรอบก่อน) เวลาสั้นกว่าจริง ตอนวิเคราะห์หารด้วยเลือดที่ตีไปจริง (startHp)
-			if not firstHit then
-				firstHit = os.clock()
-				startHp = lastHp < math.huge and lastHp or mob.MaxHealth
+			-- รอบแรกของลูป lastHp ยังเป็น huge ไม่ใช่การตีโดน (Domae เริ่มที่ 431 เคยถูกจดว่า 3000 ใน 15 วิ)
+			if not firstHit and lastHp < math.huge then
+				firstHit, startHp = os.clock(), lastHp
 			end
 			lastDrop = os.clock()
 		elseif os.clock() - lastDrop > Money.StuckAfter then
