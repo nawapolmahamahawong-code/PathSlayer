@@ -13697,16 +13697,40 @@ local function forceLoop()
 		return
 	end
 	local shown
+	-- เดิมป้ายขยับเฉพาะตอนฆ่าได้ ไม่มีตัวให้ฆ่าก็ค้าง "กำลังหาเป้า…" ทั้งรอบ (ผู้ใช้เจอในหอคอย 25 ก.ย.)
+	-- ดูไม่ออกว่าไม่มีม็อบ / ตียังไม่โดน / เลือดยังไม่ถึงเกณฑ์ ตอนนี้ทุกรอบที่ไม่ได้ฆ่าบอกว่าติดตรงไหน
+	local function status(near, owned, nearest)
+		if near == 0 then
+			return string.format("รอม็อบในระยะ %d stud · ฆ่าไป %d ตัว", InstaKill.Range, insta.kills)
+		elseif owned == 0 then
+			return string.format("ม็อบในระยะ %d ตัว (%s) · รอตีโดนก่อนถึงฆ่าได้ · ฆ่าไป %d ตัว", near, nearest, insta.kills)
+		end
+		return string.format("ตีโดน %d ตัว · รอเลือดถึงเกณฑ์ · ฆ่าไป %d ตัว", owned, insta.kills)
+	end
 	while insta.on and insta.mode == 2 do
 		keepIdentity()
 		local _, hrp = selfParts()
 		local folder = workspace:FindFirstChild("Humanoids")
+		local near, owned, killed, nearest, nearestD = 0, 0, false, "-", nil
 		for _, m in ipairs(hrp and folder and folder:GetDescendants() or {}) do
 			local hum = m:IsA("Model") and m:GetAttribute("IsMob") and not Combat.NeverTarget[m.Name]
 				and m:FindFirstChildOfClass("Humanoid")
 			local root = hum and m:FindFirstChild("HumanoidRootPart")
-			if root and hum.Health > 0 and hum.MaxHealth > 0 and (root.Position - hrp.Position).Magnitude <= InstaKill.Range
-				and isnetworkowner(root) then
+			local d = root and (root.Position - hrp.Position).Magnitude
+			local inRange = root and hum.Health > 0 and hum.MaxHealth > 0 and d <= InstaKill.Range
+			if inRange then
+				near += 1
+				if not nearestD or d < nearestD then
+					nearest, nearestD = m.Name, d
+				end
+			end
+			-- isnetworkowner โยน error ได้กับชิ้นที่กำลังถูกลบ (ม็อบตายพร้อมกันหลายตัว) ข้ามตัวนั้นไป ไม่ให้ลูปตาย
+			local okOwn, own = true, false
+			if inRange then
+				okOwn, own = pcall(isnetworkowner, root)
+			end
+			if inRange and okOwn and own then
+				owned += 1
 				-- เขียนแบบ isBoss and bossPct or mobPct ไม่ได้: บอสที่ปิดไว้ (nil) จะหล่นไปใช้เกณฑ์ม็อบธรรมดาแล้วฆ่าบอส
 				local pct
 				if isBoss(hum) then
@@ -13721,6 +13745,7 @@ local function forceLoop()
 					hum:ChangeState(Enum.HumanoidStateType.Dead)
 					hum.Health = 0
 					insta.kills += 1
+					killed = true
 					local text = string.format("ฆ่า %s ตอนเลือด %d%% · รวม %d ตัว (ไม่ได้ EXP/ของ)", m.Name,
 						math.floor(hpPct), insta.kills)
 					if text ~= shown then
@@ -13730,6 +13755,16 @@ local function forceLoop()
 				end
 			end
 		end
+		-- ป้ายฆ่าล่าสุดค้างไว้ให้อ่านทัน 1.5 วิ ก่อนเปลี่ยนเป็นสถานะรอ
+		if killed then
+			insta.lastKillAt = os.clock()
+		elseif os.clock() - (insta.lastKillAt or 0) > 1.5 then
+			local text = status(near, owned, nearest)
+			if text ~= shown then
+				shown = text
+				show(text)
+			end
+		end
 		task.wait(InstaKill.Tick)
 	end
 end
@@ -13737,14 +13772,15 @@ end
 local function runInsta()
 	startIdentity = getthreadidentity and getthreadidentity()
 	-- สลับโหมดระหว่างเปิดอยู่: ลูปเก่าเห็น mode เปลี่ยนแล้วจบเอง รอบนี้เริ่มลูปของโหมดใหม่ต่อ
+	-- ลูปพังกลางทางเคยตายเงียบ ป้ายค้างข้อความสุดท้ายทั้งที่สวิตช์ยังเปิด ตอนนี้โชว์ error แล้วเริ่มลูปใหม่
 	while insta.on do
 		local mode = insta.mode
-		if mode == 1 then
-			fastLoop()
-		else
-			forceLoop()
-		end
-		if insta.mode == mode then
+		local ok, err = pcall(mode == 1 and fastLoop or forceLoop)
+		if not ok then
+			killAura.fastKill = false
+			pcall(show, "ลูปพัง เริ่มใหม่: " .. tostring(err):sub(1, 120))
+			task.wait(1)
+		elseif insta.mode == mode then
 			break
 		end
 	end
