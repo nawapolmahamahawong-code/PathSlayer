@@ -12535,6 +12535,13 @@ do
 	-- (Fancy Katana -> "Regular Katana") มือเปล่าหรืออ่านไม่ออกใช้ "Combat" แบบ Kill Aura เดิม
 	-- ส่ง "Combat" ตอนถือดาบ ดาเมจเท่ากัน (6.4 ต่อหมัดทั้งคู่) แต่ช่วงเวลาหมัดคิดจาก preset ผิดตัว
 	function Chain.style()
+		-- ชั้นห้ามอาวุธของหอคอย (การ์ด Bare Hands ฯลฯ) เกมใส่ tooldisabled = "all,exceptCombat" ในโฟลเดอร์ค่าของเรา
+		-- ส่งท่า Regular Katana ตอนนั้นเซิร์ฟรับเลขคอมโบแต่ไม่มีดาเมจ วัด 26 ก.ย. ชั้น 32: 0/24 · หมัดมือเปล่าเข้า
+		local values = ReplicatedStorage.Player_Service.Values:FindFirstChild(LocalPlayer.Name)
+		local disabled = values and values:FindFirstChild("tooldisabled")
+		if disabled and tostring(disabled.Value):find("all") then
+			return "Combat", Presets.Presets.Combat, nil
+		end
 		local tool = CharInfo.Get_equipped_tool(LocalPlayer)
 		local item = tool and ItemDefs[tool.Name]
 		local name
@@ -13786,12 +13793,14 @@ local function forceLoop()
 				else
 					pct = insta.mobPct
 				end
-				-- หอคอยแบบตีแล้วหนี (Runner.instaAnyHp): ตีโดนได้คุมฟิสิกส์เมื่อไรฆ่าทันทีไม่ดูเลือด ไม่ต้องอยู่ตีต่อให้โดนรุม
+				-- หอคอยแบบวาร์ปลงตี (Runner.instaAnyHp): ฆ่าทันทีไม่ดูเลือด แต่เฉพาะตัวที่หมัดเราเข้าแล้ว (instaMarked)
+				-- เล่นคนเดียวเกมยกการคุมม็อบให้เราตั้งแต่ยังไม่ตี ฆ่าได้ทั้งแมพโดยไม่ได้ตีเลย ผู้ใช้เห็นแล้วบอก "ตีไม่โดน"
 				if Runner.instaAnyHp then
-					pct = 100
+					pct = Runner.instaMarked and Runner.instaMarked[m] and 100 or nil
 				end
 				local hpPct = hum.Health / hum.MaxHealth * 100
-				if pct and hpPct <= pct then
+				-- Runner.instaPaused: ทดลองวัดหมัดในหอคอย ต้องเห็นว่าหมัดเข้าจริงก่อนม็อบโดนบังคับตาย
+				if pct and hpPct <= pct and not Runner.instaPaused then
 					-- บอก Webhook ก่อนว่าตัวนี้ไม่นับเป็นการฆ่า ไม่งั้นสรุปขึ้นว่าฆ่าได้ทั้งที่ไม่ได้รางวัล
 					Runner.hook("forced", m)
 					forced[m] = hum.Health
@@ -17247,14 +17256,16 @@ local function setSwitch(key, state)
 	end
 end
 
--- ตีจริงด้วย Insta Kill โหมดทันที (ผู้ใช้สั่ง ไม่ต้องได้ของ) ตีบอสด้วย + Kill Aura ตามม็อบ + Auto Skill
+-- ตีจริงด้วย Insta Kill โหมดทันที (ผู้ใช้สั่ง ไม่ต้องได้ของ) ตีบอสด้วย + Kill Aura ตามม็อบ
 -- คืนฟังก์ชันคืนค่า Insta Kill (สวิตช์/โหมด/บอส) ให้ climb เรียกทุกทางที่ออก
 -- เดิมปิดแค่ใน endRun: รอบที่จบเพราะหัวใจหมดไม่ผ่านตรงนั้น Insta Kill ค้างเปิดโหมดทันทีกลับไปแมพหลัก
 -- (ผู้ใช้เจอ 25 ก.ย.: Money Farm ตีดาบไม่ออกเลย เหลือแต่สกิล)
+-- ไม่ใช้ Auto Skill ในหอคอย (ผู้ใช้สั่ง 26 ก.ย. 2026): ท่าล็อกตัวค้างกลางม็อบ และแย่งตำแหน่งกับการวาร์ปตี
+-- Kill Aura ก็ไม่ใช้: HitRun ยิงหมัดเองตอนยืนหน้าเป้าเข้าที่แล้วเท่านั้น (ดู HitRun)
 local function combatOn()
 	local instaOff = Runner.instaForGuards()
-	setSwitch("Kill Aura", true)
-	setSwitch("Auto Skill", true)
+	setSwitch("Kill Aura", false)
+	setSwitch("Auto Skill", false)
 	return instaOff
 end
 
@@ -17322,27 +17333,34 @@ local function releaseUnder()
 	end
 end
 
--- ตีแล้วหนี (ผู้ใช้สั่ง 26 ก.ย. 2026): เดิมนอนใต้ม็อบตัวใกล้สุดค้างทั้งชั้น ม็อบที่เหลือเดินมารุมตรงนั้น
+-- ลอยบนฟ้าแล้ววาร์ปลงมาตีทีละตัว (ผู้ใช้สั่ง 26 ก.ย. 2026) กันโดนรุม ตีต้องโดนทุกหมัด
 -- หัวใจที่เสียในรอบก่อน ๆ อยู่ชั้น 58-77 ข้างบอส (Lancer Captain, Fujiko, Yeti Demon, Saneri, Domae, Shinora)
--- ตอนนี้: ปักตัวที่จุดปลอดภัยใต้ดินห่างม็อบทุกตัว → วาร์ปไปใต้เป้าทีละตัว → ตีโดนเซิร์ฟยกการคุมฟิสิกส์ให้
--- → Insta Kill ฆ่าทันทีไม่ดูเลือด (Runner.instaAnyHp) → ตัวถัดไป · ช่วงพักหมัด 1.65 วิหลังหมัด 5 กลับไปรอที่จุดปลอดภัย
--- ฆ่าเร็วแบบนี้แต้มฆ่าน้อยลง (เกมจ่ายตามสัดส่วนเลือดที่ตีเข้า) ผู้ใช้เลือกความปลอดภัย แต้มหลักมาจากการ์ด Fortune
+-- ตอนนอนใต้ม็อบค้างทั้งชั้น ม็อบที่เหลือเดินมารุมตรงนั้น
+-- วงจร: ลอยค้างเหนือม็อบ SkyHeight → วาร์ปลงยืนหน้าเป้า → ค้าง Settle ให้เซิร์ฟเห็นตำแหน่ง → ยิงหมัดเอง (Chain)
+-- → ดูว่าเลือดลดจริง (หมัดเข้า) → Insta Kill ฆ่าตัวที่หมัดเข้าแล้วทันที (Runner.instaMarked) → กลับขึ้นฟ้า → ตัวถัดไป
+-- Kill Aura ไม่ใช้ในหอคอย: มันยิงใส่ม็อบในระยะ 80 ตามจังหวะตัวเอง หมัดวืดเสียเลขคอมโบ ตำแหน่งยังไม่เข้าที่
+-- วัด 26 ก.ย. ชั้น 32-40 (วาร์ปจากฟ้าสูง 60 ยิงหมัดเดียวต่อเที่ยว ดูเลือดลดใน 1 วิ):
+--   ชั้นว่าง: หน้าม็อบ 2.5 stud 5/5 · ใต้ลึก 8 2/5 · ในตัวม็อบ 2/3 · หลังม็อบ 1/5 · หมัดเข้า 0.07-0.08 วิหลังยิง
+--   ชั้นม็อบแน่น: หน้าม็อบ 2/6 ใต้ลึก 6 1/6 ตัวที่พลาดเกือบทั้งหมดเราติดสตันจากเป้าหรือตัวข้าง ๆ
+--   → ใต้ลึก 6 + เลือกตัวที่อยู่ห่างฝูง + ไม่ยิงตอนติดสตัน/เป้าป้องกัน + ถือดาบ: 9/10 เลือดเราไม่ลด
+--   ชั้นห้ามอาวุธ (tooldisabled) ส่งท่าดาบ 0/24 ต้องส่งหมัดมือเปล่า (แก้ใน Chain.style)
 local HitRun = {
-	-- อยู่ใต้เป้าได้นานสุดเท่านี้ต่อเที่ยว ยังไม่ตายก็กลับจุดปลอดภัยก่อน
-	-- วัด 26 ก.ย. ชั้น 16-20: ส่วนใหญ่ตายตอนไปถึง 0.06-0.19 วิ (เล่นคนเดียว ม็อบถูกยกการคุมฟิสิกส์ให้เราอยู่แล้ว
-	-- ไม่ต้องรอหมัด) ตัวที่ต้องตีจริงหมัดเข้าที่ ~1.1-1.3 วิหลังไปถึง หน้าต่าง 1.2 ตัดก่อนหมัดเข้าพอดี
-	Window = 1.6,
-	-- ค้างใต้เป้าเท่านี้ก่อนปล่อยหมัดแรก วาร์ปมาไกล ~90 stud: Settle 0.3 ยิง 3 หมัดใส่ Nezura ไม่เข้าเลยสามเที่ยว
-	-- (Aura.BlinkBefore 0.3 วัดจากระยะ 30 stud) · 0.6 หมัดแรกออก 0.65 ดาเมจเข้า 1.26
-	Settle = 0.6,
-	-- จุดปลอดภัยห่างม็อบที่ใกล้สุดอย่างน้อยเท่านี้ ม็อบเดินเข้ามาใกล้กว่านี้ย้ายจุดใหม่
-	SafeGap = 40,
-	-- วงรอบจุดกลางม็อบที่ใช้หาจุดปลอดภัย (ม็อบหอคอยหายเมื่อไม่มีผู้เล่นใกล้เกิน 250 อยู่ในนั้นเผื่อไว้)
-	SafeRadius = 90,
+	SkyHeight = 60,
+	-- ยืนหน้าเป้าห่างเท่านี้ หันเข้าหา
+	Stand = 2.5,
+	-- ค้างที่เป้าก่อนยิงหมัดแรก วัดชั้น 35-40 ใต้เป้า 6: 0.3 เข้า 7/11 (หมัดแรกหลุดบ่อย หมัดสองเข้า) · 0.45 เข้า 9/10
+	Settle = 0.45,
+	-- รอเลือดลดหลังยิง หมัดเข้าจริง 0.07-0.08 วิ เผื่อปิงแกว่ง
+	LandWait = 0.5,
+	-- ยิงไม่เข้าติดกันเท่านี้กลับขึ้นฟ้าก่อน แล้วค่อยลงมาใหม่
+	Misses = 2,
+	-- หมัดเข้าแล้วรอ Insta Kill (สแกนทุก 0.15 วิ) ฆ่า
+	KillWait = 0.5,
 	log = {},
 }
--- ปรับค่าสด ๆ ตอนทดสอบในหอคอยโดยไม่ต้องโหลดสคริปต์ใหม่กลางรอบ
+-- ปรับค่าสด ๆ / หยุดลูป (HitRun.paused) ตอนทดลองในหอคอยโดยไม่ต้องโหลดสคริปต์ใหม่กลางรอบ
 _G.PathSlayerHitRun = HitRun
+_G.PathSlayerDebug = { Chain = Chain, killAura = killAura, Aura = Aura, Combat = Combat, Runner = Runner }
 
 local function enemiesAlive()
 	local list = {}
@@ -17356,49 +17374,99 @@ local function enemiesAlive()
 	return list
 end
 
--- จุดบนวงรอบจุดกลางม็อบที่ห่างม็อบตัวใกล้สุดมากที่สุด ใต้พื้นลึกเท่านอนใต้ม็อบ
-function HitRun.safeSpot(roots)
-	if #roots == 0 then
-		return nil
-	end
-	local sum, low = Vector3.zero, math.huge
-	for _, r in ipairs(roots) do
-		sum += r.Position
-		low = math.min(low, r.Position.Y)
-	end
-	local center = sum / #roots
-	local best, bestGap
-	for i = 0, 11 do
-		local a = i * math.pi / 6
-		local p = Vector3.new(center.X + math.cos(a) * HitRun.SafeRadius, low - Combat.UnderDepth,
-			center.Z + math.sin(a) * HitRun.SafeRadius)
-		local gap = math.huge
+-- วางตัวไว้ที่ cf ทุกเฟรม: pinUnder ไม่มีเป้า (underRoot = nil) ตรึงที่ hoverAt ให้เอง ไม่ร่วง ไม่โดนฆ่าเพราะลอยนาน
+local function hold(hrp, cf)
+	killAura.hoverAt = cf
+	hrp.CFrame = cf
+	hrp.AssemblyLinearVelocity = Vector3.zero
+end
+
+-- จุดลอยบนฟ้า: เหนือจุดกลางม็อบทั้งหมด (ไม่มีม็อบใช้จุดเดิม)
+function HitRun.sky(roots)
+	if #roots > 0 then
+		local sum, top = Vector3.zero, -math.huge
 		for _, r in ipairs(roots) do
-			gap = math.min(gap, (r.Position - p).Magnitude)
+			sum += r.Position
+			top = math.max(top, r.Position.Y)
 		end
-		if not bestGap or gap > bestGap then
-			best, bestGap = p, gap
+		local c = sum / #roots
+		HitRun.skyAt = CFrame.new(c.X, top + HitRun.SkyHeight, c.Z)
+	end
+	return HitRun.skyAt
+end
+
+function HitRun.goSky(hrp, roots)
+	local cf = HitRun.sky(roots)
+	if cf then
+		hold(hrp, cf)
+	end
+end
+
+-- หมัดไม่เข้าเพราะฝั่งเรา: เซิร์ฟไม่รับหมัดตอนเราติด Stun/CombatStun (Checker.check) วัด 26 ก.ย. ชั้น 34-35
+-- พลาด 9 จาก 12 ครั้งตอนติดสตัน (Akazo สตันเราซ้อน 4 ชั้น) ไม่ติดสตันเข้า 3 จาก 4
+function HitRun.stunned()
+	local v = ReplicatedStorage.Player_Service.Values:FindFirstChild(LocalPlayer.Name)
+	return v ~= nil and (v:FindFirstChild("Stun") ~= nil or v:FindFirstChild("CombatStun") ~= nil)
+end
+
+-- หมัดไม่เข้าเพราะฝั่งเป้า (Checker.check_victim): อมตะ (iframe) / หลบ (Dodge) / บล็อก / ท่าสวนที่ตั้งไว้ (SkillToggle)
+-- ค่าพวกนี้อยู่ในตัวม็อบเองหรือ Player_Service.Values[ชื่อ] (Utility.getvaluesfolder) · NpcCounter ไม่นับ:
+-- ค้างจนกว่าจะโดนสวนหนึ่งครั้ง ข้ามตัวนั้นไปเลยจะไม่มีวันฆ่ามันได้
+HitRun.Guards = { iframe = true, escapeiframe = true, Dodge = true, Blocking = true, SkillToggle = true }
+function HitRun.guarded(m)
+	for _, src in ipairs({ m, ReplicatedStorage.Player_Service.Values:FindFirstChild(m.Name) }) do
+		for _, c in ipairs(src:GetChildren()) do
+			if HitRun.Guards[c.Name] then
+				return c.Name
+			end
+		end
+	end
+	return nil
+end
+
+-- เป้าถัดไป: ตัวที่มีม็อบอื่นรอบตัวน้อยสุดก่อน (ชั้น 35 สตันที่ทำให้หมัดทิ้งมาจากตัวข้าง ๆ เป้า: Lost ซ้อน 4 ชั้น,
+-- Saneri, Water Trainee) เท่ากันเอาบอสก่อน (หมัดเข้าหมัดเดียว Insta Kill ก็ฆ่า) แล้วตัวใกล้สุด
+-- ข้ามตัวที่กำลังป้องกันอยู่ ถ้าทุกตัวป้องกันอยู่คืน nil (รอบนฟ้า)
+HitRun.CrowdRadius = 15
+function HitRun.pick(hrp)
+	local mobs = {}
+	for _, m in ipairs(workspace.Humanoids:GetDescendants()) do
+		local h = m:IsA("Model") and m:GetAttribute("IsMob") and m:FindFirstChildOfClass("Humanoid")
+		local root = h and m:FindFirstChild("HumanoidRootPart")
+		if root and h.Health > 0 and root.Position.Y > Combat.WorldFloorY then
+			mobs[#mobs + 1] = { m = m, h = h, root = root }
+		end
+	end
+	local best, bestKey
+	for _, e in ipairs(mobs) do
+		if not HitRun.guarded(e.m) then
+			local crowd = 0
+			for _, o in ipairs(mobs) do
+				if o ~= e and (o.root.Position - e.root.Position).Magnitude < HitRun.CrowdRadius then
+					crowd += 1
+				end
+			end
+			local key = crowd * 1e6 + (e.h.MaxHealth > MobTier.Normal.max and 0 or 1e5) + (e.root.Position - hrp.Position).Magnitude
+			if not bestKey or key < bestKey then
+				best, bestKey = e.m, key
+			end
 		end
 	end
 	return best
 end
 
--- ไปจุดปลอดภัย: ทิ้งเป้า (pinUnder ลอยค้างที่ hoverAt) ห้ามหมัดออกระหว่างนั้น
--- Kill Aura ตอนนอนใต้ดินยิงใส่ม็อบในระยะ 80 แม้ตัวไม่อยู่ใต้มัน = หมัดวืดเสียเลขคอมโบเปล่า ๆ
-function HitRun.goSafe(hrp, roots)
-	killAura.underRoot = nil
-	killAura.holdM1Until = math.huge
-	local near = math.huge
-	for _, r in ipairs(roots) do
-		near = math.min(near, (r.Position - hrp.Position).Magnitude)
+-- จุดตีเป้า: Pose "under" = นอนหงายใต้เป้า UnderDepth (เป้าตีลงมาไม่ถึง) · "front" = ยืนหน้าเป้า Stand หันเข้าหา
+HitRun.Pose = "under"
+HitRun.UnderDepth = 6
+function HitRun.front(root)
+	local p = root.Position
+	if HitRun.Pose == "under" then
+		return CFrame.new(p - Vector3.new(0, HitRun.UnderDepth, 0)) * killAura.LayFaceUp
 	end
-	if near < HitRun.SafeGap or not HitRun.safe then
-		HitRun.safe = HitRun.safeSpot(roots) or HitRun.safe
-	end
-	if HitRun.safe and (hrp.Position - HitRun.safe).Magnitude > 3 then
-		hrp.CFrame = CFrame.new(HitRun.safe) * killAura.LayFaceUp
-		killAura.hoverAt = hrp.CFrame
-	end
+	local look = root.CFrame.LookVector * Vector3.new(1, 0, 1)
+	look = look.Magnitude > 0.01 and look.Unit or Vector3.new(0, 0, -1)
+	local at = p + look * HitRun.Stand
+	return CFrame.lookAt(at, Vector3.new(p.X, at.Y, p.Z))
 end
 
 function HitRun.note(line)
@@ -17410,64 +17478,108 @@ function HitRun.note(line)
 	pcall(writefile, "PathSlayer/_hitrun.txt", table.concat(log, "\n"))
 end
 
+-- ลงไปตีเป้าหนึ่งเที่ยว คืนจำนวนหมัดที่ยิง / เข้า
+function HitRun.strike(hrp, target, alive)
+	local root = target:FindFirstChild("HumanoidRootPart")
+	local mobHum = target:FindFirstChildOfClass("Humanoid")
+	local RunService = game:GetService("RunService")
+	local fired, landed, misses = 0, 0, 0
+	local function standFor(seconds, untilFn)
+		local by = os.clock() + seconds
+		while alive() and root.Parent and os.clock() < by and not (untilFn and untilFn()) do
+			hold(hrp, HitRun.front(root))
+			RunService.Heartbeat:Wait()
+		end
+	end
+	-- ถือดาบก่อนลง: ปิด Kill Aura ไว้ (ตัวที่เคยหยิบให้) มือเปล่าส่งท่าดาบไป เซิร์ฟรับแต่ไม่มีดาเมจ 0/12 ชั้น 35
+	if heldSlot() == 0 and slotHasItem(primarySlot()) then
+		equipSlot(primarySlot())
+	end
+	standFor(HitRun.Settle)
+	while alive() and root.Parent and mobHum.Health > 0 and misses < HitRun.Misses do
+		-- ช่วงพักหลังหมัดปิด (1.65 วิ) ไม่ยืนรอให้โดนรุม กลับขึ้นฟ้า
+		if Chain.waitLeft() > HitRun.Settle then
+			break
+		end
+		standFor(math.max(Chain.waitLeft(), 0))
+		-- ยิงตอนเราติดสตันหรือเป้าป้องกันอยู่ = หมัดทิ้งแน่ กลับขึ้นฟ้ารอ ไม่ยืนให้โดนต่อ
+		if HitRun.stunned() or HitRun.guarded(target) then
+			HitRun.miss = HitRun.miss or {}
+			table.insert(HitRun.miss, HitRun.stunned() and "เราติดสตัน ไม่ยิง" or ("เป้า " .. HitRun.guarded(target) .. " ไม่ยิง"))
+			break
+		end
+		local hp0 = mobHum.Health
+		local char = LocalPlayer.Character
+		local accepted0 = char and char:GetAttribute("last_cmbat")
+		local combo = Chain.fire()
+		if combo then
+			fired += 1
+			standFor(HitRun.LandWait, function()
+				return mobHum.Health < hp0
+			end)
+			if mobHum.Health < hp0 or not root.Parent then
+				landed += 1
+				misses = 0
+				Runner.instaMarked[target] = true
+				standFor(HitRun.KillWait, function()
+					return mobHum.Health <= 0
+				end)
+			else
+				misses += 1
+				-- แยกสาเหตุ: เซิร์ฟตั้ง last_cmbat เมื่อรับหมัด (Check_can_do_combat_server) ไม่เปลี่ยน = ไม่รับ (สตัน/ล็อก)
+				-- เปลี่ยนแต่เลือดไม่ลด = รับแล้วกล่องหมัดไม่โดน
+				local values = ReplicatedStorage.Player_Service.Values:FindFirstChild(LocalPlayer.Name)
+				local stun = values and (values:FindFirstChild("Stun") or values:FindFirstChild("CombatStun"))
+				HitRun.miss = HitRun.miss or {}
+				table.insert(HitRun.miss, string.format("%s %s%s", target.Name,
+					(char and char:GetAttribute("last_cmbat")) ~= accepted0 and "รับแล้วไม่โดน" or "เซิร์ฟไม่รับ",
+					stun and " (สตัน)" or ""))
+			end
+		else
+			RunService.Heartbeat:Wait()
+		end
+	end
+	return fired, landed
+end
+
 function HitRun.loop(alive)
 	Runner.instaAnyHp = true
+	Runner.instaMarked = setmetatable({}, { __mode = "k" })
+	-- Kill Aura ปิดในหอคอย (combatOn) กันไว้อีกชั้นเผื่อผู้ใช้เปิดเองระหว่างไต่
+	killAura.holdM1Until = math.huge
+	killAura.underRoot = nil
 	killAura.pinUnder(nil)
 	while alive() do
 		fixIdentity()
 		local _, hrp, hum = selfParts()
+		if HitRun.paused then
+			task.wait(0.2)
+			continue
+		end
 		if not (hrp and hum and hum.Health > 0) or os.clock() <= (Ouwi.pauseUntil or 0)
 			or LocalPlayer:GetAttribute("Spectating") then
-			-- ย้ายแมพ / ตาย / ดูคนอื่น: ไม่ขยับ ให้เซิร์ฟวางตัวเอง จุดปลอดภัยเดิมเป็นของแมพเก่า
-			killAura.underRoot = nil
-			killAura.holdM1Until = math.huge
-			HitRun.safe = nil
+			-- ย้ายแมพ / ตาย / ดูคนอื่น: ไม่ขยับ ให้เซิร์ฟวางตัวเอง จุดบนฟ้าเดิมเป็นของแมพเก่า
+			HitRun.skyAt = nil
 			task.wait(0.2)
 			continue
 		end
 		local roots = enemiesAlive()
-		local target = nearestEnemy(hrp)
-		local root = target and target:FindFirstChild("HumanoidRootPart")
-		local mobHum = target and target:FindFirstChildOfClass("Humanoid")
-		if not (root and mobHum) then
-			HitRun.goSafe(hrp, roots)
+		local target = HitRun.pick(hrp)
+		-- ติดสตันอยู่ รอบนฟ้าจนหาย (สตันหมดเวลาเอง) ลงไปตอนนี้หมัดทิ้งและยืนให้โดนตีต่อ
+		if not target or Chain.waitLeft() > HitRun.Settle or HitRun.stunned() then
+			HitRun.goSky(hrp, roots)
 			task.wait(0.1)
-		elseif Chain.waitLeft() > Aura.BlinkBefore then
-			-- พักหลังหมัดปิด 1.65 วิ ยืนใต้ม็อบเฉย ๆ = ให้มันรุม รอที่จุดปลอดภัยแล้วค่อยไปพร้อมหมัดถัดไป
-			HitRun.goSafe(hrp, roots)
-			task.wait(math.min(Chain.waitLeft() - Aura.BlinkBefore, 0.5))
 		else
-			local arrived = os.clock()
-			local hp0 = mobHum.Health
-			killAura.underRoot = root
-			-- เซิร์ฟต้องเห็นตำแหน่งใหม่ก่อนหมัดแรก (Aura.BlinkBefore) ยิงเฟรมเดียวกับที่วาร์ปเข้า 0 หมัด
-			killAura.holdM1Until = arrived + HitRun.Settle
-			local firesAt = killAura.fires
-			local firstFire, firstDrop, ownAt
-			while alive() and root.Parent and mobHum.Health > 0 and os.clock() - arrived < HitRun.Window do
-				task.wait()
-				local t = os.clock() - arrived
-				if not firstFire and killAura.fires > firesAt then
-					firstFire = t
-				end
-				if not firstDrop and mobHum.Health < hp0 then
-					firstDrop = t
-				end
-				if not ownAt and root.Parent and select(2, pcall(isnetworkowner, root)) == true then
-					ownAt = t
-				end
-			end
-			local dead = not root.Parent or mobHum.Health <= 0
-			local _, meNow = selfParts()
-			HitRun.note(string.format("%s %s %.2fs หมัด %d (แรก %s) เลือดลด %s คุม %s · %d→%d/%d · dy %.1f dxz %.1f",
-				target.Name, dead and "ตาย" or "ไม่ตาย", os.clock() - arrived, killAura.fires - firesAt,
-				firstFire and string.format("%.2f", firstFire) or "-", firstDrop and string.format("%.2f", firstDrop) or "-",
-				ownAt and string.format("%.2f", ownAt) or "-", math.floor(hp0), math.floor(math.max(mobHum.Health, 0)),
-				math.floor(mobHum.MaxHealth), meNow and root.Parent and (root.Position.Y - meNow.Position.Y) or 0,
-				meNow and root.Parent and ((root.Position - meNow.Position) * Vector3.new(1, 0, 1)).Magnitude or 0))
-			if not dead then
-				HitRun.goSafe(hrp, enemiesAlive())
-			end
+			local mobHum = target:FindFirstChildOfClass("Humanoid")
+			local hp0 = mobHum and mobHum.Health or 0
+			local t0 = os.clock()
+			HitRun.miss = nil
+			local fired, landed = HitRun.strike(hrp, target, alive)
+			local dead = not target.Parent or not mobHum or mobHum.Health <= 0
+			HitRun.note(string.format("%s %s %.2fs ยิง %d เข้า %d · %d→%d%s", target.Name, dead and "ตาย" or "ไม่ตาย",
+				os.clock() - t0, fired, landed, math.floor(hp0), math.floor(math.max(mobHum and mobHum.Health or 0, 0)),
+				HitRun.miss and (" · พลาด: " .. table.concat(HitRun.miss, ", ")) or ""))
+			HitRun.goSky(hrp, enemiesAlive())
 		end
 	end
 	Runner.instaAnyHp = false
