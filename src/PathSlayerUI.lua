@@ -6833,8 +6833,10 @@ local Combat = {
 	-- ไม่จำกัดรัศมี กวาดทั้งแมพแล้วเลือกตัวที่ใกล้ที่สุดเสมอ
 	-- ที่จำกัดไว้ 120 ตอนแรกทำให้พอถอยหนีแล้วหาเป้าไม่เจออีกเลย (ห่าง 226 stud)
 	AcquireRange = math.huge,
-	-- พื้นแมพจริงอยู่ราว Y 900-1300 อะไรที่ต่ำกว่านี้คือม็อบที่ถูกพักไว้ใต้แมพ
-	WorldFloorY = 0,
+	-- ม็อบที่ถูกพักไว้ใต้แมพอยู่ราว Y -1,000,000 อะไรที่ต่ำกว่านี้คือตัวที่พักไว้ · พื้นแมพส่วนใหญ่ Y 900-1300
+	-- เดิม 0: ถ้ำ Yeti (ก้อน Frozen Yeti Y -33) ต่ำกว่า placeAt บล็อกการวาร์ป Yeti เองก็ถูกนับว่าไม่มีตัว
+	-- ปลุกไม่เคยติด (วัด 25 ก.ย. ตัวละครไม่เคยไปถึงถ้ำ)
+	WorldFloorY = -500,
 	-- ชาวบ้านมี IsMob = true เหมือนม็อบ (attribute เหมือนโจรทุกตัว แยกได้แค่ชื่อ)
 	-- Auto-Attack ทั่วไปไม่ควรไปไล่ตีคนในหมู่บ้าน ถ้าอยากตีจริง (เควสจับสายลับ)
 	-- ให้เลือกชื่อเองในแผง Auto-Attack-Mob ซึ่งข้ามรายการนี้
@@ -14331,6 +14333,8 @@ function Money.targets()
 				return (Game.wallet()["Frozen Heart"] or 0) > 0 or liveMobCount(yeti.Name) > 0
 			end,
 			fight = Money.yeti,
+			-- ลูกน้องที่ Yeti เรียก (NpcDataTable SmallYeti) ตีให้หมดก่อน ดู Money.fight
+			adds = { npc.SmallYeti and npc.SmallYeti.Name or "Small Yeti" },
 		})
 	end
 	Money.list = list
@@ -14350,13 +14354,18 @@ function Money.yeti(t, alive, say)
 		-- ขอ stream ก่อนวาร์ปแล้วรอนานขึ้น (ขอค้างได้ ใช้ตัวจำกัดเวลา)
 		streamAround(t.center, 3)
 		placeAt(hrp, CFrame.new(t.center + Vector3.new(0, 3, 6), t.center), "yeti")
+		-- Yeti ตื่นอยู่แล้ว (รอบก่อนตีค้าง / โหลดสคริปต์ใหม่กลางไฟต์) ก้อนน้ำแข็งปิด prompt ไว้ เห็นจากไกลไม่ได้
+		-- ต้องมาถึงถ้ำก่อนถึงรู้ · เดิมไม่เช็ก เห็น prompt ปิดก็ข้าม ทิ้ง Yeti ที่เหลือ 1537 ไว้เฉย ๆ (25 ก.ย.)
 		local prompt
 		local findBy = os.clock() + Money.YetiFindWait
 		repeat
 			task.wait(0.25)
 			local altar = workspace.Map.Map:FindFirstChild("FrozenYeti")
 			prompt = altar and altar:FindFirstChildWhichIsA("ProximityPrompt", true)
-		until prompt or os.clock() > findBy or not alive()
+		until (prompt and prompt.Enabled) or liveMobCount(t.name) > 0 or os.clock() > findBy or not alive()
+		if liveMobCount(t.name) > 0 then
+			return Money.fight(t, alive, say)
+		end
 		if not (prompt and prompt.Enabled) then
 			say("หาก้อน Frozen Yeti ไม่เจอ ข้ามไปก่อน")
 			return "missing"
@@ -14514,7 +14523,9 @@ function Money.next()
 	local best, bestAt
 	for _, t in ipairs(Money.targets()) do
 		if now >= (farm.wait[t.name] or 0) and (not t.ready or t.ready()) then
-			local at = (farm.fought[t.name] or 0) - (liveMobCount(t.name) > 0 and 1 or 0)
+			-- บอสที่ต้องปลุกเอง (Yeti มีหัวใจอยู่) มาก่อนทุกตัว: ให้แค่ -1/-2 ตัวที่ stream อยู่ใกล้หรือยังไม่เคยตี (0)
+			-- ชนะทุกรอบ หลังสแกนหีบแดง/ขายเหรียญมีบอสโผล่ใกล้ตัวเสมอ Yeti เลยไม่เคยถึงคิว (เห็นใน log 25 ก.ย.)
+			local at = t.fight and -math.huge or (farm.fought[t.name] or 0) - (liveMobCount(t.name) > 0 and 1 or 0)
 			if not bestAt or at < bestAt then
 				best, bestAt = t, at
 			end
@@ -14538,13 +14549,14 @@ function Money.fight(t, alive, say)
 	-- นับว่าตีเข้าจากเลือดที่ลดลงรอบต่อรอบ ไม่ใช่เลือดต่ำสุด: ตายแล้วเกิดใหม่บอสฟื้นเลือด 2%/วิ
 	-- (Datai 2807 -> 2989) ดูต่ำสุดแล้วนึกว่าตีไม่เข้า ทิ้งบอสทั้งที่ตีเข้าปกติ
 	local lastHp, lastDrop = math.huge, os.clock()
+	local onAdd
 	while alive() do
-		local mob
+		local mob, bossRoot
 		for _, m in ipairs(workspace.Humanoids:GetDescendants()) do
 			if m:IsA("Model") and m.Name == t.name and m:GetAttribute("IsMob") then
 				local hum = m:FindFirstChildOfClass("Humanoid")
 				if hum and hum.Health > 0 then
-					mob = hum
+					mob, bossRoot = hum, m:FindFirstChild("HumanoidRootPart")
 				end
 			end
 		end
@@ -14552,6 +14564,22 @@ function Money.fight(t, alive, say)
 		-- ระบบจำผลเลยคิดว่าตัวนี้คุ้มสุด) เช็กทุก 0.5 วิ บอสตีเหลือ 25% แล้วหายถือว่าตาย
 		if not mob then
 			return lastHp < t.hp * 0.25 and "killed" or "gone"
+		end
+		-- ลูกน้องที่บอสเรียกออกมา (Yeti: Small Yeti) ต้องตายหมดก่อนบอสถึงจะโดนดาเมจ (ผู้ใช้บอก 25 ก.ย. 2026
+		-- log เดียวกัน: Yeti เลือดค้าง 946/2790 เกิน 40 วิ ถูกทิ้งว่าตีไม่เข้า) ตีลูกน้องก่อน ช่วงนั้นไม่นับว่าค้าง
+		local add = t.adds and bossRoot and Runner.sealedGuard(bossRoot.Position, t.adds)
+		if add then
+			if onAdd ~= add then
+				onAdd = add
+				Runner.attackMob(add.Name)
+			end
+			lastDrop = os.clock()
+			say(string.format("ตีลูกน้อง %s ก่อน · %s HP %d/%d", add.Name, t.name, math.floor(mob.Health), math.floor(mob.MaxHealth)))
+			task.wait(0.5)
+			continue
+		elseif onAdd then
+			onAdd = nil
+			Runner.attackMob(t.name)
 		end
 		if mob.Health < lastHp - 1 then
 			lastDrop = os.clock()
@@ -14829,7 +14857,8 @@ local function farmLoop(mine)
 				Money.sealedRound(alive, say)
 			elseif result == "missing" then
 				-- บอสกลางคืน (Sumari, Reaper, Domae, Yahari) กลางวันไม่เกิดเลย แวะทุก 90 วิเปลืองเวลาเปล่า
-				farm.wait[t.name] = os.clock() + (t.night and Money.RespawnWait or Money.MissingRetry)
+				-- Yeti ปลุกไม่ขึ้นก็พักยาวเท่ากัน ไม่งั้นมันมาก่อนทุกตัว (ดู Money.next) วนกลับมาลองทุก 90 วิ
+				farm.wait[t.name] = os.clock() + ((t.night or t.fight) and Money.RespawnWait or Money.MissingRetry)
 			elseif result == "gone" then
 				farm.wait[t.name] = os.clock() + Money.RespawnWait
 			elseif result == "stuck" then
