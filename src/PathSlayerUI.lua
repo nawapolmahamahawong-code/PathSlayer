@@ -13188,7 +13188,8 @@ function Combo.sampleM1(mob)
 	local now = os.clock()
 	local dmg = Combo.myDamage(mob)
 	local s = Combo.m1Sample
-	if now < (killAura.holdM1Until or 0) + 0.3 then
+	-- ช่วงที่ท่ากำลังออก (busyUntil) ดาเมจปนดาเมจท่า ไม่ใช่หมัดล้วน
+	if now < (Combo.busyUntil or 0) + 0.3 then
 		Combo.m1Sample = nil
 		return
 	end
@@ -13430,7 +13431,13 @@ local function skillLoop()
 					local fullHold = (Combo.profile(skill.Name).holdAt or 0) + 0.05
 					local window = Combo.window(skill.Name)
 					local dmgBefore = Combo.myDamage(mob)
-					killAura.holdM1Until = os.clock() + window
+					-- หยุดหมัดเฉพาะตอนยังเรียนท่านี้ (ต้องการดาเมจของท่าล้วน) เรียนครบแล้วปล่อยหมัดตีต่อ
+					-- วัด 25 ก.ย. ช่วงเรียนที่หยุดหมัดทุกท่า ไฟต์ช้าลงเป็น 60-76 วิ จาก 39-56
+					local learning = not Combo.learned(skill.Name)
+					Combo.busyUntil = os.clock() + window + Combo.StandSettle
+					if learning then
+						killAura.holdM1Until = os.clock() + window
+					end
 					if pose == "stand" then
 						-- ยืนหน้าม็อบก่อนกด ให้เซิร์ฟเห็นตำแหน่งใหม่ (เหตุผลเดียวกับ Aura.BlinkBefore)
 						killAura.castPoseUntil = os.clock() + window + Combo.StandSettle
@@ -13458,7 +13465,11 @@ local function skillLoop()
 						used = true
 						-- รอจนท่าจบ (ตัวล็อกอยู่แล้ว กดท่าอื่นไม่ติด) แล้วดูดาเมจของเราบนม็อบว่าท่านี้เข้าเท่าไร
 						task.wait(math.max(window - (os.clock() - castAt), Game.tune.gap or SkillCast.Gap))
+						-- เรียนครบแล้วหมัดตีปนเข้ามา หักดาเมจหมัดตามอัตราที่วัดได้ ให้สถิติยังเทียบกันได้
 						local dealt = Combo.myDamage(mob) - dmgBefore
+						if not learning then
+							dealt -= (Combo.m1Rate or 0) * (os.clock() - castAt)
+						end
 						Combo.record(skill.Name, choice, dealt)
 						lastCast = string.format("%s [%s] %s%s %s ใส่ %s", skill.Name, keyOf(slot), Combo.why or "",
 							(pose == "stand" and " ยืน" or pose == "free" and " ปล่อยตัว" or "") .. (press == "held" and " ง้าง" or ""),
