@@ -13300,9 +13300,12 @@ function Combo.poseFor(name)
 	end
 	local s = Combo.stats[name] or {}
 	local chargeable = (Combo.profile(name).holdAt or 0) > 0
+	-- "underlearn" เรียนแค่แตะ/ง้างตอนนอนใต้ม็อบ: วัด 25 ก.ย. v4 (สลับ 13 ไฟต์) เรียนท่ายืนด้วยตาย 6 ครั้ง
+	-- 35 ดาเมจ/วิ · นอนใต้อย่างเดียวตาย 2 ครั้ง 50.5 ดาเมจ/วิ ยืนหน้าบอสโดนตีจนเวลาเกิดใหม่กินหมด
+	local underOnly = Game.tune.pose == "underlearn"
 	local best, bestAvg
 	for _, pose in ipairs(Combo.Poses) do
-		if chargeable or pose:find(":tap$") then
+		if (chargeable or pose:find(":tap$")) and (not underOnly or pose:find("^under")) then
 			local p = s[pose]
 			if not p or p.n < Combo.TryCasts then
 				return pose
