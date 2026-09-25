@@ -14758,8 +14758,10 @@ do
 	track(GuiService.ErrorMessageChanged:Connect(function()
 		local code = GuiService:GetErrorCode().Value
 		-- _G.PathSlayerRejoinTest: ทดสอบด้วยการเตะตัวเอง (267) ซึ่งปกติข้าม
-		-- เอาเฉพาะรหัสหลุดจากเซิร์ฟ (256-299) ย้ายเซิร์ฟล้มเหลวเป็น 7xx ตอนนั้นยังต่ออยู่ ห้ามย้ายซ้ำ
-		if Rejoin.busy or code < 256 or code >= 300 or (Rejoin.Skip[code] and not _G.PathSlayerRejoinTest) then
+		-- เอาเฉพาะรหัสหลุดจากเซิร์ฟ: 256-299 และหลุดระดับเน็ต 1025-1030 (DisconnectTransport* ขึ้นข้อความ
+		-- "check your internet connection" แบบเดียวกับ 277) ย้ายเซิร์ฟล้มเหลวเป็น 7xx ตอนนั้นยังต่ออยู่ ห้ามย้ายซ้ำ
+		local lost = (code >= 256 and code < 300) or (code > 1024 and code < 1100)
+		if Rejoin.busy or not lost or (Rejoin.Skip[code] and not _G.PathSlayerRejoinTest) then
 			return
 		end
 		task.spawn(rejoin, code)
