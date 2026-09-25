@@ -17345,7 +17345,8 @@ end
 --   → ใต้ลึก 6 + เลือกตัวที่อยู่ห่างฝูง + ไม่ยิงตอนติดสตัน/เป้าป้องกัน + ถือดาบ: 9/10 เลือดเราไม่ลด
 --   ชั้นห้ามอาวุธ (tooldisabled) ส่งท่าดาบ 0/24 ต้องส่งหมัดมือเปล่า (แก้ใน Chain.style)
 local HitRun = {
-	SkyHeight = 60,
+	-- 60 ยังโดนท่าระยะไกลสตันถึง (ชั้น 41 Serpent Trainee) ยกสูงขึ้น
+	SkyHeight = 100,
 	-- ยืนหน้าเป้าห่างเท่านี้ หันเข้าหา
 	Stand = 2.5,
 	-- ค้างที่เป้าก่อนยิงหมัดแรก วัดชั้น 35-40 ใต้เป้า 6: 0.3 เข้า 7/11 (หมัดแรกหลุดบ่อย หมัดสองเข้า) · 0.45 เข้า 9/10
@@ -17404,9 +17405,19 @@ end
 
 -- หมัดไม่เข้าเพราะฝั่งเรา: เซิร์ฟไม่รับหมัดตอนเราติด Stun/CombatStun (Checker.check) วัด 26 ก.ย. ชั้น 34-35
 -- พลาด 9 จาก 12 ครั้งตอนติดสตัน (Akazo สตันเราซ้อน 4 ชั้น) ไม่ติดสตันเข้า 3 จาก 4
+-- ค่าของสตันคือชื่อตัวที่ทำ จำไว้ 10 วิ ให้ pick ไล่ฆ่าตัวนั้นก่อน (ชั้น 41 Serpent Trainee สตันเราซ้อน 3 ชั้น
+-- ถึงบนฟ้าสูง 60 ตัวอื่นตีเข้าแต่หมัดทิ้งหมดเพราะติดสตันจากมัน)
+HitRun.stunners = {}
 function HitRun.stunned()
 	local v = ReplicatedStorage.Player_Service.Values:FindFirstChild(LocalPlayer.Name)
-	return v ~= nil and (v:FindFirstChild("Stun") ~= nil or v:FindFirstChild("CombatStun") ~= nil)
+	local any = false
+	for _, c in ipairs(v and v:GetChildren() or {}) do
+		if c.Name == "Stun" or c.Name == "CombatStun" then
+			any = true
+			HitRun.stunners[tostring(c.Value)] = os.clock()
+		end
+	end
+	return any
 end
 
 -- หมัดไม่เข้าเพราะฝั่งเป้า (Checker.check_victim): อมตะ (iframe) / หลบ (Dodge) / บล็อก / ท่าสวนที่ตั้งไว้ (SkillToggle)
@@ -17447,6 +17458,9 @@ function HitRun.pick(hrp)
 				end
 			end
 			local key = crowd * 1e6 + (e.h.MaxHealth > MobTier.Normal.max and 0 or 1e5) + (e.root.Position - hrp.Position).Magnitude
+			if os.clock() - (HitRun.stunners[e.m.Name] or -math.huge) < 10 then
+				key -= 1e8
+			end
 			if not bestKey or key < bestKey then
 				best, bestKey = e.m, key
 			end
@@ -17456,11 +17470,13 @@ function HitRun.pick(hrp)
 end
 
 -- จุดตีเป้า: Pose "under" = นอนหงายใต้เป้า UnderDepth (เป้าตีลงมาไม่ถึง) · "front" = ยืนหน้าเป้า Stand หันเข้าหา
+-- ตัวที่พลาดจากใต้ดินทั้งเที่ยวสลับไปยืนหน้าเที่ยวถัดไป (ชั้น 41 Stone Trainee พลาดใต้ดิน 4 หมัดติด)
 HitRun.Pose = "under"
 HitRun.UnderDepth = 6
+HitRun.failed = setmetatable({}, { __mode = "k" })
 function HitRun.front(root)
 	local p = root.Position
-	if HitRun.Pose == "under" then
+	if HitRun.Pose == "under" and (HitRun.failed[root.Parent] or 0) % 2 == 0 then
 		return CFrame.new(p - Vector3.new(0, HitRun.UnderDepth, 0)) * killAura.LayFaceUp
 	end
 	local look = root.CFrame.LookVector * Vector3.new(1, 0, 1)
@@ -17576,6 +17592,9 @@ function HitRun.loop(alive)
 			HitRun.miss = nil
 			local fired, landed = HitRun.strike(hrp, target, alive)
 			local dead = not target.Parent or not mobHum or mobHum.Health <= 0
+			if fired > 0 and landed == 0 then
+				HitRun.failed[target] = (HitRun.failed[target] or 0) + 1
+			end
 			HitRun.note(string.format("%s %s %.2fs ยิง %d เข้า %d · %d→%d%s", target.Name, dead and "ตาย" or "ไม่ตาย",
 				os.clock() - t0, fired, landed, math.floor(hp0), math.floor(math.max(mobHum and mobHum.Health or 0, 0)),
 				HitRun.miss and (" · พลาด: " .. table.concat(HitRun.miss, ", ")) or ""))
