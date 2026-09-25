@@ -2013,7 +2013,7 @@ local Layout = {
 		["แลกแต้มเป็น"] = { page = "quest", section = "quest", card = "dungeon", child = 3,
 			title = "แลกแต้มเป็น (ติ๊กหลายอย่าง = แบ่งเท่ากัน · ไม่ติ๊ก = ไม่แลก)" },
 		["Kasugai Crow Auto-Quest"] = { page = "quest", section = "quest", card = "crow", order = 6,
-			help = "รับเควสล่าบอสจากกระดานอีกาเอง (บอสที่ยืนอยู่ก่อน) ตีแบบใต้ดิน เก็บหีบ แล้ววนรับเควสถัดไป" },
+			help = "รับเควสล่าบอสจากกระดานอีกาเอง (บอสที่ยืนอยู่ก่อน) ตีแบบใต้ดิน เก็บหีบ แล้ววนรับเควสถัดไป · เปิดคู่ Money Farm = สลับ บอส > หีบแดง > เควสอีกา" },
 		["Auto-Final-Selection"] = { page = "quest", section = "quest", card = "finalsel", order = 3,
 			help = "ไปรอหน้าประตูสอบ (Sisters, Final Selection Plains) ก่อนเปิดทุก 2 ชม. ต้อง Lv 45 + Human" },
 		["ตีจากใต้ดิน"] = { page = "combat", section = "attack", card = "under", order = 2,
@@ -15177,6 +15177,26 @@ function Money.sealedRound(alive, say)
 	end
 end
 
+-- เปิดคู่ Kasugai Crow Auto-Quest: รอบอีกาหนึ่งรอบหลังหีบแดง (Runner.crowTurn อยู่ในส่วนอีกา)
+-- เฉพาะตอนผู้ใช้เปิดสวิตช์ฟาร์มเอง ไม่ทำตอนคิว Craft ยืมลูปนี้ (farm.untilDone) งานนั้นมีเป้าของมัน
+-- คืน true ถ้ารอบอีกาฆ่าบอสจนเควสจบ
+local function farmCrowTurn(alive, say)
+	if farm.untilDone or not (Runner.crowOn and Runner.crowOn()) or not alive() then
+		return false
+	end
+	Runner.haltAttack()
+	local boss = Runner.crowTurn(alive, say)
+	if boss then
+		farm.kills += 1
+		farm.wait[boss] = os.clock() + Money.RespawnWait
+	end
+	return boss ~= nil
+end
+
+function Runner.farmOn()
+	return farm.on and not farm.untilDone
+end
+
 local moneyRow
 local function farmLoop(mine)
 	-- identity ของ thread หล่นเป็น 2 กลางทาง (Auto Skill ตั้งให้ thread ลูก แล้วรั่วมาถึงนี่ เหมือนที่ skillLoop เจอ)
@@ -15281,7 +15301,10 @@ local function farmLoop(mine)
 		local t = Money.next()
 		if not t then
 			say("บอสทุกตัวยังไม่เกิด รอรอบถัดไป")
-			task.wait(3)
+			-- ว่างอยู่แล้ว ใช้ช่วงนี้ทำเควสอีกาไปด้วย (รอบอีกาไม่มีอะไรทำก็คืนทันที)
+			if not farmCrowTurn(alive, say) then
+				task.wait(3)
+			end
 		else
 			local fightAt, deathsAt = os.clock(), farm.deaths
 			local result = (t.fight or Money.fight)(t, alive, say)
@@ -15302,6 +15325,7 @@ local function farmLoop(mine)
 					say = say,
 				})
 				Money.sealedRound(alive, say)
+				farmCrowTurn(alive, say)
 			elseif result == "missing" then
 				-- บอสกลางคืน (Sumari, Reaper, Domae, Yahari) กลางวันไม่เกิดเลย แวะทุก 90 วิเปลืองเวลาเปล่า
 				-- Yeti ปลุกไม่ขึ้นก็พักยาวเท่ากัน ไม่งั้นมันมาก่อนทุกตัว (ดู Money.next) วนกลับมาลองทุก 90 วิ
@@ -15353,9 +15377,17 @@ moneyRow = switchRow("Auto-Money-Farm", "ปิดอยู่", 4, function(on)
 			if farm.loop ~= mine then
 				return
 			end
+			-- อีการันเดี่ยวอยู่: ไม่ปฏิเสธ หยุดลูปอีกาแล้วฟาร์มสลับรอบให้เอง (บอส > หีบแดง > เควสอีกา)
+			if Runner.crowYield then
+				moneyRow.setDesc("หยุดลูปอีกาก่อน แล้วสลับรอบกับฟาร์ม…")
+				Runner.crowYield()
+			end
 			if Runner.active then
-				moneyRow.setDesc("มีตัวรันอื่นทำงานอยู่ (Auto-Quest / Crow / Dungeon) หยุดตัวนั้นก่อนแล้วเปิดใหม่")
+				moneyRow.setDesc("มีตัวรันอื่นทำงานอยู่ (Auto-Quest / Dungeon) หยุดตัวนั้นก่อนแล้วเปิดใหม่")
 				farm.on = false
+				if Runner.crowResume then
+					Runner.crowResume()
+				end
 				return
 			end
 			farm.triedGinzo = -math.huge
@@ -15365,6 +15397,10 @@ moneyRow = switchRow("Auto-Money-Farm", "ปิดอยู่", 4, function(on)
 				Runner.active = false
 				farm.running = false
 				moneyRow.setDesc("ผิดพลาด: " .. tostring(err):sub(1, 90))
+			end
+			-- ปิดฟาร์มแล้ว (ไม่ใช่เปิดรอบใหม่ทับ) อีกายังเปิดอยู่ = อีกากลับไปรันเดี่ยวต่อ
+			if (not farm.on or not ok) and Runner.crowResume then
+				Runner.crowResume()
 			end
 		end)
 	else
@@ -16138,10 +16174,24 @@ local Crow = {
 	DeathGrace = 8,
 	-- รอหีบบอสโผล่หลังเควสจบ ค่าเผื่อ (Money farm รอ 3 วิแล้วบางทีไม่ทัน)
 	ChestWait = 10,
+	-- เปิดคู่ Auto-Money-Farm: บอสของเควสยังไม่เกิดรอที่จุดเกิดแค่นี้ แล้วกลับไปตีบอสฟาร์มต่อ เควสยังถืออยู่
+	-- รอบหน้าค่อยมาดูใหม่ บอสเกิดใหม่ทุก ~300 วิ ยืนรอเต็ม ๆ เสียรอบฟาร์มไปหลายตัว ค่าเผื่อ ยังไม่ได้วัด
+	TurnPatience = 15,
 	skip = {},
+	on = false,
+	-- ลูปของอีกาเองกำลังรันอยู่ (เปิดเดี่ยว) · false = ปิด หรือกำลังสลับรอบกับ Auto-Money-Farm
+	ownLoop = false,
 }
 local loop = 0
 local row
+
+-- ป้ายของแถวอีกา + ส่งต่อไปแถว Auto-Money-Farm ตอนเป็นรอบสลับ (Crow.relay)
+function Crow.say(text)
+	row.setDesc(text)
+	if Crow.relay then
+		Crow.relay("อีกา: " .. text)
+	end
+end
 
 local function heldQuest()
 	local q = questFolder()
@@ -16183,23 +16233,32 @@ function Crow.center(name)
 end
 
 -- ฆ่าบอสของเควสที่ถืออยู่จนเควสหายจาก Holder (เกมปิดให้ตอนนับครบ) แล้วเก็บหีบ
-function Crow.fight(quest, boss, alive)
+-- patience = รอบสลับกับ Money Farm: บอสไม่อยู่นานเกินนี้ก็เลิกรอ คืน "waiting" (เควสยังถืออยู่ รอบหน้ามาต่อ)
+function Crow.fight(quest, boss, alive, patience)
 	local center = Crow.center(boss)
 	local seenAt = -math.huge
+	local absentSince
 	while alive() and heldQuest() == quest do
 		if liveMobCount(boss) > 0 then
 			seenAt = os.clock()
+			absentSince = nil
 			Runner.attackMob(boss)
-			row.setDesc(string.format("%s · ตี %s", quest, boss))
+			Crow.say(string.format("%s · ตี %s", quest, boss))
 		else
 			Runner.haltAttack()
+			absentSince = absentSince or os.clock()
+			if patience and os.clock() - absentSince > patience and os.clock() - seenAt > Crow.DeathGrace then
+				Runner.haltAttack()
+				autoAttack.target = nil
+				return "waiting"
+			end
 			local _, hrp = selfParts()
 			-- บอสเพิ่งหาย = เพิ่งตาย เกมปิดเควสช้ากว่าบอสหายไม่กี่วิ อย่าเพิ่งวาร์ปกลับจุดเกิด
 			-- ผู้ใช้เจอ: กำลังจะเก็บหีบแต่วาร์ปไปจุดเกิด (บอสไล่ออกมาไกล) หีบเกินรัศมี 250 เลยไม่ได้เก็บ
 			if center and hrp and os.clock() - seenAt > Crow.DeathGrace and (hrp.Position - center).Magnitude > 60 then
 				goToSpawn(center)
 			end
-			row.setDesc(center and string.format("%s · รอ %s เกิดที่จุดเกิด", quest, boss)
+			Crow.say(center and string.format("%s · รอ %s เกิดที่จุดเกิด", quest, boss)
 				or string.format("%s · ไม่รู้จุดเกิดของ %s รอให้โผล่", quest, boss))
 		end
 		task.wait(0.5)
@@ -16219,10 +16278,34 @@ function Crow.fight(quest, boss, alive)
 				return not alive()
 			end,
 			say = function(text)
-				row.setDesc(quest .. " · " .. text)
+				Crow.say(quest .. " · " .. text)
 			end,
 		})
 	end
+end
+
+-- กดรับเควสจากกระดานแล้วรอขึ้นใน Holder · ไม่ขึ้น = โดนปฏิเสธ ข้ามบอสนั้นไป SkipFor
+-- คืน nil = รับได้ · ข้อความ = ทำไมยังรับไม่ได้ (คนเรียกเลือกเองว่าจะรอหรือไปทำอย่างอื่น)
+function Crow.claim(alive)
+	if questCooldown() > 0 then
+		return string.format("พักระหว่างเควส %d วิ", math.ceil(questCooldown()))
+	end
+	local entry = Crow.pick()
+	if not entry then
+		return "กระดานอีกาไม่มีเควสที่รับได้ · รอรอบสุ่มใหม่"
+	end
+	local name = entry:GetAttribute("Boss")
+	Crow.say("รับเควส " .. tostring(entry:GetAttribute("Quest")))
+	SignalEvent.ToServer("BossHuntsRequest", { action = "Claim", id = entry.Name })
+	local by = os.clock() + Crow.ClaimWait
+	while alive() and not heldQuest() and os.clock() < by do
+		task.wait(0.25)
+	end
+	if not heldQuest() then
+		Crow.skip[name] = os.clock() + Crow.SkipFor
+		return "รับเควส " .. tostring(name) .. " ไม่ติด ข้ามไปก่อน"
+	end
+	return nil
 end
 
 function Crow.run(alive)
@@ -16233,27 +16316,13 @@ function Crow.run(alive)
 			Crow.fight(quest, boss, alive)
 		elseif quest then
 			-- เกมให้ถือได้ทีละเควส ไม่ยกเลิกเควสของผู้เล่นให้
-			row.setDesc("ถือเควส " .. quest .. " อยู่ · จบก่อนถึงจะรับเควสอีกาได้")
+			Crow.say("ถือเควส " .. quest .. " อยู่ · จบก่อนถึงจะรับเควสอีกาได้")
 			task.wait(3)
-		elseif questCooldown() > 0 then
-			row.setDesc(string.format("พักระหว่างเควส %d วิ", math.ceil(questCooldown())))
-			task.wait(1)
 		else
-			local entry = Crow.pick()
-			if not entry then
-				row.setDesc("กระดานอีกาไม่มีเควสที่รับได้ · รอรอบสุ่มใหม่")
-				task.wait(5)
-			else
-				local name = entry:GetAttribute("Boss")
-				row.setDesc("รับเควส " .. tostring(entry:GetAttribute("Quest")))
-				SignalEvent.ToServer("BossHuntsRequest", { action = "Claim", id = entry.Name })
-				local by = os.clock() + Crow.ClaimWait
-				while alive() and not heldQuest() and os.clock() < by do
-					task.wait(0.25)
-				end
-				if not heldQuest() then
-					Crow.skip[name] = os.clock() + Crow.SkipFor
-				end
+			local why = Crow.claim(alive)
+			if why then
+				Crow.say(why)
+				task.wait(questCooldown() > 0 and 1 or 5)
 			end
 		end
 	end
@@ -16262,12 +16331,56 @@ function Crow.run(alive)
 	restore()
 end
 
-row = switchRow("Kasugai Crow Auto-Quest", "ปิดอยู่", 6, function(on)
-	loop += 1
-	if not on then
-		Runner.stop()
-		return
+-- หนึ่งรอบอีการะหว่างรอบฟาร์มเงิน (ผู้ใช้สั่ง 25 ก.ย. 2026: บอส > หีบแดง > เควสอีกา > บอส ... วนไป)
+-- ติดอะไร (พักระหว่างเควส / กระดานว่าง / บอสเควสยังไม่เกิด) ไม่ยืนรอ กลับไปตีบอสฟาร์มต่อ รอบหน้ามาดูใหม่
+-- คืนชื่อบอสที่ฆ่าจนเควสจบ ให้ฟาร์มพักบอสตัวนั้นเหมือนฆ่าเอง
+function Runner.crowTurn(alive, say)
+	if not Crow.on then
+		return nil
 	end
+	local turnAlive = function()
+		return alive() and Crow.on
+	end
+	Crow.relay = say
+	local ok, result = pcall(function()
+		local quest, boss = heldQuest()
+		if quest and not boss then
+			Crow.say("ถือเควส " .. quest .. " อยู่ · ข้ามรอบอีกา")
+			return nil
+		end
+		if not quest then
+			local why = Crow.claim(turnAlive)
+			if why then
+				Crow.say(why .. " · กลับไปตีบอส")
+				return nil
+			end
+			quest, boss = heldQuest()
+		end
+		if not boss then
+			return nil
+		end
+		if Crow.fight(quest, boss, turnAlive, Crow.TurnPatience) == "waiting" then
+			Crow.say(quest .. " · " .. boss .. " ยังไม่เกิด เก็บเควสไว้ กลับไปตีบอส")
+			return nil
+		end
+		return heldQuest() ~= quest and boss or nil
+	end)
+	Crow.relay = nil
+	Runner.haltAttack()
+	autoAttack.target = nil
+	if not ok then
+		row.setDesc("ผิดพลาด (รอบสลับ): " .. tostring(result):sub(1, 100))
+		return nil
+	end
+	return result
+end
+
+function Runner.crowOn()
+	return Crow.on
+end
+
+local function startOwnLoop()
+	loop += 1
 	local mine = loop
 	task.spawn(function()
 		while loop == mine and Runner.active do
@@ -16279,6 +16392,7 @@ row = switchRow("Kasugai Crow Auto-Quest", "ปิดอยู่", 6, function(
 		end
 		Runner.active = true
 		Runner.cancel = false
+		Crow.ownLoop = true
 		local ok, err = pcall(Crow.run, function()
 			-- Auto Skill ทำ identity หล่น อ่าน screen.Parent ไม่ได้ (เจอจริง รอบแรก) คืนค่าก่อนเช็กทุกครั้ง
 			if setthreadidentity and Game.loadIdentity then
@@ -16286,11 +16400,49 @@ row = switchRow("Kasugai Crow Auto-Quest", "ปิดอยู่", 6, function(
 			end
 			return loop == mine and screen.Parent ~= nil and not Runner.cancel
 		end)
+		Crow.ownLoop = false
 		Runner.active = false
 		if not ok then
 			row.setDesc("ผิดพลาด: " .. tostring(err):sub(1, 120))
 		end
 	end)
+end
+
+-- Auto-Money-Farm เปิดตอนอีการันเดี่ยวอยู่: หยุดลูปอีกาแล้วรอมันคืน Runner.active ฟาร์มค่อยเริ่มแล้วสลับรอบเอง
+-- ปิดด้วย loop += 1 ไม่ใช้ Runner.stop (Runner.cancel ค้าง true ฟาร์มที่กำลังจะเริ่มก็ตายตาม)
+function Runner.crowYield(maxWait)
+	if not Crow.ownLoop then
+		return
+	end
+	loop += 1
+	local by = os.clock() + (maxWait or 20)
+	while Crow.ownLoop and os.clock() < by do
+		task.wait(0.25)
+	end
+end
+
+-- ฟาร์มเงินปิดแล้ว อีกายังเปิดอยู่ = กลับไปรันเดี่ยวต่อ
+function Runner.crowResume()
+	if Crow.on and not Crow.ownLoop then
+		startOwnLoop()
+	end
+end
+
+row = switchRow("Kasugai Crow Auto-Quest", "ปิดอยู่", 6, function(on)
+	Crow.on = on
+	if not on then
+		-- รันเดี่ยว: หยุดตัวรันแบบเดิม · รอบสลับกับฟาร์ม: Crow.on = false พอ รอบอีกาที่ค้างอยู่เลิกเอง ฟาร์มเดินต่อ
+		loop += 1
+		if Crow.ownLoop then
+			Runner.stop()
+		end
+		return
+	end
+	if Runner.farmOn and Runner.farmOn() then
+		row.setDesc("สลับกับ Auto-Money-Farm: บอส > หีบแดง > เควสอีกา")
+		return
+	end
+	startOwnLoop()
 end)
 end
 
