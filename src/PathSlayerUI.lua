@@ -8161,14 +8161,14 @@ end
 
 -- ยามที่ยังไม่ตายรอบหีบ เลือดเหลือน้อยสุดก่อน: ยามน้อยลงเร็วที่สุด = โดนรุมน้อยลงเร็วที่สุด
 -- เดิมเลือกตัวใกล้หีบสุด ยามเดินไปมาเลยสลับเป้าทุก 0.5 วิ ดาเมจกระจายไม่มีตัวไหนตาย
-function Runner.sealedGuard(chestPos, names)
+function Runner.sealedGuard(chestPos, names, radius)
 	local folder = workspace:FindFirstChild("Humanoids")
 	local best, bestHp
 	for _, m in ipairs(folder and folder:GetDescendants() or {}) do
 		if m:IsA("Model") and m:GetAttribute("IsMob") and table.find(names, m.Name) then
 			local hum = m:FindFirstChildOfClass("Humanoid")
 			local root = m:FindFirstChild("HumanoidRootPart")
-			local near = root and (root.Position - chestPos).Magnitude <= Runner.Sealed.GuardRadius
+			local near = root and (root.Position - chestPos).Magnitude <= (radius or Runner.Sealed.GuardRadius)
 			if hum and hum.Health > 0 and near and (not bestHp or hum.Health < bestHp) then
 				best, bestHp = m, hum.Health
 			end
@@ -13039,6 +13039,100 @@ local function skillWeaponSlot()
 	return nil
 end
 
+-- เลือกท่าต่อจังหวะ ใช้ได้ทุกสาย (ปราณ / อาวุธ / Clan) อ่านค่าจาก ReplicatedStorage.Skills.<สาย>.<ท่า>.Config
+-- ที่โค้ดเซิร์ฟของท่าใช้จริง ไม่เขียนคอมโบแยกสาย: ชื่อค่าไม่เหมือนกันทุกท่า (SLAM_DAMAGE, FINAL_DAMAGE,
+-- HIT1_DAMAGE ...) เลยจับตามคำท้าย DAMAGE / BLOCK_BREAK / STUN / RAGDOLL / LOCK
+-- บอสมี BlockPoints (Yeti 18, Nezura 26 · ScaleBlockRemoval 0.6) บล็อกหมัด M1 ได้ (เห็น LastBlockedHitTime ขยับ)
+-- ลำดับ (ผู้ใช้ขอ 25 ก.ย. 2026 ให้คอมโบเข้ากันตามสาย จบบอสไว):
+--   1. บอสเพิ่งบล็อกหมัดเรา (LastBlockedHitTime ขยับใน BlockWindow วิ) → ท่าทำลายบล็อกแรงสุด
+--   2. บอสยังไม่ล้ม/สตัน → ท่าคุมที่ทำล้ม/สตันนานสุด (Flame: Blazing Universe / Flame Undulation ล้ม 1.5 วิ)
+--   3. บอสล้มอยู่ → ท่าดาเมจต่อวินาทีที่ล็อกตัวสูงสุด ระหว่างนั้น Kill Aura ตีหมัดต่อ
+local Combo = {
+	BlockWindow = 1.5,
+	-- ท่าที่ไม่มีค่าล็อกตัวใน Config ถือว่าล็อก ~1 วิ (ค่ากลางจากท่าที่มี: 0.5-3 วิ ไม่นับคัตซีน)
+	DefaultLock = 1,
+	profiles = {},
+	targets = setmetatable({}, { __mode = "k" }),
+}
+
+function Combo.profile(name)
+	local p = Combo.profiles[name]
+	if p then
+		return p
+	end
+	p = { damage = 0, blockBreak = 0, control = 0, lock = 0 }
+	for _, folder in ipairs(ReplicatedStorage.Skills:GetChildren()) do
+		local config = folder:FindFirstChild(name) and folder[name]:FindFirstChild("Config")
+		local cfg = config and require(config)
+		if type(cfg) == "table" then
+			for key, v in pairs(cfg) do
+				if type(v) == "number" then
+					-- COUNTER_ ออกเฉพาะตอนโดนตีระหว่างง้าง / TICK ต่อวินาที ไม่ใช่ดาเมจก้อน ไม่นับ
+					if key:find("DAMAGE$") and not key:find("COUNTER") and not key:find("TICK") then
+						p.damage += v
+					elseif key:find("BLOCK_BREAK$") then
+						p.blockBreak = math.max(p.blockBreak, v)
+					elseif key:find("STUN$") or key:find("RAGDOLL$") then
+						p.control = math.max(p.control, v)
+					elseif key:find("LOCK_DUR") or key:find("CUTSCENE_DUR") or key:find("PAUSE_GAMEPLAY") then
+						p.lock = math.max(p.lock, v)
+					end
+				end
+			end
+			break
+		end
+	end
+	if p.lock <= 0 then
+		p.lock = Combo.DefaultLock
+	end
+	Combo.profiles[name] = p
+	return p
+end
+
+-- บอสบล็อกหมัดเราล่าสุดเมื่อไร: ค่าเป็นนาฬิกาเซิร์ฟ เทียบกับของเราไม่ได้ จดเวลาฝั่งเราตอนค่าเปลี่ยนแทน
+function Combo.blocking(mob)
+	local t = Combo.targets[mob] or {}
+	Combo.targets[mob] = t
+	local v = mob:GetAttribute("LastBlockedHitTime")
+	if v ~= t.blockValue then
+		t.blockValue, t.blockSeen = v, t.blockValue ~= nil and os.clock() or 0
+	end
+	return os.clock() - (t.blockSeen or 0) < Combo.BlockWindow
+end
+
+-- คืนช่องของท่าที่ควรกดตอนนี้ ในท่าที่ usable(ช่อง, ท่า) ผ่าน · Combo.why = เหตุผลไว้โชว์บนแถวสถานะ
+function Combo.pick(keys, mob, usable)
+	local blocking = Combo.blocking(mob)
+	local controlled = os.clock() < (Combo.targets[mob].controlUntil or 0)
+	local best, bestScore, why
+	for slot = 2, #keys do
+		local skill = keys[slot]
+		if usable(slot, skill) then
+			local p = Combo.profile(skill.Name)
+			local score, reason = p.damage / p.lock, "ดาเมจ"
+			if blocking and p.blockBreak > 0 then
+				score, reason = 1e6 + p.blockBreak, "ทำลายบล็อก"
+			elseif not controlled and p.control > 0 then
+				score, reason = 1e3 + p.control * 10 + p.damage / p.lock, "เปิดให้ล้ม"
+			end
+			if not bestScore or score > bestScore then
+				best, bestScore, why = slot, score, reason
+			end
+		end
+	end
+	Combo.why = why and ("(" .. why .. ")") or nil
+	return best
+end
+
+function Combo.cast(name, mob)
+	local p = Combo.profile(name)
+	local t = Combo.targets[mob] or {}
+	Combo.targets[mob] = t
+	if p.control > 0 then
+		t.controlUntil = math.max(t.controlUntil or 0, os.clock() + p.control)
+	end
+end
+
 -- กดทุกท่าทันทีที่พ้นคูลดาวน์ ไม่รอจังหวะหมัด (ผู้ใช้สั่ง 25 ก.ย. 2026 "spam Z X C V B")
 -- เคยกดเฉพาะ 0.5 วิหลังหมัดปิดของ Kill Aura: วัดกับ Zuko ท่าล็อกตัว 3 วิทับกลางคอมโบเสียหมัด ~43 ได้ท่าคืน 49
 -- แต่ได้กดแค่ราวคอมโบละท่า ท่าที่พร้อมแล้วรอคิวจนผู้ใช้เห็นว่าไม่กดสกิลเลย
@@ -13102,13 +13196,16 @@ local function skillLoop()
 					math.ceil(soonest.left), autoSkill.casts))
 			end
 			local keys = SkillsProvider.get_current_keys() or {}
-			for slot = 2, math.min(#keys, #SlotActions) do
-				local skill = keys[slot]
-				local root = mob:FindFirstChild("HumanoidRootPart")
-				local ready = skill.Name ~= "Blocking" and not onCooldown(skill)
+			local root = mob:FindFirstChild("HumanoidRootPart")
+			-- ทีละท่า: เลือกท่าที่เหมาะกับจังหวะนี้ที่สุดจากท่าที่พร้อม (Combo.pick) แทนการกดตามลำดับช่อง
+			local slot = root and Combo.pick(keys, mob, function(i, skill)
+				return autoSkill.picked[i - 1] and skill.Name ~= "Blocking" and not onCooldown(skill)
 					and os.clock() >= (lockedUntil[skill.Name] or 0)
-					and root and (root.Position - hrp.Position).Magnitude <= skillReach(skill.Name)
-				if autoSkill.on and autoSkill.picked[slot - 1] and ready and root and mob.Parent then
+					and (root.Position - hrp.Position).Magnitude <= skillReach(skill.Name)
+			end)
+			if slot then
+				local skill = keys[slot]
+				if autoSkill.on and mob.Parent then
 					aim.pos = root.Position
 					local ok, started = asGame(SkillController.Attempt_Hold, skill.Name, keyOf(slot))
 					if ok and started then
@@ -13120,7 +13217,8 @@ local function skillLoop()
 						asGame(SkillController.StopHold, skill.Name)
 						SkillController.HeldSkill, SkillController.CurrentMax = nil, nil
 						autoSkill.casts += 1
-						lastCast = string.format("ใช้ %s [%s] ใส่ %s", skill.Name, keyOf(slot), mob.Name)
+						Combo.cast(skill.Name, mob)
+						lastCast = string.format("%s [%s] %s ใส่ %s", skill.Name, keyOf(slot), Combo.why or "", mob.Name)
 						show(lastCast .. " · ใช้ไป " .. autoSkill.casts .. " ครั้ง")
 						used = true
 						task.wait(SkillCast.Gap)
@@ -14345,6 +14443,8 @@ function Money.targets()
 			fight = Money.yeti,
 			-- ลูกน้องที่ Yeti เรียก (NpcDataTable SmallYeti) ตีให้หมดก่อน ดู Money.fight
 			adds = { npc.SmallYeti and npc.SmallYeti.Name or "Small Yeti" },
+			-- ลูกน้องเดินไล่เราไปทั่วถ้ำ ห่างเกิน 120 (รัศมียามหีบ) Yeti ค้างเลือด 970 ทั้งไฟต์ มองไม่เห็นลูกน้อง
+			addRadius = 400,
 		})
 	end
 	Money.list = list
@@ -14577,7 +14677,7 @@ function Money.fight(t, alive, say)
 		end
 		-- ลูกน้องที่บอสเรียกออกมา (Yeti: Small Yeti) ต้องตายหมดก่อนบอสถึงจะโดนดาเมจ (ผู้ใช้บอก 25 ก.ย. 2026
 		-- log เดียวกัน: Yeti เลือดค้าง 946/2790 เกิน 40 วิ ถูกทิ้งว่าตีไม่เข้า) ตีลูกน้องก่อน ช่วงนั้นไม่นับว่าค้าง
-		local add = t.adds and bossRoot and Runner.sealedGuard(bossRoot.Position, t.adds)
+		local add = t.adds and bossRoot and Runner.sealedGuard(bossRoot.Position, t.adds, t.addRadius)
 		if add then
 			if onAdd ~= add then
 				onAdd = add
