@@ -7591,8 +7591,13 @@ local Loot = {
 	GrabRadius = 9,
 	GrabSettle = 0.3,
 	-- ไล่เก็บทุกกลุ่มกี่รอบ รอบหลังเก็บชิ้นที่ยิงแล้วเซิร์ฟไม่รับ · รอของหายก่อนตรวจรอบถัดไป (เซิร์ฟลบใน ~0.6 วิ)
-	GrabPasses = 3,
+	GrabPasses = 4,
 	ClaimWait = 0.8,
+	-- หลังกดเก็บยืนอยู่อีกเท่านี้ก่อนไปกลุ่มถัดไป (ความหน่วงไป-กลับเซิร์ฟ ~0.1-0.2 วิ + เผื่อ) ค่าเผื่อ ยังไม่ได้วัด
+	GrabHold = 0.35,
+	-- จำนวนของบนพื้นนิ่งเท่านี้ = หีบปล่อยครบแล้ว · รอรวมไม่เกิน StableMax (ของบินออกจากหีบ ~0.52 วิต่อชิ้น)
+	StableFor = 0.6,
+	StableMax = 3,
 	-- กดเปิดหีบซ้ำได้กี่ครั้ง (ครั้งละรอ 2 วิ) ก่อนยอมแพ้ · คนอื่นเปิดตัดหน้า IsOpen เปลี่ยน ออกจากลูปเอง
 	OpenTries = 4,
 }
@@ -7697,6 +7702,19 @@ local function collectLoot(opts)
 	if #chests > 0 then
 		task.wait(Loot.LandWait)
 	end
+	-- รอให้ของหยุดเด้งออกก่อน: หีบบอส/หีบแดงปล่อยของทยอยออก ของที่โผล่หลังเริ่มเก็บหลุดรายการ
+	-- แล้ววาร์ปไปบอสตัวถัดไปทั้งที่ยังไม่เก็บ (ผู้ใช้เจอ 25 ก.ย. 2026) · นับจำนวนนิ่ง StableFor วิ ไม่เกิน StableMax
+	do
+		local count, since = #myDrops(origin), os.clock()
+		local by = os.clock() + Loot.StableMax
+		while os.clock() < by and os.clock() - since < Loot.StableFor and not stop() do
+			task.wait(0.1)
+			local n = #myDrops(origin)
+			if n ~= count then
+				count, since = n, os.clock()
+			end
+		end
+	end
 
 	local got = {}
 	local function claimed(d)
@@ -7743,6 +7761,8 @@ local function collectLoot(opts)
 				fired[d.part] = d
 				task.spawn(fireproximityprompt, d.prompt)
 			end
+			-- ยืนค้างจนเซิร์ฟรับคำสั่งเก็บ: วาร์ปออกทันทีหลังกด เซิร์ฟเห็นตัวเราที่กลุ่มถัดไปแล้ว ของกลุ่มนี้ไม่เข้า
+			task.wait(Loot.GrabHold)
 			say(string.format("เก็บพร้อมกัน %d ชิ้น (เหลือ %d · รอบ %d)", #group, #left - #group, pass))
 			local rest = {}
 			for _, d in ipairs(left) do
