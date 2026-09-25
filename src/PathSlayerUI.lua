@@ -13110,6 +13110,8 @@ local Combo = {
 	HitShare = 0.4,
 	-- เลือดบอสไม่ลดเกินนี้ (วิ) ถือว่าอมตะอยู่ · หมัด M1 ยิงทุก ~0.3-0.45 วิ ปกติเลือดขยับทุกวิ
 	VulnWindow = 2.5,
+	-- ช่วงเก็บตัวอย่างดาเมจหมัด (วิ) สั้นกว่านี้หมัดเดียวแกว่งค่ามาก
+	M1SampleSecs = 2,
 	-- ยืนหน้าม็อบแล้วรอให้เซิร์ฟเห็นตำแหน่งก่อนกดท่า ค่าเดียวกับ Aura.BlinkBefore ที่วัดไว้
 	StandSettle = 0.25,
 	profiles = {},
@@ -13180,6 +13182,24 @@ function Combo.vulnerable(mob)
 	return os.clock() - (t.dropAt or 0) < Combo.VulnWindow
 end
 
+-- ดาเมจหมัด M1 ต่อวิจริง วัดจาก DMG ของเราช่วงที่ไม่ได้ออกท่า (ตัวเทียบว่าท่าไหนคุ้มกว่าตีหมัดในเวลาเดียวกัน)
+-- วัด 25 ก.ย. Regular Katana หมัดละ 48-58 · Blazing Universe โดนเฉลี่ย 76 แต่ล็อกตัว ~1.65 วิ = ตีหมัดได้มากกว่า
+function Combo.sampleM1(mob)
+	local now = os.clock()
+	local dmg = Combo.myDamage(mob)
+	local s = Combo.m1Sample
+	if now < (killAura.holdM1Until or 0) + 0.3 then
+		Combo.m1Sample = nil
+		return
+	end
+	if s and s.mob == mob and now - s.at >= Combo.M1SampleSecs then
+		local rate = math.max(dmg - s.dmg, 0) / (now - s.at)
+		Combo.m1Rate = Combo.m1Rate and Combo.m1Rate * 0.8 + rate * 0.2 or rate
+		s = nil
+	end
+	Combo.m1Sample = s or { mob = mob, at = now, dmg = dmg }
+end
+
 -- คืนช่องของท่าที่ควรกดตอนนี้ ในท่าที่ usable(ช่อง, ท่า) ผ่าน · Combo.why = เหตุผลไว้โชว์บนแถวสถานะ
 -- บอสเลือดนิ่ง (อมตะ/เปลี่ยนเฟส) และไม่ได้บล็อก = ไม่กดอะไร เก็บท่าไว้ (คืน nil)
 function Combo.pick(keys, mob, usable)
@@ -13195,13 +13215,18 @@ function Combo.pick(keys, mob, usable)
 		if usable(slot, skill) then
 			local p = Combo.profile(skill.Name)
 			local perSec = Combo.damageOf(skill.Name) / p.lock
+			-- กำไรเทียบตีหมัดในเวลาที่ท่ากิน · ยังเรียนท่านี้ไม่ครบให้ลองไปก่อน (explore) ไม่งั้นไม่มีวันรู้ค่าจริง
+			local learned = Combo.learned(skill.Name)
+			local net = Combo.damageOf(skill.Name) - (Combo.m1Rate or 0) * Combo.window(skill.Name)
 			local score, reason = perSec, "ดาเมจ"
 			if blocking and p.blockBreak > 0 then
 				score, reason = 1e6 + p.blockBreak, "ทำลายบล็อก"
+			elseif learned and not blocking and net <= 0 then
+				score = nil
 			elseif not controlled and p.control > 0 then
 				score, reason = 1e3 + p.control * 10 + perSec, "เปิดให้ล้ม"
 			end
-			if not bestScore or score > bestScore then
+			if score and (not bestScore or score > bestScore) then
 				best, bestScore, why = slot, score, reason
 			end
 		end
@@ -13290,6 +13315,12 @@ function Combo.poseFor(name)
 	return best
 end
 
+-- ลองครบทุกแบบที่ต้องลองแล้ว (poseFor ไม่ได้ส่งแบบที่ยังลองไม่ครบกลับมา)
+function Combo.learned(name)
+	local s = (Combo.stats[name] or {})[Combo.poseFor(name)]
+	return s ~= nil and s.n >= Combo.TryCasts
+end
+
 -- ดาเมจต่อครั้งจากที่วัดได้จริงในท่ายืนที่จะใช้ · ยังวัดไม่ถึง TryCasts ใช้ค่าจาก Config
 function Combo.damageOf(name)
 	local s = (Combo.stats[name] or {})[Combo.poseFor(name)]
@@ -13372,6 +13403,7 @@ local function skillLoop()
 			end
 			local keys = SkillsProvider.get_current_keys() or {}
 			local root = mob:FindFirstChild("HumanoidRootPart")
+			Combo.sampleM1(mob)
 			-- ทีละท่า: เลือกท่าที่เหมาะกับจังหวะนี้ที่สุดจากท่าที่พร้อม (Combo.pick) แทนการกดตามลำดับช่อง
 			local function usable(i, skill)
 				return autoSkill.picked[i - 1] and skill.Name ~= "Blocking" and not onCooldown(skill)
@@ -13431,7 +13463,7 @@ local function skillLoop()
 						lastCast = string.format("%s [%s] %s%s %s ใส่ %s", skill.Name, keyOf(slot), Combo.why or "",
 							(pose == "stand" and " ยืน" or pose == "free" and " ปล่อยตัว" or "") .. (press == "held" and " ง้าง" or ""),
 							Combo.isHit(skill.Name, dealt) and ("โดน " .. math.floor(dealt)) or "พลาด", mob.Name)
-						show(lastCast .. " · ใช้ไป " .. autoSkill.casts .. " ครั้ง")
+						show(string.format("%s · หมัด %d/วิ · ใช้ไป %d ครั้ง", lastCast, Combo.m1Rate or 0, autoSkill.casts))
 					elseif not onCooldown(skill) then
 						lockedUntil[skill.Name] = os.clock() + 5
 					end
