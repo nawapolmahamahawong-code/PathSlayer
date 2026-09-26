@@ -1958,6 +1958,8 @@ do
 		{ page = "items", key = "upgrade", title = "อัปเกรดอุปกรณ์ (Refine)",
 			hint = "ตีเสริมอาวุธ / ของสวมใส่ / เบ็ดในกระเป๋า เลือกระดับเป้าหมาย สคริปต์ตีวนให้จนถึง" },
 		{ page = "items", key = "material", title = "วัตถุดิบและของใช้" },
+		{ page = "items", key = "blackmarket", title = "Black Market",
+			hint = "พ่อค้าตลาดมืดโผล่ทุก 2 ชม. อยู่ 30 นาที ของเปลี่ยนทุกรอบ · ติ๊กของที่อยากได้ไว้ล่วงหน้า มาเมื่อไหร่แวะซื้อให้" },
 		{ page = "items", key = "set", title = "เซ็ตท็อปเกม" },
 		{ page = "items", key = "loot", title = "เก็บของ" },
 		{ page = "warp", key = "server", title = "ย้ายเซิร์ฟ",
@@ -2079,6 +2081,8 @@ local Layout = {
 			help = "วาร์ปหลบตอนม็อบเริ่มท่าตี จำท่าที่เคยโดนไว้ในไฟล์" },
 		["Auto-Chest"] = { page = "items", section = "loot", card = "chest", order = 1,
 			help = "เปิดหีบบอสและเก็บของดรอปของเราให้เอง" },
+		["Black Market Auto-Buy"] = { page = "items", section = "blackmarket", card = "blackmarket", order = 1,
+			help = "Black Marketer มาถึงแล้วมีของที่ติ๊กไว้ หยุดฟาร์ม / เควสชั่วคราว วาร์ปไปซื้อ แล้วพากลับไปทำต่อ" },
 	},
 	feature = {
 		["Auto-Attack-Mob"] = { page = "combat", section = "attack", card = "attackMob", child = 1,
@@ -2093,6 +2097,8 @@ local Layout = {
 			help = "ตีชิ้นเซ็ต Nightfall แบบโต๊ะช่าง · ขาดแบบ วัสดุ หรือเงิน หาให้เองจนตีได้ · ติ๊กหลายชิ้นได้" },
 		["Get Nightfall Schematic"] = { page = "items", section = "set", card = "nightfall", order = 1,
 			help = "แบบพิมพ์เซ็ต Nightfall 11 ชิ้น · Study / คันโยก / กุญแจงู / รูปปั้น / แลก · ติ๊กหลายชิ้นได้" },
+		["Black Market"] = { page = "items", section = "blackmarket", card = "blackmarket", child = 1,
+			title = "เลือกของที่จะซื้อ", help = "ของทุกชิ้นที่ร้านนี้ขาย ราคา ค่าพลัง รอบนี้ / รอบหน้ามีอะไร มาอีกกี่นาที" },
 		["Upgrade อุปกรณ์"] = { page = "items", section = "upgrade", card = "refine", order = 1,
 			help = "เลือกของ (แยกที่ใส่อยู่ / ในกระเป๋า) ตั้งระดับ +1 ถึง +10 ดูโอกาส ค่าใช้จ่าย ของที่ขาด แล้วกดอัป" },
 		["Log ดันเจี้ยน"] = { page = "quest", section = "quest", card = "dungeonlog", order = 6,
@@ -4977,6 +4983,23 @@ end
 
 Runner = { active = false, cancel = false, lastStart = 0, hasAlternative = false }
 
+-- งานแทรกระหว่างรัน (Black Market Auto-Buy): ตัวรันที่ถือ Runner.active อยู่ ไม่มีใครวาร์ปตัวแทรกได้
+-- (ฟาร์มปักตัวทุกเฟรม วาร์ปจากข้างนอกโดนดึงกลับใน 0.5 วิ วัด 26 ก.ย.) เลยฝากงานไว้ที่นี่
+-- ให้ฟาร์ม / อีกา / Auto-Quest หยิบไปทำเองตอนจบเป้าหนึ่งก่อนเริ่มเป้าถัดไป งานพาตัวกลับที่เดิมเอง
+function Runner.doErrand()
+	local job = Runner.errand
+	if not job then
+		return false
+	end
+	Runner.errand = nil
+	Runner.haltAttack()
+	local ok, err = pcall(job)
+	if not ok then
+		warn("PathSlayer errand: " .. tostring(err))
+	end
+	return true
+end
+
 -- ป้ายสถานะในแผง Auto-Quest (แผงสร้างก่อน questPlan / questProgress เลยอ่านผ่านตรงนี้)
 -- วินาทีที่เกมบังคับพักระหว่างจบเควสกับรับเควสถัดไป (QuestRules.QuestCD)
 function Runner.questCD()
@@ -5377,6 +5400,7 @@ function Runner.start(list)
 					break
 				end
 				if not q.dropped and not q.finished then
+					Runner.doErrand()
 					local others = 0
 					for _, o in ipairs(queue) do
 						if o ~= q and not o.dropped and not o.finished then
@@ -11100,9 +11124,15 @@ local Potion = {
 	DrinkTime = 2.3,
 	-- เว้นระหว่างขวด ให้ค่าเลือดใหม่ replicate มาก่อน ไม่งั้นกินซ้อนสองขวดทั้งที่ขวดแรกพอแล้ว
 	Gap = 1.5,
+	-- ดื่มไม่ติด (โดนตีระหว่าง 1.85 วิ เซิร์ฟ check_victim ยกเลิกทั้งขวด) พักก่อนลองใหม่ เพิ่มเท่าตัวทุกครั้งที่พลาดติดกัน
+	-- เดิมลองใหม่ทุก Gap: ตีบอสเลือดต่ำกว่าเกณฑ์ตลอด วัด 26 ก.ย. สลับไปถือยาทุก 4.5 วิ ค้างยา 3 วิ ดาบอยู่ในมือแค่ 1/3
+	-- (ท่าดื่มโดนยกเลิกแทบทุกขวด กินติด 66 ขวดทั้งรอบ) บอสตายช้าจนผู้ใช้เห็นว่าดาบถือบ้างไม่ถือบ้าง
+	FailBackoff = 6,
+	MaxBackoff = 30,
 	on = false,
 	loop = 0,
 	drinks = 0,
+	fails = 0,
 	last = 0,
 }
 
@@ -11259,6 +11289,12 @@ local function loop(mine)
 					Potion.last = os.clock()
 					local ok, msg = drink(name)
 					Potion.last = os.clock()
+					if ok then
+						Potion.fails = 0
+					else
+						Potion.fails += 1
+						Potion.last += math.min(Potion.FailBackoff * 2 ^ (Potion.fails - 1), Potion.MaxBackoff)
+					end
 					row.setDesc(string.format("%s · กินไป %d ขวด · เหลือ %s", tostring(msg), Potion.drinks, stockText()))
 				else
 					row.setDesc(string.format("เลือด %d%% ต่ำกว่า %d%% แต่ไม่มียา · ซื้อที่ Rika / Alchemist Meku", pct, Potion.threshold))
@@ -11302,9 +11338,10 @@ end)()
 --   ระดับ 0-10 · แต่ละขั้นใช้ Wen + Refinement Ore (ขั้น 0-4) หรือ Mythic Refinement Ore (ขั้น 5-9)
 --   ผล: Success +1 · Great ข้ามได้ถึง +3 (GreatStep) · Fail ระดับตก · Refinement Guard กันระดับตก (เผาทีละใบ)
 --   Mythic ไม่พอ เซิร์ฟหลอม Refinement Ore 5 ก้อนแทนให้ 1 (ResolveOreCost)
---   ยิง SignalFunction "RefinementRequest" { action = "Attempt", Id, UseGuard } ได้จากทุกที่ ไม่ต้องยืนหน้า Hagane
---   (ทดสอบจริง: ห่าง Hagane 3,072 stud ตอบ { Ok = true, Level = 1, Outcome = "Success" })
--- ไม่ใช้ Runner: ไม่ขยับตัวละคร เลยอัปไปพร้อมคิว Craft / ฟาร์มได้
+--   ยิง SignalFunction "RefinementRequest" { action = "Attempt", Id, UseGuard }
+--   เดิมยิงจากที่ไหนก็ได้ (24 ก.ย. ห่าง 3,072 stud ยังผ่าน) เซิร์ฟแก้แล้ว 26 ก.ย. ห่างเท่าไหร่ก็ตอบ
+--   { Ok = false, Reason = "Visit Refiner Hagane" } (ลองจากห่าง 754 stud) ต้องวาร์ปไปยืนหน้า Hagane ก่อน
+--   เหมือน Exchange ที่ Togane · ถือ Runner.active ไว้ตลอด ตัวรันอื่น (ฟาร์ม) ปักตัวทุกเฟรม วาร์ปแล้วโดนดึงกลับใน 0.5 วิ
 ;(function()
 local Refinement = require(ReplicatedStorage.CAM.Global.Refinement)
 local Utility = require(ReplicatedStorage.CAM.Global.Utility)
@@ -11319,6 +11356,7 @@ local function fixIdentity()
 end
 
 local Up = {
+	Npc = "Refiner Hagane",
 	Max = Refinement.MaxLevel or 10,
 	Guard = Refinement.GuardItem or "Refinement Guard",
 	-- เว้นระหว่างครั้ง เท่าจังหวะคนกดเร็ว ๆ ในหน้าเกม (พิธีกรรมตีในเกมยาว ~1 วิ กดข้ามได้)
@@ -12142,8 +12180,19 @@ local function run()
 	if not it or it.level >= Up.Max then
 		return
 	end
+	if Runner.active then
+		ui.setStatus("มีตัวรันพาตัวละครอยู่ ปิด Auto-Money-Farm / Kasugai Crow / Auto-Quest / Dungeon ก่อนแล้วกดใหม่", Theme.Warn)
+		return
+	end
+	local _, hrp = selfParts()
+	local spawn = npcSpawnPoint(Up.Npc)
+	if not (hrp and spawn) then
+		ui.setStatus("หา " .. Up.Npc .. " ไม่เจอ", Theme.Danger)
+		return
+	end
 	local target = targetOf(it)
 	Up.busy, Up.cancel = true, false
+	Runner.active = true
 	refreshGo()
 	task.spawn(function()
 		local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
@@ -12151,31 +12200,72 @@ local function run()
 		local wen0, ore0, myth0 = data().Wen.Value, Up.held("Refinement Ore"), Up.held("Mythic Refinement Ore")
 		local level = it.level
 		local stopWhy
-		while not Up.cancel and level < target do
-			local c = Up.cost(level)
-			if not c then
-				stopWhy = "ไม่มีข้อมูลขั้น +" .. level
-				break
+		local home = hrp.CFrame
+		local okRun, err = pcall(function()
+			ui.setStatus("วาร์ปไปหา " .. Up.Npc .. "…", Theme.Accent)
+			local stand = CFrame.new(spawn.pos + Vector3.new(0, 3, 5), spawn.pos)
+			placeAt(hrp, stand, "refine")
+			for _ = 1, 40 do
+				local npc = findLiveNpc(Up.Npc)
+				if npc then
+					local pos = npc:GetPivot().Position
+					stand = CFrame.new(pos + Vector3.new(0, 0, 4), pos)
+					placeAt(hrp, stand, "refine")
+					break
+				end
+				task.wait(0.3)
 			end
-			if #c.missing > 0 then
-				stopWhy = "ของไม่พอ: " .. table.concat(c.missing, " · ")
-				break
+			task.wait(0.6)
+			local retried = false
+			while not Up.cancel and level < target do
+				local c = Up.cost(level)
+				if not c then
+					stopWhy = "ไม่มีข้อมูลขั้น +" .. level
+					break
+				end
+				if #c.missing > 0 then
+					stopWhy = "ของไม่พอ: " .. table.concat(c.missing, " · ")
+					break
+				end
+				-- ตายกลางทาง = ตัวใหม่เกิดที่จุดเกิด ส่งกลับไปยืนหน้า Hagane ก่อนตีต่อ
+				local _, now = selfParts()
+				if now and (now.Position - stand.Position).Magnitude > 10 then
+					hrp = now
+					placeAt(hrp, stand, "refine")
+					task.wait(0.6)
+				end
+				local ok, res = pcall(SignalFunction.ToServer, "RefinementRequest", { action = "Attempt", Id = it.id, UseGuard = c.guard })
+				fixIdentity()
+				if not ok or type(res) ~= "table" or res.Ok ~= true then
+					-- ตำแหน่งยังไม่ถึงเซิร์ฟ (วาร์ปมาไม่ถึงวินาที) รอแล้วลองใหม่ครั้งเดียว
+					if ok and type(res) == "table" and res.Reason == "Visit " .. Up.Npc and not retried then
+						retried = true
+						placeAt(hrp, stand, "refine")
+						task.wait(1)
+						continue
+					end
+					stopWhy = "เกมไม่ยอม: " .. tostring(type(res) == "table" and res.Reason or res)
+					break
+				end
+				tally.tries += 1
+				local outcome = res.GuardSaved and "Guarded" or tostring(res.Outcome)
+				tally[outcome] = (tally[outcome] or 0) + 1
+				local before = level
+				level = tonumber(res.Level) or Up.levelOf(it.id) or level
+				local th = Up.OutcomeThai[outcome] or { outcome, Theme.Muted }
+				ui.setStatus(string.format("ครั้งที่ %d · +%d → %s (+%d) · เป้าหมาย +%d", tally.tries, before, th[1], level, target), th[2])
+				task.wait(Up.Gap)
 			end
-			local ok, res = pcall(SignalFunction.ToServer, "RefinementRequest", { action = "Attempt", Id = it.id, UseGuard = c.guard })
-			fixIdentity()
-			if not ok or type(res) ~= "table" or res.Ok ~= true then
-				stopWhy = "เกมไม่ยอม: " .. tostring(type(res) == "table" and res.Reason or res)
-				break
-			end
-			tally.tries += 1
-			local outcome = res.GuardSaved and "Guarded" or tostring(res.Outcome)
-			tally[outcome] = (tally[outcome] or 0) + 1
-			local before = level
-			level = tonumber(res.Level) or Up.levelOf(it.id) or level
-			local th = Up.OutcomeThai[outcome] or { outcome, Theme.Muted }
-			ui.setStatus(string.format("ครั้งที่ %d · +%d → %s (+%d) · เป้าหมาย +%d", tally.tries, before, th[1], level, target), th[2])
-			task.wait(Up.Gap)
+		end)
+		fixIdentity()
+		if not okRun then
+			stopWhy = "ผิดพลาด: " .. tostring(err):sub(1, 90)
 		end
+		local _, now = selfParts()
+		if now then
+			placeAt(now, home, "refine-back")
+		end
+		Runner.active = false
 		Up.busy = false
 		local spent = string.format("ใช้ Wen %s · Ore %d · Mythic %d", comma(wen0 - data().Wen.Value),
 			ore0 - Up.held("Refinement Ore"), myth0 - Up.held("Mythic Refinement Ore"))
@@ -12533,6 +12623,635 @@ end)
 track(ui.closeButton.MouseButton1Click:Connect(function()
 	feature.setOpen(false)
 end))
+end)()
+
+-- Black Market Auto-Buy -----------------------------------------------------------
+-- ข้อมูลจากสคริปต์เกม (อ่าน 26 ก.ย. 2026):
+--   Ouwland.Content.Misc.Npcs["Black Marketer"].TimedVendor มาทุก 7,200 วิ (TimedEvents.BlackMarketArrival)
+--   อยู่ 1,800 วิแรกของรอบ · ของในร้านสุ่มจาก Seed + เลขรอบ (TimedVendor.GetStock) client คำนวณเองได้แบบที่เกมทำ
+--   เลยรู้ล่วงหน้าทุกรอบโดยไม่ต้องรอ NPC stream มา · จุดที่มา = Spawns[GetSpotIndex(รอบ)] จาก 11 จุด
+--   Always: Frozen Heart (Wen) + Frozen Heart Cache / Refinement Guard (Robux) · Stock สุ่มเพิ่ม 4-6 ชิ้นตาม Odds
+--   ซื้อผ่านตะกร้าเดียวกับหน้าคุย (Dialogue.ProceedWithCartPurchase): SignalFunction "PurchaseSelection" { [ชื่อ] = จำนวน }
+-- ของที่ราคาเป็น Product (Robux) ไม่แตะเด็ดขาด ตะกร้าที่มีมันเกมเด้งหน้าจ่าย Robux
+;(function()
+local npcModule = ReplicatedStorage:FindFirstChild("Ouwland")
+npcModule = npcModule and npcModule.Content.Misc.Npcs:FindFirstChild("Black Marketer")
+-- เซิร์ฟดันเจี้ยนไม่มี Ouwland ร้านนี้มาแค่แมพหลัก
+if not npcModule then
+	return
+end
+local TimedVendor = require(ReplicatedStorage.CAM.Global.Subsets.Gameplay.TimedVendor)
+local npcDef = require(npcModule)
+local ItemDefs = require(ReplicatedStorage.CAM.Global.Collectibles.Items)
+local Rarities = require(ReplicatedStorage.CAM.Global.Rarities)
+-- ฟังก์ชันในโมดูลเกมทำ identity ของ thread หล่นเป็น 2 ทุกครั้งที่เรียก ไม่ใช่แค่ตอน require
+-- เปิดแผงครั้งแรกพังที่ ui.subtitle หลัง TimedVendor.GetState (26 ก.ย.) คืนหลังเรียกทุกตัว
+local function fixIdentity()
+	if setthreadidentity and Game.loadIdentity then
+		setthreadidentity(Game.loadIdentity)
+	end
+end
+fixIdentity()
+local vendor = npcDef.TimedVendor
+local every = TimedVendor.GetEvery(vendor)
+fixIdentity()
+
+local BM = {
+	Npc = npcDef.Name,
+	Every = every,
+	-- เหลือเวลาน้อยกว่านี้ไม่ไปแล้ว วาร์ป + รอ NPC + ซื้อ ~5 วิ เผื่อฟาร์มจบเป้าช้าไว้อีกเท่าตัว
+	LeaveMargin = 20,
+	-- โชว์ล่วงหน้า 12 รอบ = 24 ชม. ของหายาก (Mythic 5%) บางชิ้นไม่มาทั้งวัน
+	LookAhead = 12,
+	Tick = 3,
+	Filters = { "ทั้งหมด", "มีรอบนี้", "ที่ติ๊กไว้" },
+	filter = "ทั้งหมด",
+	-- [ชื่อ] = จำนวนที่จะซื้อต่อรอบ (0 = ไม่ซื้อ) เก็บลงไฟล์ config ติ๊กครั้งเดียวใช้ได้ทุกรอบ
+	want = Game.persist.data.blackMarket or {},
+	-- [รอบ] = { [ชื่อ] = ได้แล้วกี่ชิ้น } กันซื้อซ้ำทุก 3 วิ
+	bought = {},
+	-- [รอบ] = { [ชื่อ] = เหตุผล } เกมไม่ขาย ไม่ลองซ้ำในรอบนั้นจนกว่ากดซื้อเอง
+	failed = {},
+	stockCache = {},
+	busy = false,
+	on = false,
+	dead = false,
+}
+Game.persist.data.blackMarket = BM.want
+
+local CategoryThai = {
+	Head = "หัว", Face = "หน้า", Ear = "หู", Neck = "คอ", Back = "หลัง", Outfits = "ชุด", Haori = "ฮาโอริ",
+	Weapons = "อาวุธ", ["Quest Items"] = "ของเควส", Materials = "วัตถุดิบ",
+}
+-- ค่า Factor เป็นสัดส่วน (0.07 = +7%) ที่เหลือเป็นแต้มตรง ๆ
+local StatThai = {
+	{ "Max Health", "เลือด" }, { "Max Stamina", "สตามินา" }, { "Health Regen Speed", "ฟื้นเลือด", true },
+	{ "Stamina Regen Speed", "ฟื้นสตามินา", true }, { "Movement Speed Factor", "ความเร็ว", true },
+	{ "Additional Damage Factor", "ดาเมจ", true }, { "Damage Reduction Factor", "ลดดาเมจ", true },
+	{ "Damage Reduction", "เกราะ" }, { "Sun Immunity", "กันแดด" },
+}
+
+-- แคตตาล็อกทั้งร้าน ลำดับเดียวกับโมดูลเกม (Always ก่อน Stock)
+local catalogue = {}
+for _, list in ipairs({ vendor.Always or {}, vendor.Stock }) do
+	for _, e in ipairs(list) do
+		local name = typeof(e) == "string" and e or e.Name
+		local def = ItemDefs[name] or {}
+		local price = typeof(e) == "table" and e.Price or def.Price or {}
+		local stats = {}
+		for _, s in ipairs(StatThai) do
+			local v = (def.Stats or {})[s[1]]
+			if v == true then
+				stats[#stats + 1] = s[2]
+			elseif typeof(v) == "number" then
+				stats[#stats + 1] = s[3] and string.format("%s +%s%%", s[2], tostring(math.round(v * 1000) / 10))
+					or string.format("%s +%s", s[2], tostring(v))
+			end
+		end
+		catalogue[#catalogue + 1] = {
+			name = name,
+			wen = price.Product == nil and price.Wen or nil,
+			rarity = def.Rarity or 1,
+			kind = CategoryThai[def.Category] or tostring(def.Category or "-"),
+			stats = table.concat(stats, " · "),
+			always = list == vendor.Always,
+		}
+	end
+end
+local byName = {}
+for _, c in ipairs(catalogue) do
+	byName[c.name] = c
+end
+
+-- ช่วงร้านปิด GetState คืนเลขรอบที่เพิ่งจบ รอบที่จะมาถัดไปคือ +1
+function BM.state()
+	local st = TimedVendor.GetState(vendor)
+	fixIdentity()
+	return st.Active, st.Active and st.Cycle or st.Cycle + 1, st.NextEdgeIn
+end
+
+function BM.stock(cycle)
+	if not BM.stockCache[cycle] then
+		local names = {}
+		for _, e in ipairs(TimedVendor.GetStock(vendor, cycle)) do
+			names[#names + 1] = e.Name
+		end
+		fixIdentity()
+		BM.stockCache[cycle] = names
+	end
+	return BM.stockCache[cycle]
+end
+
+function BM.spot(cycle)
+	local i = TimedVendor.GetSpotIndex(vendor, cycle, #npcDef.Spawns)
+	fixIdentity()
+	return npcDef.Spawns[i].Position
+end
+
+-- ชื่อที่ผู้เล่นรู้จักของจุดที่มา: เขตของ NPC ที่ยืนใกล้จุดนั้นที่สุด (Spawns ของเกมเป็นพิกัดเปล่า)
+-- ห่างจริง 19-945 stud ไล่ครบ 11 จุด 26 ก.ย. เลยเขียนว่า "แถว" ไม่ใช่ "ใน"
+local placeCache = {}
+function BM.placeName(pos)
+	local key = tostring(pos)
+	if placeCache[key] == nil then
+		local best, bestD = "?", math.huge
+		for _, region in ipairs(ReplicatedStorage.Ouwland.Content:GetChildren()) do
+			local npcs = region:FindFirstChild("Npcs")
+			for _, m in ipairs(npcs and npcs:GetDescendants() or {}) do
+				local ok, def = false, nil
+				if m:IsA("ModuleScript") and m ~= npcModule then
+					ok, def = pcall(require, m)
+					-- require โมดูล NPC ทำ identity หล่นเป็น 2 แตะ Instance ตัวถัดไปในลูปก็พัง
+					-- คืนทุกตัว ไม่ใช่แค่ท้ายลูป
+					fixIdentity()
+				end
+				local sp = ok and type(def) == "table" and def.Spawns and def.Spawns[1]
+				local p = typeof(sp) == "CFrame" and sp.Position or typeof(sp) == "Vector3" and sp or nil
+				if p and region.Name ~= "Misc" and (p - pos).Magnitude < bestD then
+					best, bestD = region.Name, (p - pos).Magnitude
+				end
+			end
+		end
+		placeCache[key] = "แถว " .. best
+	end
+	return placeCache[key]
+end
+
+local function clock(cycle)
+	return os.date("%H:%M", cycle * BM.Every)
+end
+
+local function mmss(secs)
+	secs = math.max(0, math.floor(secs))
+	return string.format("%d:%02d", secs // 60, secs % 60)
+end
+
+-- ของที่ยังต้องซื้อรอบนี้ จำกัดตามเงินที่มี (ซื้อเท่าที่จ่ายไหว ไม่ใช่ยกเลิกทั้งชิ้น)
+function BM.pending(cycle)
+	local wen = Game.wallet().Wen or 0
+	local done, failed = BM.bought[cycle] or {}, BM.failed[cycle] or {}
+	local list = {}
+	for _, name in ipairs(BM.stock(cycle)) do
+		local c = byName[name]
+		local n = (BM.want[name] or 0) - (done[name] or 0)
+		if c and c.wen and n > 0 and not failed[name] then
+			n = math.min(n, wen // c.wen)
+			if n > 0 then
+				list[#list + 1] = { name = name, n = n, wen = c.wen }
+				wen -= n * c.wen
+			end
+		end
+	end
+	return list
+end
+
+local row
+local ui = makePanel("Black Market", true)
+local refresh
+
+local function say(text, color)
+	if row and BM.on then
+		row.setDesc(text)
+	end
+	if ui.panel.Visible then
+		ui.setStatus(text, color)
+	end
+end
+
+-- ไปยืนหน้า Black Marketer ซื้อทีละชิ้น แล้วพากลับที่เดิม · คนเรียกต้องถือ Runner.active อยู่แล้ว
+-- (เรียกตรงจากลูปนี้ตอนไม่มีตัวรัน หรือฟาร์ม / อีกา / Auto-Quest หยิบไปทำผ่าน Runner.errand)
+function BM.trip()
+	local active, cycle, left = BM.state()
+	local todo = active and left > BM.LeaveMargin and BM.pending(cycle) or {}
+	local _, hrp = selfParts()
+	if #todo == 0 or not hrp or BM.busy then
+		return
+	end
+	BM.busy = true
+	local home = hrp.CFrame
+	local spot = BM.spot(cycle)
+	say("Black Marketer มาแล้ว · วาร์ปไปซื้อ " .. #todo .. " อย่าง", Theme.Accent)
+	placeAt(hrp, CFrame.new(spot + Vector3.new(0, 3, 5), spot), "blackmarket")
+	local npc
+	for _ = 1, 40 do
+		npc = findLiveNpc(BM.Npc)
+		if npc then
+			break
+		end
+		task.wait(0.3)
+	end
+	if npc then
+		local pos = npc:GetPivot().Position
+		placeAt(hrp, CFrame.new(pos + Vector3.new(0, 0, 4), pos), "blackmarket")
+	end
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	-- เท่ากับที่ Money.sell รอก่อนขายให้ Ginzo ตำแหน่งต้องถึงเซิร์ฟก่อน
+	task.wait(1.5)
+	local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
+	fixIdentity()
+	BM.bought[cycle] = BM.bought[cycle] or {}
+	BM.failed[cycle] = BM.failed[cycle] or {}
+	local got = {}
+	for _, t in ipairs(todo) do
+		local before = Game.wallet()[t.name] or 0
+		local ok, res = pcall(SignalFunction.ToServer, "PurchaseSelection", { [t.name] = t.n })
+		fixIdentity()
+		-- ของเข้ากระเป๋าช้ากว่าคำตอบนิดหน่อย รอดูได้ถึง 3 วิ
+		local by = os.clock() + 3
+		while (Game.wallet()[t.name] or 0) <= before and os.clock() < by do
+			task.wait(0.2)
+		end
+		local n = (Game.wallet()[t.name] or 0) - before
+		if n > 0 then
+			BM.bought[cycle][t.name] = (BM.bought[cycle][t.name] or 0) + n
+			got[#got + 1] = t.name .. " x" .. n
+		else
+			BM.failed[cycle][t.name] = ok and tostring(res) or "ส่งคำขอไม่ได้"
+		end
+	end
+	placeAt(hrp, home, "blackmarket-back")
+	BM.busy = false
+	if #got > 0 then
+		say("ซื้อจาก Black Market แล้ว: " .. table.concat(got, " · "), Theme.Good)
+	else
+		say(npc and "Black Marketer ไม่ขาย (เกมตอบ false)" or "ไม่เจอ Black Marketer " .. BM.placeName(spot), Theme.Danger)
+	end
+	if ui.panel.Visible then
+		refresh()
+	end
+end
+
+-- พังกลางทางต้องปลด busy เสมอ ไม่งั้นลูปเฝ้าร้านเงียบไปทั้งรอบ
+function BM.errand()
+	local ok, err = pcall(BM.trip)
+	BM.busy = false
+	if not ok then
+		say("ผิดพลาด: " .. tostring(err):sub(1, 90), Theme.Danger)
+	end
+end
+
+-- ไม่มีตัวรันถือตัวละครอยู่ = ไปเองเลย · มี = ฝากงานไว้ ให้ตัวรันแวะทำตอนจบเป้าปัจจุบัน
+function BM.go()
+	if Runner.active then
+		Runner.errand = BM.errand
+		say("Black Marketer มาแล้ว · รอฟาร์ม / เควสจบเป้านี้ก่อนแล้วแวะซื้อ", Theme.Accent)
+		return
+	end
+	Runner.errand = nil
+	Runner.active = true
+	BM.errand()
+	Runner.active = false
+end
+
+function BM.tick()
+	local active, cycle, left = BM.state()
+	if workspace:GetAttribute("IsMinigame") then
+		say("อยู่ดันเจี้ยน · Black Market มาแค่แมพหลัก")
+		return
+	end
+	if not active then
+		local wanted = {}
+		for _, name in ipairs(BM.stock(cycle)) do
+			if (BM.want[name] or 0) > 0 and byName[name].wen then
+				wanted[#wanted + 1] = name
+			end
+		end
+		say(string.format("มาอีก %s (%s น.) %s · %s", mmss(left), clock(cycle), BM.placeName(BM.spot(cycle)),
+			#wanted > 0 and "รอบนั้นมีที่ติ๊กไว้: " .. table.concat(wanted, ", ") or "รอบนั้นไม่มีของที่ติ๊กไว้"))
+		return
+	end
+	if BM.busy or left <= BM.LeaveMargin then
+		return
+	end
+	if #BM.pending(cycle) == 0 then
+		say(string.format("อยู่ %s อีก %s · ไม่มีของที่ต้องซื้อแล้ว (ติ๊กไว้ / ซื้อครบ / เงินไม่พอ)",
+			BM.placeName(BM.spot(cycle)), mmss(left)))
+		return
+	end
+	BM.go()
+end
+
+-- แผง ------------------------------------------------------------------------------
+
+ui.search.PlaceholderText = "ค้นหาชื่อของ ประเภท เช่น Earrings, หู, Mythic…"
+local goLabel = new("TextLabel", {
+	Size = UDim2.new(1, 0, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "",
+	TextColor3 = Theme.Dim,
+	TextSize = 15,
+	FontFace = font(Enum.FontWeight.SemiBold),
+})
+local goBtn = new("TextButton", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.fromScale(0, 1),
+	Size = UDim2.new(1, 0, 0, 34),
+	BackgroundColor3 = Theme.Raised,
+	AutoButtonColor = false,
+	Text = "",
+	Parent = ui.panel,
+}, { capsule(), goLabel })
+
+local function smallBtn(parent, text, width, order)
+	return new("TextButton", {
+		Size = UDim2.fromOffset(width, 26),
+		BackgroundColor3 = Theme.Raised,
+		AutoButtonColor = false,
+		Text = text,
+		TextColor3 = Theme.Muted,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		LayoutOrder = order,
+		Parent = parent,
+	}, { capsule(), stroke() })
+end
+
+local function setWant(name, n)
+	BM.want[name] = math.clamp(n, 0, 99)
+	if BM.want[name] == 0 then
+		BM.want[name] = nil
+	end
+	-- ติ๊กเพิ่มหลังเกมไม่ขาย = อยากลองใหม่ ล้างที่จดว่าพลาดของรอบนี้
+	local _, cycle = BM.state()
+	if BM.failed[cycle] then
+		BM.failed[cycle][name] = nil
+	end
+	Game.save()
+	refresh()
+end
+
+local listItems = {}
+
+-- สรุปรอบนี้ / รอบหน้า สองแถวบนสุดของรายการ
+local summary = {}
+for i = 1, 2 do
+	summary[i] = new("TextLabel", {
+		Size = UDim2.new(1, -4, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Theme.Row,
+		Text = "",
+		TextColor3 = Theme.Muted,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.Medium),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextWrapped = true,
+		RichText = true,
+		LayoutOrder = i,
+		Parent = ui.list,
+	}, { corner(8), new("UIPadding", {
+		PaddingTop = UDim.new(0, 8),
+		PaddingBottom = UDim.new(0, 8),
+		PaddingLeft = UDim.new(0, 10),
+		PaddingRight = UDim.new(0, 10),
+	}) })
+end
+
+for _, c in ipairs(catalogue) do
+	local frame = new("Frame", {
+		Size = UDim2.new(1, -4, 0, 60),
+		BackgroundColor3 = Theme.Row,
+		Parent = ui.list,
+	}, { corner(8) })
+	new("ImageLabel", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 8, 0.5, 0),
+		Size = UDim2.fromOffset(40, 40),
+		BackgroundColor3 = Theme.Base,
+		Image = Game.iconOf(c.name) or "",
+		ScaleType = Enum.ScaleType.Fit,
+		Parent = frame,
+	}, { corner(6), stroke(RarityColor[c.rarity] or Theme.Stroke, 1) })
+	new("TextLabel", {
+		Position = UDim2.fromOffset(56, 6),
+		Size = UDim2.new(1, -230, 0, 16),
+		BackgroundTransparency = 1,
+		Text = c.name,
+		TextColor3 = RarityColor[c.rarity] or Theme.Text,
+		TextSize = 14,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = frame,
+	})
+	local info = new("TextLabel", {
+		Position = UDim2.fromOffset(56, 24),
+		Size = UDim2.new(1, -230, 0, 14),
+		BackgroundTransparency = 1,
+		Text = "",
+		TextColor3 = Theme.Muted,
+		TextSize = 12,
+		FontFace = font(Enum.FontWeight.Medium),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		RichText = true,
+		Parent = frame,
+	})
+	new("TextLabel", {
+		Position = UDim2.fromOffset(56, 40),
+		Size = UDim2.new(1, -230, 0, 14),
+		BackgroundTransparency = 1,
+		Text = c.stats ~= "" and c.stats or (c.always and "มีขายทุกรอบ" or "ของแต่ง ไม่มีค่าพลัง"),
+		TextColor3 = Theme.Dim,
+		TextSize = 12,
+		FontFace = font(Enum.FontWeight.Regular),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = frame,
+	})
+	local side = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -8, 0.5, 0),
+		Size = UDim2.fromOffset(160, 26),
+		BackgroundTransparency = 1,
+		Parent = frame,
+	}, { new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		Padding = UDim.new(0, 6),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}) })
+	local entry = { c = c, frame = frame, info = info }
+	if c.wen then
+		local minus = smallBtn(side, "−", 30, 1)
+		entry.count = new("TextLabel", {
+			Size = UDim2.fromOffset(64, 26),
+			BackgroundTransparency = 1,
+			Text = "",
+			TextColor3 = Theme.Dim,
+			TextSize = 13,
+			FontFace = font(Enum.FontWeight.SemiBold),
+			LayoutOrder = 2,
+			Parent = side,
+		})
+		entry.plus = smallBtn(side, "+", 30, 3)
+		track(minus.MouseButton1Click:Connect(function()
+			setWant(c.name, (BM.want[c.name] or 0) - 1)
+		end))
+		track(entry.plus.MouseButton1Click:Connect(function()
+			setWant(c.name, (BM.want[c.name] or 0) + 1)
+		end))
+	else
+		new("TextLabel", {
+			Size = UDim2.fromOffset(150, 26),
+			BackgroundTransparency = 1,
+			Text = "Robux · ไม่ซื้อให้",
+			TextColor3 = Theme.Dim,
+			TextSize = 12,
+			FontFace = font(Enum.FontWeight.Medium),
+			TextXAlignment = Enum.TextXAlignment.Right,
+			Parent = side,
+		})
+	end
+	listItems[#listItems + 1] = entry
+end
+
+local function hex(color)
+	return "#" .. color:ToHex()
+end
+
+function refresh()
+	local active, cycle, left = BM.state()
+	local wen = Game.wallet().Wen or 0
+	ui.subtitle.Text = string.format("มี <font color=\"%s\">%s Wen</font> · %s", hex(Theme.Text), comma(wen),
+		active and string.format("<font color=\"%s\">มาแล้ว</font> %s เหลือ %s", hex(Theme.Good),
+			BM.placeName(BM.spot(cycle)), mmss(left))
+			or string.format("มาอีก %s (%s น.)", mmss(left), clock(cycle)))
+
+	-- รอบแรกของตารางคือรอบที่กำลังอยู่ (หรือกำลังจะมา) ของที่อยู่เกิน LookAhead รอบโชว์ "ไม่มาใน 24 ชม."
+	local firstAt = {}
+	for k = 0, BM.LookAhead - 1 do
+		for _, name in ipairs(BM.stock(cycle + k)) do
+			if firstAt[name] == nil then
+				firstAt[name] = k
+			end
+		end
+	end
+	local function lineFor(k)
+		local names = {}
+		for _, name in ipairs(BM.stock(cycle + k)) do
+			local c = byName[name]
+			if not c.always then
+				names[#names + 1] = string.format("<font color=\"%s\">%s</font>", hex(RarityColor[c.rarity] or Theme.Text), name)
+			end
+		end
+		return table.concat(names, " · ")
+	end
+	summary[1].Text = string.format("<b>%s</b> · %s\n%s", active and "รอบนี้ (มาแล้ว)" or "รอบถัดไป",
+		string.format("%s น. %s", clock(cycle), BM.placeName(BM.spot(cycle))), lineFor(0) .. " · + Frozen Heart ทุกรอบ")
+	summary[2].Text = string.format("<b>รอบต่อไป</b> · %s น. %s\n%s", clock(cycle + 1),
+		BM.placeName(BM.spot(cycle + 1)), lineFor(1))
+
+	local q = ui.search.Text:lower()
+	local done = BM.bought[cycle] or {}
+	local failed = BM.failed[cycle] or {}
+	for _, e in ipairs(listItems) do
+		local c = e.c
+		local k = firstAt[c.name]
+		local wantN = BM.want[c.name] or 0
+		local rarityName = tostring(Rarities.Order[c.rarity] or c.rarity)
+		local hay = (c.name .. " " .. c.kind .. " " .. rarityName):lower()
+		e.frame.Visible = (q == "" or hay:find(q, 1, true) ~= nil)
+			and (BM.filter == "ทั้งหมด" or (BM.filter == "มีรอบนี้" and k == 0) or (BM.filter == "ที่ติ๊กไว้" and wantN > 0))
+		-- มีรอบนี้ขึ้นก่อน ตามด้วยรอบที่มาเร็วสุด ในรอบเดียวกันของแพงก่อน · ของ Robux ซื้อให้ไม่ได้ไว้ท้ายสุด
+		e.frame.LayoutOrder = 10 + (c.wen and 0 or 10000) + (k or BM.LookAhead) * 100 + (8 - c.rarity) * 10
+		local when
+		if k == 0 then
+			when = string.format("<font color=\"%s\">%s</font>", hex(Theme.Good), active and "มีขายตอนนี้" or "มีรอบถัดไป")
+		elseif k then
+			when = string.format("<font color=\"%s\">มา %s น.</font>", hex(Theme.Accent), clock(cycle + k))
+		else
+			when = "ไม่มาใน 24 ชม."
+		end
+		e.info.Text = string.format("%s · %s · %s · %s", rarityName, c.kind,
+			c.wen and comma(c.wen) .. " Wen" or "Robux", when)
+		if e.count then
+			local extra = done[c.name] and (" ✓" .. done[c.name]) or (failed[c.name] and " ✕" or "")
+			e.count.Text = wantN > 0 and ("ซื้อ " .. wantN .. extra) or "ไม่ซื้อ"
+			e.count.TextColor3 = wantN > 0 and Theme.Good or Theme.Dim
+		end
+	end
+
+	local todo = active and BM.pending(cycle) or {}
+	local cost = 0
+	for _, t in ipairs(todo) do
+		cost += t.n * t.wen
+	end
+	local ready = #todo > 0 and not BM.busy and left > BM.LeaveMargin
+	if BM.busy then
+		goLabel.Text = "กำลังซื้อ…"
+	elseif not active then
+		goLabel.Text = string.format("ยังไม่มา · มาอีก %s (%s น.)", mmss(left), clock(cycle))
+	elseif #todo == 0 then
+		goLabel.Text = "รอบนี้ไม่มีของที่ติ๊กไว้ให้ซื้อ (หรือเงินไม่พอ)"
+	else
+		goLabel.Text = string.format("ซื้อเลยตอนนี้  ·  %d อย่าง  ·  %s Wen", #todo, comma(cost))
+	end
+	tween(goBtn, { BackgroundColor3 = ready and Theme.On or Theme.Raised }, FAST)
+	tween(goLabel, { TextColor3 = ready and Theme.Base or Theme.Dim }, FAST)
+end
+
+addPills(ui.filterRow, BM.Filters, function(name)
+	BM.filter = name
+	refresh()
+end)
+track(ui.search:GetPropertyChangedSignal("Text"):Connect(function()
+	refresh()
+end))
+
+track(goBtn.MouseButton1Click:Connect(function()
+	local active, cycle = BM.state()
+	if BM.busy or not active then
+		return
+	end
+	-- กดเองคือสั่งลองใหม่ ของที่เกมเคยไม่ขายรอบนี้ก็ลองอีกครั้ง
+	BM.failed[cycle] = nil
+	task.spawn(BM.go)
+end))
+
+local feature = featureRow("Black Market", "ของทั้งหมดของ Black Marketer", 1, function()
+	refresh()
+	ui.setStatus("กด + ที่ของที่อยากได้ (จำนวนต่อรอบ) · เปิด Black Market Auto-Buy ไว้ มาเมื่อไหร่ซื้อให้เอง", Theme.Muted)
+	ui.show()
+end, function()
+	ui.hide()
+end)
+track(ui.closeButton.MouseButton1Click:Connect(function()
+	feature.setOpen(false)
+end))
+
+row = switchRow("Black Market Auto-Buy", "ปิดอยู่", 1, function(on)
+	BM.on = on
+	if on then
+		BM.tick()
+	end
+end)
+
+-- ลูปเดียวทั้งนับถอยหลังในแผงและเฝ้าร้าน · ร้านมาแค่ 30 นาทีทุก 2 ชม. เช็กทุก 3 วิพอ
+task.spawn(function()
+	while not BM.dead do
+		fixIdentity()
+		if BM.on then
+			local ok, err = pcall(BM.tick)
+			if not ok then
+				say("ผิดพลาด: " .. tostring(err):sub(1, 90), Theme.Danger)
+			end
+		end
+		if ui.panel.Visible then
+			refresh()
+		end
+		task.wait(BM.Tick)
+	end
+end)
+
+track({
+	Disconnect = function()
+		BM.dead = true
+		if Runner.errand == BM.errand then
+			Runner.errand = nil
+		end
+	end,
+})
 end)()
 
 -- Auto-Dodge: อ่านท่าโจมตีของม็อบแล้วหลบก่อนดาเมจเข้า ------------------------
@@ -15834,6 +16553,9 @@ local function farmLoop(mine)
 		moneyRow.setDesc("ไม่เจอเป้าที่คุ้ม (ข้อมูลม็อบของเกมยังไม่โหลด?)")
 	end
 	while alive() do
+		if Runner.doErrand() then
+			autoAttack.target = nil
+		end
 		-- จบเควสของ Ginzo ให้ก่อน ขายเหรียญได้ถึงจะเป็นเงิน (ครั้งเดียว ทำได้ตั้งแต่ Lv 45)
 		local canSell, why = Money.canSell()
 		local level = Game.level()
@@ -16896,6 +17618,7 @@ end
 function Crow.run(alive)
 	local restore = Runner.fightKit()
 	while alive() do
+		Runner.doErrand()
 		local quest, boss = heldQuest()
 		if boss then
 			Crow.fight(quest, boss, alive)
