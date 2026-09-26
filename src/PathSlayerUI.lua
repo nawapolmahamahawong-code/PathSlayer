@@ -7683,8 +7683,10 @@ local Loot = {
 	ClaimWait = 0.8,
 	-- หลังกดเก็บยืนอยู่อีกเท่านี้ก่อนไปกลุ่มถัดไป (ความหน่วงไป-กลับเซิร์ฟ ~0.1-0.2 วิ + เผื่อ) ค่าเผื่อ ยังไม่ได้วัด
 	GrabHold = 0.35,
-	-- กดค้างเกิน HoldDuration ไปเท่านี้ เผื่อความหน่วงไปเซิร์ฟ (ค่าเผื่อ)
-	HoldExtra = 0.3,
+	-- กดค้างเกิน HoldDuration ได้อีกไม่เกินเท่านี้ ของหายเมื่อไรปล่อยทันที (ดู Loot.claimHold) ค่าเผื่อความหน่วง
+	HoldExtra = 0.5,
+	-- เว้นก่อนเริ่มค้างชิ้นถัดไป ค่าเผื่อ (ติดกัน 0 วิเซิร์ฟไม่รับชิ้นที่สอง)
+	HoldGap = 0.15,
 	-- จำนวนของบนพื้นนิ่งเท่านี้ = หีบปล่อยครบแล้ว · รอรวมไม่เกิน StableMax (ของบินออกจากหีบ ~0.52 วิต่อชิ้น)
 	StableFor = 0.6,
 	StableMax = 3,
@@ -7752,6 +7754,35 @@ end
 -- ใช้ได้สองที่: Auto-Quest หลังฆ่าเสร็จ กับลูป Auto-Chest ตอนไม่ได้รันเควส
 -- opts.wait = รอหีบโผล่ (เฉพาะเควสบอส) / opts.stop = ฟังก์ชันบอกให้เลิก / opts.say = ที่แสดงสถานะ
 -- คืนรายชื่อของที่เก็บได้
+-- เก็บของที่ต้องกดค้าง (หีบแดง HoldDuration 2) ยืนนิ่งที่ at ค้างจริงจนของหาย หรือครบ HoldDuration + HoldExtra
+-- เซิร์ฟตรวจเวลาค้างเอง วัด 26 ก.ย.: ตั้ง HoldDuration 0 ในเครื่องเราแล้วกด ไม่เก็บ · ค้างหลายชิ้นพร้อมกันเก็บได้ชิ้นเดียว
+-- เร็วสุดจึงเป็น ~2 วิต่อชิ้นทีละชิ้น · เริ่มค้างชิ้นถัดไปทันทีที่ปล่อยชิ้นก่อน เซิร์ฟไม่รับ (เสียไป 2 วิ) เว้น HoldGap ก่อน
+-- ไม่เข้าก็ค้างซ้ำอีกครั้งตรงนั้นเลย ไม่ต้องรอวนรอบใหม่
+function Loot.claimHold(p, hrp, at)
+	local drop = p.Parent
+	local function claimed()
+		return not drop.Parent or drop:GetAttribute("DropClaimedBy") ~= nil
+	end
+	p.RequiresLineOfSight = false
+	for _ = 1, 2 do
+		task.wait(Loot.HoldGap)
+		if claimed() or not pcall(p.InputHoldBegin, p) then
+			break
+		end
+		local by = os.clock() + p.HoldDuration + Loot.HoldExtra
+		while os.clock() < by and not claimed() do
+			hrp.CFrame = CFrame.new(at)
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			task.wait()
+		end
+		pcall(p.InputHoldEnd, p)
+		if claimed() then
+			break
+		end
+	end
+	return claimed()
+end
+
 local function collectLoot(opts)
 	local stop = opts.stop or function()
 		return false
@@ -7860,39 +7891,15 @@ local function collectLoot(opts)
 					task.spawn(fireproximityprompt, d.prompt)
 				end
 			end
-			-- ค้างทุกชิ้นพร้อมกัน: ปลด OnePerButton เป็น AlwaysShow ในเครื่องเราก่อน ทุกปุ่มขึ้นพร้อมกัน ค้างรอบเดียว 2 วิ
-			-- ชิ้นที่ยังไม่หายค่อยค้างทีละชิ้นต่อทันที (ผู้ใช้บอกทีละชิ้นช้า 26 ก.ย.)
-			local function holdAll(list)
-				local begun, longest = {}, 0
-				for _, p in ipairs(list) do
-					if p.Parent then
-						p.RequiresLineOfSight = false
-						p.Exclusivity = Enum.ProximityPromptExclusivity.AlwaysShow
-						if pcall(p.InputHoldBegin, p) then
-							begun[#begun + 1] = p
-							longest = math.max(longest, p.HoldDuration)
-						end
-					end
+			-- ค้างพร้อมกันหลายชิ้นไม่ได้: ลองปลด OnePerButton เป็น AlwaysShow แล้วค้างพร้อมกัน เซิร์ฟก็ยังเก็บให้ครั้งละชิ้น
+			-- (วัด 26 ก.ย. 08:06 หีบแดง T2 8 ชิ้น ใช้ 20 วิ) · ทีละชิ้นติดกันไม่มีช่วงรอ ของทั้งกลุ่มอยู่ในระยะ 10 จากจุดยืน
+			for i, p in ipairs(held) do
+				if stop() then
+					break
 				end
-				local by = os.clock() + longest + Loot.HoldExtra
-				while os.clock() < by and not stop() do
-					hrp.CFrame = CFrame.new(spot + Vector3.new(0, 2, 0))
-					hrp.AssemblyLinearVelocity = Vector3.zero
-					task.wait()
-				end
-				for _, p in ipairs(begun) do
-					pcall(p.InputHoldEnd, p)
-				end
-			end
-			if #held > 0 and not stop() then
-				say(string.format("กดค้างเก็บพร้อมกัน %d ชิ้น", #held))
-				holdAll(held)
-				task.wait(Loot.GrabHold)
-				for _, p in ipairs(held) do
-					if p.Parent and p.Parent.Parent and not stop() then
-						say("กดค้างเก็บชิ้นที่เหลือ")
-						holdAll({ p })
-					end
+				if p.Parent and p.Parent.Parent then
+					say(string.format("กดค้างเก็บ %d/%d", i, #held))
+					Loot.claimHold(p, hrp, spot + Vector3.new(0, 2, 0))
 				end
 			end
 			-- ยืนค้างจนเซิร์ฟรับคำสั่งเก็บ: วาร์ปออกทันทีหลังกด เซิร์ฟเห็นตัวเราที่กลุ่มถัดไปแล้ว ของกลุ่มนี้ไม่เข้า
