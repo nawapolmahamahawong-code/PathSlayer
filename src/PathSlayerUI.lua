@@ -7737,6 +7737,31 @@ end
 -- หีบแดง (Sealed Cache) ปล่อยของแบบไม่มีเจ้าของ ต่างจากหีบบอสที่ผูกกับเรา เดิมรับแต่ของเรา
 -- เปิดหีบแดงแล้วไม่เก็บสักชิ้น วาร์ปไปบอสใน 1 วิ ของ 6 ชิ้นหายตอนเราออกไป (log 02:45:04 25 ก.ย. 2026)
 -- ของไม่มีเจ้าของจำกัดรัศมีเดียวกับหีบ (ChestRadius) ไม่งั้นวาร์ปไปเก็บกองจากหีบที่คนอื่นเปิดอีกฟากแมพ
+-- ของที่ต้องกดค้าง (หีบแดง 2 วิต่อชิ้น) เก็บเฉพาะของระดับ Mythic ขึ้นไป (ผู้ใช้สั่ง 26 ก.ย. 2026: Ore / Mythic
+-- Refinement Ore / Mythic อื่น) หีบแดงออก 6-8 ชิ้นส่วนใหญ่เป็น Metal Scraps / Coin ใช้เวลาเก็บ ~20 วิ
+-- Frozen Heart (Epic) เก็บด้วย: Money Farm ใช้ถือไปปลุก Yeti Demon · ระดับอ่านจากโมดูลใน ReplicatedStorage.Items
+-- (Rarities.Order: 6 Mythic, 7 Impossible, 8 Limited)
+Loot.HoldKeepRarity = 6
+Loot.HoldKeepAlways = { ["Frozen Heart"] = true }
+Loot.rarity = {}
+function Loot.worthHolding(item)
+	item = tostring(item)
+	if Loot.HoldKeepAlways[item] then
+		return true
+	end
+	if Loot.rarity[item] == nil then
+		Loot.rarity[item] = 0
+		for _, m in ipairs(ReplicatedStorage.Items:GetDescendants()) do
+			if m.Name == item and m:IsA("ModuleScript") then
+				local ok, def = pcall(require, m)
+				Loot.rarity[item] = ok and type(def) == "table" and tonumber(def.Rarity) or 0
+				break
+			end
+		end
+	end
+	return Loot.rarity[item] >= Loot.HoldKeepRarity
+end
+
 local function myDrops(origin)
 	local list = {}
 	local folder = workspace:FindFirstChild("LootDrops")
@@ -7744,6 +7769,9 @@ local function myDrops(origin)
 		local prompt = drop:FindFirstChild("LootDropPrompt")
 		local owner = drop:GetAttribute("DropOwnerUserId")
 		local near = origin and drop:IsA("BasePart") and (drop.Position - origin).Magnitude <= Loot.ChestRadius
+		if prompt and prompt.HoldDuration > 0 and not Loot.worthHolding(drop:GetAttribute("DropItemId")) then
+			prompt = nil
+		end
 		if prompt and (owner == LocalPlayer.UserId or owner == nil and near) then
 			list[#list + 1] = { part = drop, prompt = prompt, item = drop:GetAttribute("DropItemId") }
 		end
@@ -7764,6 +7792,17 @@ function Loot.claimHold(p, hrp, at)
 		return not drop.Parent or drop:GetAttribute("DropClaimedBy") ~= nil
 	end
 	p.RequiresLineOfSight = false
+	p.Exclusivity = Enum.ProximityPromptExclusivity.AlwaysShow
+	-- ปุ่มเก็บเป็น OnePerButton: มีของหลายชิ้นในระยะ เกมให้ปุ่มตัวใกล้สุดทำงานตัวเดียว ค้างตัวอื่นไม่เข้า
+	-- (วัด 26 ก.ย. 08:34 กอง 4 ชิ้น ค้างครบทุกตัวได้ชิ้นเดียว) ปิดปุ่มของชิ้นอื่นในเครื่องเราชั่วคราว
+	local muted = {}
+	for _, other in ipairs(workspace.LootDrops:GetChildren()) do
+		local op = other ~= drop and other:FindFirstChild("LootDropPrompt")
+		if op and op.Enabled and other:IsA("BasePart") and (other.Position - at).Magnitude < 25 then
+			op.Enabled = false
+			muted[#muted + 1] = op
+		end
+	end
 	for _ = 1, 2 do
 		task.wait(Loot.HoldGap)
 		if claimed() or not pcall(p.InputHoldBegin, p) then
@@ -7778,6 +7817,11 @@ function Loot.claimHold(p, hrp, at)
 		pcall(p.InputHoldEnd, p)
 		if claimed() then
 			break
+		end
+	end
+	for _, op in ipairs(muted) do
+		if op.Parent then
+			op.Enabled = true
 		end
 	end
 	return claimed()
