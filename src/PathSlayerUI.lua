@@ -7674,6 +7674,8 @@ local Loot = {
 	ClaimWait = 0.8,
 	-- หลังกดเก็บยืนอยู่อีกเท่านี้ก่อนไปกลุ่มถัดไป (ความหน่วงไป-กลับเซิร์ฟ ~0.1-0.2 วิ + เผื่อ) ค่าเผื่อ ยังไม่ได้วัด
 	GrabHold = 0.35,
+	-- กดค้างเกิน HoldDuration ไปเท่านี้ เผื่อความหน่วงไปเซิร์ฟ (ค่าเผื่อ)
+	HoldExtra = 0.3,
 	-- จำนวนของบนพื้นนิ่งเท่านี้ = หีบปล่อยครบแล้ว · รอรวมไม่เกิน StableMax (ของบินออกจากหีบ ~0.52 วิต่อชิ้น)
 	StableFor = 0.6,
 	StableMax = 3,
@@ -7836,9 +7838,34 @@ local function collectLoot(opts)
 			placeAt(hrp, CFrame.new(spot + Vector3.new(0, 2, 0)), "loot-group")
 			hrp.AssemblyLinearVelocity = Vector3.zero
 			task.wait(Loot.GrabSettle)
+			-- ของจากหีบแดง (DropReservedFor) ตั้ง HoldDuration 2 วิ ของหีบบอส 0 · fireproximityprompt ไม่ได้ค้างจริง
+			-- เซิร์ฟไม่ยอมให้เก็บ: วัด 26 ก.ย. กดไป 4 รอบ 6 ชิ้นไม่หายสักชิ้น (ผู้ใช้เจอของค้างข้างหีบแดง)
+			-- ตัวที่ต้องค้าง: กดค้างจริง (InputHoldBegin) ครบเวลาแล้วปล่อย ยืนนิ่งตลอด ทีละชิ้น
+			-- prompt เป็น OnePerButton: ค้างสองชิ้นพร้อมกันเก็บได้ชิ้นเดียว อีกชิ้นต้องวนกลับมาอีกรอบ (วัด 26 ก.ย.)
+			local held = {}
 			for _, d in ipairs(group) do
 				fired[d.part] = d
-				task.spawn(fireproximityprompt, d.prompt)
+				if d.prompt.HoldDuration > 0 then
+					held[#held + 1] = d.prompt
+				else
+					task.spawn(fireproximityprompt, d.prompt)
+				end
+			end
+			for i, p in ipairs(held) do
+				if stop() or not p.Parent then
+					continue
+				end
+				say(string.format("กดค้างเก็บ %d/%d · %.0f วิ", i, #held, p.HoldDuration))
+				p.RequiresLineOfSight = false
+				if pcall(p.InputHoldBegin, p) then
+					local by = os.clock() + p.HoldDuration + Loot.HoldExtra
+					while os.clock() < by and not stop() and p.Parent do
+						hrp.CFrame = CFrame.new(spot + Vector3.new(0, 2, 0))
+						hrp.AssemblyLinearVelocity = Vector3.zero
+						task.wait()
+					end
+					pcall(p.InputHoldEnd, p)
+				end
 			end
 			-- ยืนค้างจนเซิร์ฟรับคำสั่งเก็บ: วาร์ปออกทันทีหลังกด เซิร์ฟเห็นตัวเราที่กลุ่มถัดไปแล้ว ของกลุ่มนี้ไม่เข้า
 			task.wait(Loot.GrabHold)
