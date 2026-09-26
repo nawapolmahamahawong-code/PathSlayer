@@ -3736,7 +3736,7 @@ function Game.quests()
 						for _, t in ipairs(taskFolder and taskFolder:GetChildren() or {}) do
 							local code, max = t:FindFirstChild("Code"), t:FindFirstChild("Max")
 							-- TaskSpecs บอกชนิดงาน: Pickup = เก็บของที่เกมวางไว้ (Liv, Kona, Betty)
-							-- Deliver / Deposit / Dungeon ยังไม่รองรับ
+							-- Deliver / Deposit ทำใน questPlan · Dungeon ทำได้แค่เข้าหอคอย Ouwigahara
 							local spec = q.TaskSpecs and q.TaskSpecs[t.Name]
 							local anchor = spec and (spec.Anchor
 								or (type(spec.Positions) == "table" and spec.Positions[1]))
@@ -3754,6 +3754,8 @@ function Game.quests()
 								item = spec and spec.RequiredItem,
 								position = spec and typeof(spec.Position) == "Vector3" and spec.Position or nil,
 								target = spec and spec.TargetNpc,
+								-- Dungeon: ชื่อด่าน (Togane "Ill find the forge": Ouwigahara Stage Enter)
+								dungeon = spec and spec.Dungeon,
 							}
 						end
 
@@ -4721,6 +4723,11 @@ local function questPlan(data)
 	if QuestScripts[data.title] then
 		return QuestScripts[data.title]
 	end
+	-- เควสเข้าหอคอยของ Togane (The Forge Above): ไม่มี OfferNpc และปุ่มรับอยู่ลึกสองชั้น
+	-- (Your other forge → Ill find the forge) เดินบทพูดไม่ถึง enterTower ยิง AddQuest ให้เองแล้วพาเข้าประตู ขั้นเดียวจบ
+	if #data.tasks == 1 and data.tasks[1].kind == "Dungeon" and data.tasks[1].dungeon == "Ouwigahara" then
+		return { { tower = data.key } }
+	end
 	if not data.offerNpc or #data.tasks == 0 then
 		return nil
 	end
@@ -5097,6 +5104,16 @@ local function runStep(step, index, total)
 	if step.deposit then
 		return Runner.deposit(step, index, total)
 	end
+	if step.tower then
+		-- ทางเดียวกับปุ่มเข้าดันเจี้ยน: รับเควสที่ Togane ให้เอง ไปประตู กด Enter เซิร์ฟย้ายตัวเข้าหอคอย
+		-- สคริปต์ฝั่งนี้จบตรงนั้น ธงนี้บอกฝั่งหอคอยให้พากลับทันทีแทนที่จะไต่ชั้น
+		Game.persist.data.forgeBack = true
+		Game.save()
+		local ok, why = Game.enterTower()
+		Game.persist.data.forgeBack = nil
+		Game.save()
+		return ok, why
+	end
 
 	local char = LocalPlayer.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -5263,9 +5280,14 @@ function Runner.start(list)
 		for i, q in ipairs(queue) do
 			if q.data.title == held.Name and q.steps[2] then
 				resumeAt, firstStep = i, 2
+			elseif q.data.title == held.Name and q.steps[1].tower then
+				-- ขั้นเดียวของเควสหอคอยทำได้ทั้งตอนยังไม่รับและรับค้างไว้ (enterTower ข้ามการรับเอง)
+				resumeAt = i
+				held = nil
+				break
 			end
 		end
-		if firstStep == 1 then
+		if held and firstStep == 1 then
 			report("ยังมีเควสอื่นค้างอยู่: " .. held.Name .. " (เกมให้ถือได้ทีละ " .. QuestRules.MaxQuestsPerPlayer .. ")", Theme.Warn)
 			return false
 		end
@@ -20008,6 +20030,19 @@ local function goMain()
 	return ok
 end
 
+-- เควส The Forge Above (Togane) นับตอนเข้าประตูหอคอย Auto-Quest พามาแค่นั้น ถึงแล้วพากลับเซิร์ฟเดิม
+-- รอ 8 วิให้เซิร์ฟหอคอยบันทึกงาน "Ouwigahara portal opened" ก่อน (ยังไม่ได้วัดว่าบันทึกเร็วแค่ไหน)
+if not inMain and not inMenu and Game.persist.data.forgeBack then
+	Game.persist.data.forgeBack = nil
+	Game.save()
+	task.delay(8, function()
+		if screen.Parent then
+			status("เควส The Forge Above นับแล้ว · พากลับเกมหลัก", Theme.Accent)
+			goMain()
+		end
+	end)
+end
+
 track(mainBtn.MouseButton1Click:Connect(function()
 	if inMain then
 		status("อยู่เกมหลักอยู่แล้ว", Theme.Muted)
@@ -20232,8 +20267,11 @@ task.delay(2, function()
 		end
 	end
 	local busyRunners = { ["Auto-Money-Farm"] = true, ["Auto-Final-Selection"] = true, ["Kasugai Crow Auto-Quest"] = true }
+	-- มาหอคอยเพื่อให้เควส The Forge Above นับเฉย ๆ (Auto-Quest ตั้งธงไว้) ไม่เปิด Auto-Dungeon ไต่ชั้น
+	local skip = data.forgeBack and { ["Auto-Dungeon"] = true } or {}
 	for _, entry in ipairs(toggles) do
-		if data.switches[entry.key] and not entry.isOn() and not (data.resume and busyRunners[entry.key]) then
+		if data.switches[entry.key] and not entry.isOn() and not (data.resume and busyRunners[entry.key])
+			and not skip[entry.key] then
 			pcall(entry.set, true)
 		end
 	end
