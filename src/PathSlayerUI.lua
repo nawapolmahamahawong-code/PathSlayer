@@ -4591,8 +4591,20 @@ function rebuildQuests()
 		return out
 	end
 	local lv = me.level and ("Lv " .. me.level) or "เลเวลของคุณ"
+	local query = questUI.search.Text:lower()
 
-	if QL.tab == "แนะนำ" then
+	-- พิมพ์ค้นหา = หาทั้งเกม ไม่ใช่แค่แท็บที่เปิด เดิมกรองเฉพาะแถวในแท็บ แนะนำ ที่มีแต่เควสที่ทำได้
+	-- ผู้ใช้ค้น "The Forge" ไม่เจออะไร (26 ก.ย.) ทั้งที่เควสมี แค่ทำจบไปแล้ว บอกสถานะให้เห็นแทนการหายเงียบ
+	if query ~= "" then
+		-- ไม่ดึงเควสพี่น้องของ NPC เดียวกันมาปน เอาเฉพาะที่ตรงคำค้น
+		QL.groupCtx = nil
+		local found = pick(function(e)
+			return table.concat({ e.d.title, e.d.quest, e.d.npc, e.d.region }, " "):lower():find(query, 1, true) ~= nil
+		end)
+		QL.section("ผลค้นหา · ทำได้", nil, Theme.Good, found.ok, 1)
+		QL.section("ผลค้นหา · ยังทำไม่ได้", nil, Theme.Warn, found.locked, 2)
+		QL.section("ผลค้นหา · ทำจบแล้ว", "เกมบันทึกว่าจบแล้ว รับซ้ำไม่ได้", Theme.Dim, found.done, 3)
+	elseif QL.tab == "แนะนำ" then
 		-- ทำได้ตอนนี้ เลเวลเควสสูงสุดก่อน แล้วค่อย EXP ต่อรอบ: ทำซ้ำได้ (ฟาร์มยาว) กับครั้งเดียว (EXP ก้อน) แยกกัน
 		-- เดิมเรียง EXP ต่อรอบอย่างเดียว ผู้ใช้ Lv 208 เห็นเควสตกปลา Lv 75 (2,900 EXP แต่ต้องใส่ลังปลา 27 ตัว
 		-- และมีเบ็ด Rare) ขึ้นหัว ส่วนเควสฆ่าม็อบ 8 ตัวของ Iceveil Valley Lv 90-115 (1,620-2,070 EXP) ตกไปข้างล่าง
@@ -4696,7 +4708,9 @@ addPills(questUI.filterRow, QL.tabs, function(name)
 	rebuildQuests()
 end)
 
-track(questUI.search:GetPropertyChangedSignal("Text"):Connect(applyQuestFilter))
+track(questUI.search:GetPropertyChangedSignal("Text"):Connect(function()
+	rebuildQuests()
+end))
 
 -- ตัวรันเควสอัตโนมัติ ---------------------------------------------------------
 
