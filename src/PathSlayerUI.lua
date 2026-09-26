@@ -4583,9 +4583,17 @@ function rebuildQuests()
 	local lv = me.level and ("Lv " .. me.level) or "เลเวลของคุณ"
 
 	if QL.tab == "แนะนำ" then
-		-- ทำได้ตอนนี้ เรียง EXP ต่อรอบมากไปน้อย: ทำซ้ำได้ (ฟาร์มยาว) กับครั้งเดียว (EXP ก้อน) แยกกัน
+		-- ทำได้ตอนนี้ เลเวลเควสสูงสุดก่อน แล้วค่อย EXP ต่อรอบ: ทำซ้ำได้ (ฟาร์มยาว) กับครั้งเดียว (EXP ก้อน) แยกกัน
+		-- เดิมเรียง EXP ต่อรอบอย่างเดียว ผู้ใช้ Lv 208 เห็นเควสตกปลา Lv 75 (2,900 EXP แต่ต้องใส่ลังปลา 27 ตัว
+		-- และมีเบ็ด Rare) ขึ้นหัว ส่วนเควสฆ่าม็อบ 8 ตัวของ Iceveil Valley Lv 90-115 (1,620-2,070 EXP) ตกไปข้างล่าง
 		local loop = pick(function(e)
 			return e.cat == "loop" or (e.cat == "boss" and not (e.d.raw and e.d.raw.Category == "BossHunt"))
+		end)
+		table.sort(loop.ok, function(a, b)
+			if a.d.sortLevel ~= b.d.sortLevel then
+				return a.d.sortLevel > b.d.sortLevel
+			end
+			return QL.reward(a.d) > QL.reward(b.d)
 		end)
 		local once = pick(function(e)
 			return e.cat == "once"
@@ -4594,7 +4602,8 @@ function rebuildQuests()
 		for i = 1, math.min(8, #loop.ok) do
 			top[i] = loop.ok[i]
 		end
-		QL.section("ฟาร์มซ้ำ คุ้มสุดสำหรับ " .. lv, "เรียงตาม EXP ต่อรอบ มากไปน้อย · ทำซ้ำได้เรื่อย ๆ", Theme.Good, top, 1)
+		QL.section("ฟาร์มซ้ำ เหมาะกับ " .. lv, "เลเวลเควสสูงสุดที่ทำได้ก่อน · ทำซ้ำได้เรื่อย ๆ · Boss Hunts (Lv 125) ใช้ Kasugai Crow Auto-Quest",
+			Theme.Good, top, 1)
 		QL.section("ครั้งเดียว ยังไม่ได้ทำ", "EXP ก้อนใหญ่ ทำจบแล้วรับซ้ำไม่ได้", Theme.Accent, once.ok, 2)
 	elseif QL.tab == "ทำซ้ำได้" then
 		local b = pick(function(e)
@@ -7851,20 +7860,39 @@ local function collectLoot(opts)
 					task.spawn(fireproximityprompt, d.prompt)
 				end
 			end
-			for i, p in ipairs(held) do
-				if stop() or not p.Parent then
-					continue
-				end
-				say(string.format("กดค้างเก็บ %d/%d · %.0f วิ", i, #held, p.HoldDuration))
-				p.RequiresLineOfSight = false
-				if pcall(p.InputHoldBegin, p) then
-					local by = os.clock() + p.HoldDuration + Loot.HoldExtra
-					while os.clock() < by and not stop() and p.Parent do
-						hrp.CFrame = CFrame.new(spot + Vector3.new(0, 2, 0))
-						hrp.AssemblyLinearVelocity = Vector3.zero
-						task.wait()
+			-- ค้างทุกชิ้นพร้อมกัน: ปลด OnePerButton เป็น AlwaysShow ในเครื่องเราก่อน ทุกปุ่มขึ้นพร้อมกัน ค้างรอบเดียว 2 วิ
+			-- ชิ้นที่ยังไม่หายค่อยค้างทีละชิ้นต่อทันที (ผู้ใช้บอกทีละชิ้นช้า 26 ก.ย.)
+			local function holdAll(list)
+				local begun, longest = {}, 0
+				for _, p in ipairs(list) do
+					if p.Parent then
+						p.RequiresLineOfSight = false
+						p.Exclusivity = Enum.ProximityPromptExclusivity.AlwaysShow
+						if pcall(p.InputHoldBegin, p) then
+							begun[#begun + 1] = p
+							longest = math.max(longest, p.HoldDuration)
+						end
 					end
+				end
+				local by = os.clock() + longest + Loot.HoldExtra
+				while os.clock() < by and not stop() do
+					hrp.CFrame = CFrame.new(spot + Vector3.new(0, 2, 0))
+					hrp.AssemblyLinearVelocity = Vector3.zero
+					task.wait()
+				end
+				for _, p in ipairs(begun) do
 					pcall(p.InputHoldEnd, p)
+				end
+			end
+			if #held > 0 and not stop() then
+				say(string.format("กดค้างเก็บพร้อมกัน %d ชิ้น", #held))
+				holdAll(held)
+				task.wait(Loot.GrabHold)
+				for _, p in ipairs(held) do
+					if p.Parent and p.Parent.Parent and not stop() then
+						say("กดค้างเก็บชิ้นที่เหลือ")
+						holdAll({ p })
+					end
 				end
 			end
 			-- ยืนค้างจนเซิร์ฟรับคำสั่งเก็บ: วาร์ปออกทันทีหลังกด เซิร์ฟเห็นตัวเราที่กลุ่มถัดไปแล้ว ของกลุ่มนี้ไม่เข้า
