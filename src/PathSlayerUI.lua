@@ -2087,6 +2087,8 @@ local Layout = {
 			help = "แท็บ แนะนำ / ทำซ้ำได้ / ครั้งเดียว / บอส / ปราณ · ติ๊กได้หลายเควส บอกรางวัลทุกอัน" },
 		["Get Materials"] = { page = "items", section = "material", card = "material", order = 1,
 			help = "แร่ เศษเหล็ก ด้าย ยา แบบพิมพ์ ออร์บ ของตกปลา ของเควส 104 ชิ้น · ใส่จำนวนได้" },
+		["Exchange-Materials-Items"] = { page = "items", section = "material", card = "exchange", order = 2,
+			help = "แลกวัสดุเซ็ต Firstlight / Nightfall 6 อย่าง 1 ต่อ 1 ที่ Blacksmith Togane · เลือกของที่ให้ ของที่รับ ใส่จำนวนได้" },
 		["Get Nightfall Craft"] = { page = "items", section = "set", card = "nfcraft", order = 2,
 			help = "ตีชิ้นเซ็ต Nightfall แบบโต๊ะช่าง · ขาดแบบ วัสดุ หรือเงิน หาให้เองจนตีได้ · ติ๊กหลายชิ้นได้" },
 		["Get Nightfall Schematic"] = { page = "items", section = "set", card = "nightfall", order = 1,
@@ -12215,6 +12217,322 @@ track({
 		Up.cancel = true
 	end,
 })
+end)()
+
+-- Exchange-Materials-Items --------------------------------------------------------
+-- ของที่แลกกันได้ในเกม (ไล่ SignalEvent/SignalFunction ในบทพูด NPC ทั้งเกม 26 ก.ย. 2026):
+--   MaterialExchange ที่ Blacksmith Togane (Hidden Mist Village) ปุ่ม "Swap materials": "Any of the six for any
+--     other, one for one" = วัสดุเซ็ต (Series.Materials: ไอเทมที่มี SetMaterial) 6 อย่าง แลก 1 ต่อ 1 กี่ชิ้นก็ได้
+--     SignalFunction.ToServer("MaterialExchange", { Give, Take, Amount }) ตอบ true/false
+--     ยิงจากไกล (ห่าง ~1,700 stud) ได้ false ของไม่ขยับ ต้องไปยืนหน้า Togane ก่อน (ทางเดียวกับ Craft.balance)
+--   SeriesTrade (Lost Cape / Lost Outfit → แบบพิมพ์) กับ SeriesCapstone (ครบชุดแบบ → 2 ชิ้นสุดท้าย)
+--     ทำอยู่แล้วในหน้า Get Nightfall Schematic
+;(function()
+local Ex = {
+	give = nil,
+	take = nil,
+	amount = 1,
+	busy = false,
+	-- ลำดับเดียวกับหน้าแลกของเกม (Series.Materials เรียงชื่อ)
+	mats = require(ReplicatedStorage.CAM.Global.Series).Materials(),
+}
+
+local ui = makePanel("Exchange-Materials-Items", true)
+ui.search.Visible = false
+ui.filterRow.Visible = false
+ui.subtitle.Text = "Blacksmith Togane · แลก 1 ต่อ 1 · ต้องยืนหน้า Togane (วาร์ปไปให้แล้วพากลับที่เดิม)"
+ui.list.Position = UDim2.fromOffset(0, 48)
+ui.list.Size = UDim2.new(1, 0, 1, -104)
+
+local goLabel = new("TextLabel", {
+	Size = UDim2.new(1, 0, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "",
+	TextColor3 = Theme.Dim,
+	TextSize = 15,
+	FontFace = font(Enum.FontWeight.SemiBold),
+})
+local goBtn = new("TextButton", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.fromScale(0, 1),
+	Size = UDim2.new(1, 0, 0, 34),
+	BackgroundColor3 = Theme.Raised,
+	AutoButtonColor = false,
+	Text = "",
+	Parent = ui.panel,
+}, { capsule(), goLabel })
+
+local function held(name)
+	return Game.wallet()[name] or 0
+end
+
+local function smallBtn(parent, text, width, order)
+	local b = new("TextButton", {
+		Size = UDim2.fromOffset(width, 26),
+		BackgroundColor3 = Theme.Raised,
+		AutoButtonColor = false,
+		Text = text,
+		TextColor3 = Theme.Muted,
+		TextSize = 13,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		LayoutOrder = order,
+		Parent = parent,
+	}, { capsule(), stroke() })
+	return b
+end
+
+local rows = {}
+local amountBox
+local refresh
+
+for i, name in ipairs(Ex.mats) do
+	local row = new("Frame", {
+		Size = UDim2.new(1, -4, 0, 46),
+		BackgroundColor3 = Theme.Row,
+		LayoutOrder = i,
+		Parent = ui.list,
+	}, { corner(8) })
+	new("ImageLabel", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 8, 0.5, 0),
+		Size = UDim2.fromOffset(32, 32),
+		BackgroundColor3 = Theme.Base,
+		Image = Game.iconOf(name) or "",
+		ScaleType = Enum.ScaleType.Fit,
+		Parent = row,
+	}, { corner(6), stroke(RarityColor[6] or Theme.Stroke, 1) })
+	new("TextLabel", {
+		Position = UDim2.fromOffset(48, 6),
+		Size = UDim2.new(1, -190, 0, 16),
+		BackgroundTransparency = 1,
+		Text = name,
+		TextColor3 = Theme.Text,
+		TextSize = 14,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = row,
+	})
+	local have = new("TextLabel", {
+		Position = UDim2.fromOffset(48, 24),
+		Size = UDim2.new(1, -190, 0, 14),
+		BackgroundTransparency = 1,
+		Text = "",
+		TextColor3 = Theme.Dim,
+		TextSize = 12,
+		FontFace = font(Enum.FontWeight.Regular),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = row,
+	})
+	local side = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -8, 0.5, 0),
+		Size = UDim2.fromOffset(130, 26),
+		BackgroundTransparency = 1,
+		Parent = row,
+	}, { new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		Padding = UDim.new(0, 6),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}) })
+	local giveBtn = smallBtn(side, "ให้", 60, 1)
+	local takeBtn = smallBtn(side, "รับ", 60, 2)
+	track(giveBtn.MouseButton1Click:Connect(function()
+		if Ex.busy then
+			return
+		end
+		Ex.give = Ex.give ~= name and name or nil
+		if Ex.take == Ex.give then
+			Ex.take = nil
+		end
+		refresh()
+	end))
+	track(takeBtn.MouseButton1Click:Connect(function()
+		if Ex.busy then
+			return
+		end
+		Ex.take = Ex.take ~= name and name or nil
+		if Ex.give == Ex.take then
+			Ex.give = nil
+		end
+		refresh()
+	end))
+	rows[name] = { have = have, give = giveBtn, take = takeBtn }
+end
+
+-- จำนวน: − / ช่องพิมพ์ / + / ทั้งหมด (ตั้งได้ 1 ถึงจำนวนที่มีของฝั่งให้)
+do
+	local row = new("Frame", {
+		Size = UDim2.new(1, -4, 0, 40),
+		BackgroundColor3 = Theme.Row,
+		LayoutOrder = 100,
+		Parent = ui.list,
+	}, { corner(8) })
+	new("TextLabel", {
+		Position = UDim2.fromOffset(12, 0),
+		Size = UDim2.new(0, 60, 1, 0),
+		BackgroundTransparency = 1,
+		Text = "จำนวน",
+		TextColor3 = Theme.Text,
+		TextSize = 14,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = row,
+	})
+	local box = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -8, 0.5, 0),
+		Size = UDim2.fromOffset(330, 26),
+		BackgroundTransparency = 1,
+		Parent = row,
+	}, { new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		Padding = UDim.new(0, 6),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}) })
+	local steps = { { "−10", -10 }, { "−1", -1 } }
+	for i, s in ipairs(steps) do
+		local b = smallBtn(box, s[1], 40, i)
+		track(b.MouseButton1Click:Connect(function()
+			Ex.amount += s[2]
+			refresh()
+		end))
+	end
+	amountBox = new("TextBox", {
+		Size = UDim2.fromOffset(60, 26),
+		BackgroundColor3 = Theme.Raised,
+		BorderSizePixel = 0,
+		Text = "1",
+		TextColor3 = Theme.Text,
+		TextSize = 14,
+		FontFace = font(Enum.FontWeight.SemiBold),
+		ClearTextOnFocus = false,
+		LayoutOrder = 3,
+		Parent = box,
+	}, { capsule() })
+	track(amountBox.FocusLost:Connect(function()
+		Ex.amount = tonumber(amountBox.Text) or Ex.amount
+		refresh()
+	end))
+	for i, s in ipairs({ { "+1", 1 }, { "+10", 10 } }) do
+		local b = smallBtn(box, s[1], 40, 3 + i)
+		track(b.MouseButton1Click:Connect(function()
+			Ex.amount += s[2]
+			refresh()
+		end))
+	end
+	local all = smallBtn(box, "ทั้งหมด", 64, 6)
+	track(all.MouseButton1Click:Connect(function()
+		Ex.amount = Ex.give and held(Ex.give) or 1
+		refresh()
+	end))
+end
+
+function refresh()
+	local w = Game.wallet()
+	local max = Ex.give and (w[Ex.give] or 0) or 0
+	Ex.amount = math.clamp(math.floor(Ex.amount), 1, math.max(max, 1))
+	amountBox.Text = tostring(Ex.amount)
+	for name, r in pairs(rows) do
+		r.have.Text = "มี " .. comma(w[name] or 0)
+		local g, t = Ex.give == name, Ex.take == name
+		r.give.BackgroundColor3 = g and Theme.Warn or Theme.Raised
+		r.give.TextColor3 = g and Theme.Base or Theme.Muted
+		r.take.BackgroundColor3 = t and Theme.Good or Theme.Raised
+		r.take.TextColor3 = t and Theme.Base or Theme.Muted
+	end
+	local ready = Ex.give and Ex.take and max >= Ex.amount
+	if Ex.busy then
+		goLabel.Text = "กำลังแลก…"
+	elseif not (Ex.give and Ex.take) then
+		goLabel.Text = "เลือกของที่ ให้ กับของที่ รับ"
+	elseif max < 1 then
+		goLabel.Text = "ไม่มี " .. Ex.give .. " ให้แลก"
+	else
+		goLabel.Text = string.format("แลก  %s %s  →  %s %s", comma(Ex.amount), Ex.give, comma(Ex.amount), Ex.take)
+	end
+	tween(goBtn, { BackgroundColor3 = ready and not Ex.busy and Theme.On or Theme.Raised }, FAST)
+	tween(goLabel, { TextColor3 = ready and not Ex.busy and Theme.Base or Theme.Dim }, FAST)
+end
+
+-- ไปยืนหน้า Togane แลก แล้วพากลับที่เดิม · ตัวรันอื่น (Money Farm / Auto-Quest) กำลังพาตัววิ่งอยู่ ไม่แย่ง
+local function run()
+	local give, take, amount = Ex.give, Ex.take, Ex.amount
+	if not (give and take) or held(give) < amount then
+		return
+	end
+	if Runner.active then
+		-- ตัวรันพาตัวอยู่ (นอนใต้บอสปักตำแหน่งทุกเฟรม) วาร์ปไป Togane ไม่ทัน เซิร์ฟตอบ false
+		-- ปิด Money Farm อย่างเดียวไม่พอ ถ้าเควสอีกาเปิดอยู่มันกลับไปวิ่งเดี่ยวต่อ (Runner.crowResume)
+		ui.setStatus("มีตัวรันพาตัวละครอยู่ ปิด Auto-Money-Farm / Kasugai Crow / Auto-Quest / Dungeon ก่อนแล้วกดใหม่", Theme.Warn)
+		return
+	end
+	local _, hrp = selfParts()
+	local spawn = npcSpawnPoint("Blacksmith Togane")
+	if not (hrp and spawn) then
+		ui.setStatus("หา Blacksmith Togane ไม่เจอ", Theme.Danger)
+		return
+	end
+	Ex.busy = true
+	Runner.active = true
+	refresh()
+	local home = hrp.CFrame
+	local before = held(take)
+	local ok, res = pcall(function()
+		ui.setStatus("วาร์ปไปหา Blacksmith Togane…", Theme.Accent)
+		placeAt(hrp, CFrame.new(spawn.pos + Vector3.new(0, 3, 5), spawn.pos), "exchange")
+		local npc
+		for _ = 1, 40 do
+			npc = findLiveNpc("Blacksmith Togane")
+			if npc then
+				break
+			end
+			task.wait(0.3)
+		end
+		if npc then
+			local pos = npc:GetPivot().Position
+			placeAt(hrp, CFrame.new(pos + Vector3.new(0, 0, 4), pos), "exchange")
+		end
+		task.wait(0.6)
+		ui.setStatus(string.format("แลก %s %s → %s…", comma(amount), give, take), Theme.Accent)
+		local SignalFunction = require(ReplicatedStorage.Communication.ServerAndClient.Signals.SignalFunction)
+		return SignalFunction.ToServer("MaterialExchange", { Give = give, Take = take, Amount = amount })
+	end)
+	-- require / SignalFunction ทำ identity ของ thread หล่น แตะ GUI ต่อไม่ได้ (เหตุผลเดียวกับ report)
+	if setthreadidentity and Game.loadIdentity then
+		setthreadidentity(Game.loadIdentity)
+	end
+	task.wait(0.5)
+	local got = held(take) - before
+	if ok and res == true then
+		ui.setStatus(string.format("แลกแล้ว: ได้ %s +%s (ตอนนี้มี %s)", take, comma(got), comma(held(take))), Theme.Good)
+	else
+		ui.setStatus("Togane ไม่ยอมแลก" .. (ok and "" or (": " .. tostring(res):sub(1, 80))), Theme.Danger)
+	end
+	placeAt(hrp, home, "exchange-back")
+	Runner.active = false
+	Ex.busy = false
+	refresh()
+end
+
+track(goBtn.MouseButton1Click:Connect(function()
+	if not Ex.busy then
+		task.spawn(run)
+	end
+end))
+
+local feature = featureRow("Exchange-Materials-Items", "แลกวัสดุเซ็ต 1 ต่อ 1 ที่ Togane", 2, function()
+	refresh()
+	ui.setStatus("กด ให้ ที่ของที่จะเอาไปแลก · กด รับ ที่ของที่อยากได้ · ตั้งจำนวน แล้วกดแลก", Theme.Muted)
+	ui.show()
+end, function()
+	ui.hide()
+end)
+track(ui.closeButton.MouseButton1Click:Connect(function()
+	feature.setOpen(false)
+end))
 end)()
 
 -- Auto-Dodge: อ่านท่าโจมตีของม็อบแล้วหลบก่อนดาเมจเข้า ------------------------
